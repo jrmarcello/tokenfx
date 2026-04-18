@@ -30,10 +30,10 @@ export default async function EffectivenessPage() {
   const hasData = scores.length > 0 || costs.length > 0;
 
   return (
-    <section className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold">Efetividade</h1>
-        <p className="text-sm text-neutral-400 mt-1">
+    <section className="space-y-8">
+      <header className="space-y-1">
+        <h1 className="text-3xl font-semibold tracking-tight">Efetividade</h1>
+        <p className="text-sm text-neutral-500">
           Últimos 30 dias — heurísticas de eficiência de custo
         </p>
       </header>

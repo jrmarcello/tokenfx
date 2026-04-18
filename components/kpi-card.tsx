@@ -27,8 +27,10 @@ export function KpiCard({ title, value, hint, info, trend }: Props) {
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-semibold tabular-nums">{value}</div>
-        {hint && <div className="text-xs text-neutral-500 mt-1">{hint}</div>}
+        <div className="text-3xl font-semibold tabular-nums tracking-tight">
+          {value}
+        </div>
+        {hint && <div className="text-xs text-neutral-500 mt-2">{hint}</div>}
         {trend && (
           <div className={cn('text-xs mt-2', deltaColor)}>
             {trend.delta > 0 ? '+' : ''}{trend.delta}% {trend.label}

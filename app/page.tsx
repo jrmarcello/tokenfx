@@ -24,10 +24,10 @@ export default async function Home() {
   const hasData = kpis.sessionCount30d > 0;
 
   return (
-    <section className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold">Visão geral</h1>
-        <p className="text-sm text-neutral-400 mt-1">Últimos 30 dias</p>
+    <section className="space-y-8">
+      <header className="space-y-1">
+        <h1 className="text-3xl font-semibold tracking-tight">Visão geral</h1>
+        <p className="text-sm text-neutral-500">Últimos 30 dias</p>
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">

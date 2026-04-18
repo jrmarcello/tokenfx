@@ -1,18 +1,8 @@
 import Link from 'next/link';
 import { Card, CardContent } from '@/components/ui/card';
+import { ChevronRightIcon } from '@/components/icons';
+import { fmtDate, fmtUsd } from '@/lib/fmt';
 import type { TopSession } from '@/lib/queries/overview';
-
-function fmtUsd(n: number): string {
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
-}
-
-function fmtDate(ms: number): string {
-  return new Date(ms).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
-}
 
 export function TopSessions({ items }: { items: TopSession[] }) {
   if (items.length === 0) return null;
@@ -24,17 +14,26 @@ export function TopSessions({ items }: { items: TopSession[] }) {
             <li key={s.id}>
               <Link
                 href={`/sessions/${s.id}`}
-                className="flex items-center justify-between px-4 py-3 hover:bg-neutral-800/60 transition"
+                className="group flex items-center justify-between gap-4 px-4 py-3 transition hover:bg-neutral-800/50"
               >
-                <div className="min-w-0">
-                  <div className="text-sm font-medium truncate">{s.project}</div>
-                  <div className="text-xs text-neutral-500 truncate">
-                    {s.id} • {fmtDate(s.startedAt)}
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-neutral-100">
+                    {s.project}
+                  </div>
+                  <div className="mt-0.5 truncate font-mono text-[11px] text-neutral-500">
+                    {s.id}
+                    <span className="mx-1.5 text-neutral-700">•</span>
+                    <span className="font-sans">{fmtDate(s.startedAt)}</span>
                   </div>
                 </div>
-                <div className="flex items-center gap-6 text-sm shrink-0">
-                  <span className="tabular-nums">{fmtUsd(s.totalCostUsd)}</span>
-                  <span className="text-neutral-500">{s.turnCount} turns</span>
+                <div className="flex shrink-0 items-center gap-6 text-sm">
+                  <span className="tabular-nums font-medium text-neutral-100">
+                    {fmtUsd(s.totalCostUsd)}
+                  </span>
+                  <span className="tabular-nums text-neutral-500">
+                    {s.turnCount} turnos
+                  </span>
+                  <ChevronRightIcon className="size-4 text-neutral-600 transition-colors group-hover:text-neutral-300" />
                 </div>
               </Link>
             </li>

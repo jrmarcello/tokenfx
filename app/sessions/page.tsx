@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db/client';
 import { ensureFreshIngest } from '@/lib/ingest/auto';
 import { listSessions } from '@/lib/queries/session';
 import { Card, CardContent } from '@/components/ui/card';
+import { ChevronRightIcon } from '@/components/icons';
 import { fmtUsd, fmtDateTime } from '@/lib/fmt';
 
 export const dynamic = 'force-dynamic';
@@ -14,10 +15,10 @@ export default async function SessionsPage() {
   const items = listSessions(db, 100);
 
   return (
-    <section className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold">Sessões</h1>
-        <p className="text-sm text-neutral-400 mt-1">{items.length} recentes</p>
+    <section className="space-y-8">
+      <header className="space-y-1">
+        <h1 className="text-3xl font-semibold tracking-tight">Sessões</h1>
+        <p className="text-sm text-neutral-500">{items.length} recentes</p>
       </header>
       {items.length === 0 ? (
         <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-neutral-400 text-sm">
@@ -35,26 +36,31 @@ export default async function SessionsPage() {
                 <li key={s.id}>
                   <Link
                     href={`/sessions/${s.id}`}
-                    className="flex items-center justify-between px-4 py-3 hover:bg-neutral-800/60 transition"
+                    className="group flex items-center justify-between gap-4 px-4 py-3 transition hover:bg-neutral-800/50"
                   >
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium truncate">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium text-neutral-100">
                         {s.project}
                       </div>
-                      <div className="text-xs text-neutral-500 truncate">
-                        {s.id} • {fmtDateTime(s.startedAt)}
+                      <div className="mt-0.5 truncate font-mono text-[11px] text-neutral-500">
+                        {s.id}
+                        <span className="mx-1.5 text-neutral-700">•</span>
+                        <span className="font-sans">{fmtDateTime(s.startedAt)}</span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-6 text-sm shrink-0 tabular-nums">
-                      <span>{fmtUsd(s.totalCostUsd)}</span>
-                      <span className="text-neutral-500">
+                    <div className="flex shrink-0 items-center gap-6 text-sm">
+                      <span className="tabular-nums font-medium text-neutral-100">
+                        {fmtUsd(s.totalCostUsd)}
+                      </span>
+                      <span className="tabular-nums text-neutral-500">
                         {s.turnCount} turnos
                       </span>
                       {s.avgRating !== null && (
-                        <span className="text-neutral-400">
+                        <span className="tabular-nums text-neutral-400">
                           {s.avgRating.toFixed(1)}★
                         </span>
                       )}
+                      <ChevronRightIcon className="size-4 text-neutral-600 transition-colors group-hover:text-neutral-300" />
                     </div>
                   </Link>
                 </li>
