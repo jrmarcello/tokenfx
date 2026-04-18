@@ -58,6 +58,17 @@ CREATE TABLE IF NOT EXISTS ratings (
   rated_at INTEGER NOT NULL
 );
 
+-- Per-file ingest bookkeeping, independent of `sessions`. A transcript
+-- session can span multiple .jsonl files (sub-agent/rotation) and
+-- `sessions.source_file` is overwritten by ON CONFLICT updates, so dedup
+-- against it is unreliable. This table tracks each file's last-seen mtime
+-- so ingestAll can skip files that haven't changed since we last parsed.
+CREATE TABLE IF NOT EXISTS ingested_files (
+  path TEXT PRIMARY KEY,
+  mtime_ms INTEGER NOT NULL,
+  ingested_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS otel_scrapes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   scraped_at INTEGER NOT NULL,
@@ -67,6 +78,46 @@ CREATE TABLE IF NOT EXISTS otel_scrapes (
   UNIQUE(metric_name, labels_json, scraped_at)
 );
 CREATE INDEX IF NOT EXISTS idx_otel_scrape_metric_time ON otel_scrapes(metric_name, scraped_at);
+
+-- Full-text search on turns (user_prompt + assistant_text).
+-- External content mode: FTS5 references turns.rowid instead of duplicating text.
+-- Tokenizer: unicode61 + remove_diacritics 2 so "cafe" matches "café" (PT/EN mixed).
+CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
+  user_prompt,
+  assistant_text,
+  content='turns',
+  content_rowid='rowid',
+  tokenize='unicode61 remove_diacritics 2'
+);
+
+-- Sync triggers keep turns_fts coherent with turns. Must exist before any
+-- downstream writes (reconcile, writer) so every mutation is indexed.
+CREATE TRIGGER IF NOT EXISTS trg_turns_ai AFTER INSERT ON turns BEGIN
+  INSERT INTO turns_fts(rowid, user_prompt, assistant_text)
+  VALUES (new.rowid, new.user_prompt, new.assistant_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_turns_ad AFTER DELETE ON turns BEGIN
+  INSERT INTO turns_fts(turns_fts, rowid, user_prompt, assistant_text)
+  VALUES ('delete', old.rowid, old.user_prompt, old.assistant_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_turns_au AFTER UPDATE ON turns BEGIN
+  INSERT INTO turns_fts(turns_fts, rowid, user_prompt, assistant_text)
+  VALUES ('delete', old.rowid, old.user_prompt, old.assistant_text);
+  INSERT INTO turns_fts(rowid, user_prompt, assistant_text)
+  VALUES (new.rowid, new.user_prompt, new.assistant_text);
+END;
+
+-- Idempotent backfill. External-content FTS5 tables proxy `SELECT` to their
+-- content table (`turns`), so a `WHERE NOT EXISTS (SELECT 1 FROM turns_fts
+-- WHERE rowid = turns.rowid)` pattern is always empty and an `INSERT ...
+-- SELECT` backfill silently no-ops. The supported primitive is FTS5's built-in
+-- `'rebuild'` command, which recomputes the full index from the content table
+-- atomically. It is idempotent (same input → same index state) and cheap
+-- relative to ingestion on a single-user DB with thousands of turns — the
+-- alternative (gated rebuild) requires runtime logic beyond plain SQL.
+INSERT INTO turns_fts(turns_fts) VALUES('rebuild');
 
 CREATE VIEW IF NOT EXISTS session_effectiveness AS
 SELECT

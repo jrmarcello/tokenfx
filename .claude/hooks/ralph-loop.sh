@@ -40,8 +40,13 @@ if [ "$COUNT" -ge 30 ]; then
 fi
 
 # ── Count remaining tasks ────────────────────────────────────────
-TOTAL=$(grep -c '^\- \[[ x]\] TASK-' "$SPEC_FILE" 2>/dev/null || echo "0")
-DONE=$(grep -c '^\- \[x\] TASK-' "$SPEC_FILE" 2>/dev/null || echo "0")
+# `grep -c` already prints "0" on no-match (with exit 1). Avoid a `|| echo 0`
+# fallback here — under exit 1 both would print, producing "0\n0" which then
+# blows up $((TOTAL - DONE)) and leaves REMAINING unset under `set -u`.
+TOTAL=$(grep -c '^\- \[[ x]\] TASK-' "$SPEC_FILE" 2>/dev/null)
+DONE=$(grep -c '^\- \[x\] TASK-' "$SPEC_FILE" 2>/dev/null)
+TOTAL=${TOTAL:-0}
+DONE=${DONE:-0}
 REMAINING=$((TOTAL - DONE))
 
 if [ "$REMAINING" -le 0 ]; then

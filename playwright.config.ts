@@ -22,6 +22,9 @@ export default defineConfig({
       DASHBOARD_DB_PATH: TEST_DB,
       NODE_ENV: 'development',
       PORT: '3123',
+      // Keep SSR fast and deterministic — without this flag every page load
+      // re-ingests ~/.claude/projects/ into the test DB.
+      TOKENFX_DISABLE_AUTO_INGEST: '1',
     },
   },
   globalSetup: path.resolve(__dirname, './tests/e2e/global-setup.ts'),

@@ -40,6 +40,9 @@ function getPrepared(db: DB): Prepared {
  *   reachable the ingest still succeeds (transcripts are the primary source).
  */
 export async function ensureFreshIngest(): Promise<void> {
+  // E2E / test harnesses set this to keep page renders fast and deterministic
+  // (otherwise every SSR pulls ~/.claude/projects/ into the test DB).
+  if (process.env.TOKENFX_DISABLE_AUTO_INGEST === '1') return;
   if (inflight) {
     await inflight;
     return;

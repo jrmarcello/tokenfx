@@ -1,6 +1,7 @@
 import type { TurnDetail } from '@/lib/queries/session';
 import { RatingWidget } from '@/components/rating-widget';
 import { SparkleIcon, UserIcon, WrenchIcon } from '@/components/icons';
+import { TurnScrollTo } from '@/components/turn-scroll-to';
 import { fmtNum, fmtTime, fmtUsdFine } from '@/lib/fmt';
 
 export function TranscriptViewer({ turns }: { turns: TurnDetail[] }) {
@@ -10,11 +11,14 @@ export function TranscriptViewer({ turns }: { turns: TurnDetail[] }) {
     );
   }
   return (
-    <ol className="space-y-4">
+    <>
+      <TurnScrollTo />
+      <ol className="space-y-4">
       {turns.map((t) => (
         <li
           key={t.id}
-          className="overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900"
+          id={`turn-${t.id}`}
+          className="scroll-mt-24 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 transition-shadow"
         >
           <header className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-800 bg-neutral-900/60 px-4 py-2.5 text-xs text-neutral-400">
             <div className="flex items-center gap-3">
@@ -121,7 +125,8 @@ export function TranscriptViewer({ turns }: { turns: TurnDetail[] }) {
           </div>
         </li>
       ))}
-    </ol>
+      </ol>
+    </>
   );
 }
 

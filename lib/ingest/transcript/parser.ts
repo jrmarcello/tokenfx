@@ -24,6 +24,18 @@ const ToolResultBlockSchema = z.object({
   is_error: z.boolean().optional(),
 });
 
+// Claude Code's .jsonl transcripts interleave model turns with many
+// infrastructure event types (`permission-mode`, `file-history-snapshot`,
+// `queue-operation`, `todo`, …) that don't carry `uuid`/`sessionId`/
+// `timestamp`. Downstream parsing only ever reads `user` and `assistant`
+// entries — those plus their required fields are the real boundary we
+// want Zod to enforce. Whitelisting by type before the schema check
+// keeps the strict validation focused where it matters: a malformed
+// user/assistant entry still surfaces a warn (real data problem),
+// while new infra types added by future Claude Code releases are
+// skipped silently without this list needing maintenance.
+const CONSUMED_TYPES = new Set<string>(['user', 'assistant']);
+
 type WarnFn = (msg: string) => void;
 const noopWarn: WarnFn = () => {};
 
@@ -63,6 +75,10 @@ export function parseTranscriptString(
       continue;
     }
 
+    const typeField = (parsed as { type?: unknown } | null)?.type;
+    if (typeof typeField !== 'string' || !CONSUMED_TYPES.has(typeField)) {
+      continue;
+    }
     const result = TranscriptLineSchema.safeParse(parsed);
     if (!result.success) {
       warn(`[transcript] line ${i + 1}: schema mismatch (${result.error.message})`);

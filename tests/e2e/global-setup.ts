@@ -54,8 +54,10 @@ const FIXED_SESSIONS: readonly SeedSession[] = [
         output: 400,
         cacheRead: 2000,
         cacheCreation: 100,
-        userPrompt: 'First user prompt for e2e-1',
-        assistantText: 'First assistant response for e2e-1',
+        userPrompt:
+          'First user prompt for e2e-1 — resolve auth-marker bug in route handler',
+        assistantText:
+          'First assistant response for e2e-1 — here is the fix for the auth-marker issue',
         toolCalls: [{ name: 'Read', isError: false }],
       },
       {

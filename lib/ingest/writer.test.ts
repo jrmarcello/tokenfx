@@ -237,14 +237,56 @@ describe('ingestAll', () => {
     expect(sessCount).toBe(1);
   });
 
-  it('TC-I-INGEST-02: idempotent re-ingest', async () => {
+  it('TC-I-INGEST-02: idempotent re-ingest skips unchanged files', async () => {
     await ingestAll({ db, transcriptsRoot: tempDir });
+    // Second pass: nothing changed on disk → per-file mtime gate skips parse.
     const summary2 = await ingestAll({ db, transcriptsRoot: tempDir });
-    expect(summary2.sessionsUpserted).toBe(1);
+    expect(summary2.sessionsUpserted).toBe(0);
+    expect(summary2.filesProcessed).toBe(0);
+    // But the session from the first pass is still present — no data loss.
     const sessCount = (
       db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number }
     ).c;
     expect(sessCount).toBe(1);
+    // Bookkeeping table tracks the file.
+    const tracked = (
+      db
+        .prepare('SELECT COUNT(*) as c FROM ingested_files')
+        .get() as { c: number }
+    ).c;
+    expect(tracked).toBe(1);
+  });
+
+  it('TC-I-INGEST-04: re-ingests when the file mtime advances', async () => {
+    await ingestAll({ db, transcriptsRoot: tempDir });
+    // Bump mtime forward so the gate considers the file changed.
+    const filePath = path.join(tempDir, 'sample.jsonl');
+    const future = new Date(Date.now() + 60_000);
+    fs.utimesSync(filePath, future, future);
+    const summary2 = await ingestAll({ db, transcriptsRoot: tempDir });
+    expect(summary2.sessionsUpserted).toBe(1);
+    expect(summary2.filesProcessed).toBe(1);
+  });
+
+  it('TC-I-INGEST-05: picks up new files introduced after first pass', async () => {
+    await ingestAll({ db, transcriptsRoot: tempDir });
+    // Clone the fixture into a new file with a distinct session id.
+    const fixture = fs.readFileSync(
+      path.resolve(process.cwd(), 'tests/fixtures/sample.jsonl'),
+      'utf8',
+    );
+    const rotated = fixture.replace(
+      /"sessionId":"([^"]+)"/g,
+      '"sessionId":"sess-rotated"',
+    );
+    fs.writeFileSync(path.join(tempDir, 'rotated.jsonl'), rotated);
+    const summary2 = await ingestAll({ db, transcriptsRoot: tempDir });
+    expect(summary2.filesProcessed).toBe(1);
+    expect(summary2.sessionsUpserted).toBe(1);
+    const sessCount = (
+      db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number }
+    ).c;
+    expect(sessCount).toBe(2);
   });
 
   it('TC-I-INGEST-03: captures OTEL errors without failing transcripts', async () => {

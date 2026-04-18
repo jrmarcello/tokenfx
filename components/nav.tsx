@@ -7,6 +7,7 @@ const links = [
   { href: '/', label: 'Visão geral' },
   { href: '/sessions', label: 'Sessões' },
   { href: '/effectiveness', label: 'Efetividade' },
+  { href: '/search', label: 'Busca' },
 ];
 
 export function Nav({ slot }: { slot?: React.ReactNode }) {

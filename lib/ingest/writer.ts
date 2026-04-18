@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import type { Database, Statement } from 'better-sqlite3';
 import { getDb } from '@/lib/db/client';
 import { migrate } from '@/lib/db/migrate';
@@ -26,6 +27,8 @@ type Prepared = {
   insertTurn: Statement;
   insertToolCall: Statement;
   insertOtel: Statement;
+  lookupIngestedFile: Statement<[string]>;
+  upsertIngestedFile: Statement<[string, number, number]>;
 };
 
 const preparedCache = new WeakMap<Database, Prepared>();
@@ -119,7 +122,26 @@ function getStatements(db: Database): Prepared {
     ON CONFLICT(metric_name, labels_json, scraped_at) DO NOTHING
   `);
 
-  cached = { insertSession, insertTurn, insertToolCall, insertOtel };
+  const lookupIngestedFile = db.prepare(
+    'SELECT mtime_ms FROM ingested_files WHERE path = ?',
+  );
+
+  const upsertIngestedFile = db.prepare(
+    `INSERT INTO ingested_files (path, mtime_ms, ingested_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(path) DO UPDATE SET
+       mtime_ms = excluded.mtime_ms,
+       ingested_at = excluded.ingested_at`,
+  );
+
+  cached = {
+    insertSession,
+    insertTurn,
+    insertToolCall,
+    insertOtel,
+    lookupIngestedFile,
+    upsertIngestedFile,
+  };
   preparedCache.set(db, cached);
   return cached;
 }
@@ -272,7 +294,31 @@ export async function ingestAll(options?: {
   const files = await listTranscriptFiles(options?.transcriptsRoot);
   log.info(`[ingest] found ${files.length} transcript file(s)`);
 
+  const stmts = getStatements(db);
+  let skippedUnchanged = 0;
+
   for (const file of files) {
+    // Per-file gate: skip parsing when mtime hasn't advanced since our
+    // last ingest of this exact path. Auto-ingest fires on every SSR
+    // render, so without this gate a healthy dashboard re-parses every
+    // .jsonl on every navigation.
+    let mtimeMs: number | null = null;
+    try {
+      mtimeMs = statSync(file).mtimeMs;
+    } catch {
+      // Race with file removal between listing and stat; fall through to
+      // the parser which will surface its own error.
+    }
+    if (mtimeMs !== null) {
+      const prev = stmts.lookupIngestedFile.get(file) as
+        | { mtime_ms: number }
+        | undefined;
+      if (prev && mtimeMs <= prev.mtime_ms) {
+        skippedUnchanged += 1;
+        continue;
+      }
+    }
+
     const result = parseTranscriptFile(file, (msg) => log.warn(msg));
     if (!result.ok) {
       summary.filesSkipped += 1;
@@ -288,6 +334,9 @@ export async function ingestAll(options?: {
         (acc, t) => acc + t.toolCalls.length,
         0,
       );
+      if (mtimeMs !== null) {
+        stmts.upsertIngestedFile.run(file, mtimeMs, Date.now());
+      }
     } catch (err) {
       summary.filesSkipped += 1;
       summary.errors.push({
@@ -313,7 +362,7 @@ export async function ingestAll(options?: {
   }
 
   log.info(
-    `[ingest] done: ${summary.filesProcessed} processed, ${summary.filesSkipped} skipped, ${summary.otelScrapes} otel rows, ${summary.errors.length} errors`,
+    `[ingest] done: ${summary.filesProcessed} processed, ${skippedUnchanged} unchanged, ${summary.filesSkipped} skipped, ${summary.otelScrapes} otel rows, ${summary.errors.length} errors`,
   );
 
   return summary;

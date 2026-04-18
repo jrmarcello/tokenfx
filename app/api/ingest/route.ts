@@ -10,18 +10,14 @@ export const dynamic = 'force-dynamic';
 // (when present) must point to loopback so a stray LAN bind or a forged
 // Host via DNS rebinding can't trigger a filesystem scan + DB write.
 const LOCALHOST_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
-const ALLOWED_ORIGINS = new Set([
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-  'http://[::1]:3000',
-]);
+const LOOPBACK_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 const DEFAULT_OTEL_URL = 'http://localhost:9464/metrics';
 
 function isLocalhost(request: Request): boolean {
   const host = request.headers.get('host') ?? '';
   if (!LOCALHOST_HOST.test(host)) return false;
   const origin = request.headers.get('origin');
-  if (origin && !ALLOWED_ORIGINS.has(origin)) return false;
+  if (origin && !LOOPBACK_ORIGIN.test(origin)) return false;
   return true;
 }
 
