@@ -1,222 +1,217 @@
 # Token Effectiveness Dashboard
 
-A personal, localhost-only dashboard that ingests your Claude Code transcripts (`~/.claude/projects/*.jsonl`) and optional OTEL metrics, stores everything in a local SQLite file, and surfaces consumption KPIs + effectiveness heuristics + manual ratings. Next.js 16 · TypeScript · better-sqlite3 · Recharts · Vitest · Playwright.
+**Quanto o Claude Code te cobra é fácil. Saber se a conta valeu — não.**
 
-> This README follows a **do → understand → deepen → reference** structure. Start at the top; stop when you have what you need.
+Esse dashboard ingere os transcripts locais do Claude Code (`~/.claude/projects/*.jsonl`) + métricas OTEL opcionais, guarda tudo num SQLite na sua máquina e te dá a foto completa: quanto você gastou, em qual projeto, em qual sessão, em qual turno — e quão efetivo foi cada um. Roda 100% local, sem cloud, sem telemetria pra fora.
+
+Stack: Next.js 16 · TypeScript estrito · better-sqlite3 · Recharts · Vitest · Playwright.
 
 ---
 
-## 1. Fazer — five minutes to something useful
+## Pra que serve
+
+- **Você paga por token; ninguém te paga por resultado.** `claude /cost` te diz o gasto da sessão aberta. Grafana mostra consumo ao longo do tempo. Nenhum dos dois responde *"essa sessão cara valeu o preço?"*. Aqui você clica na sessão mais cara da semana, lê o transcript, avalia turno a turno — e o score composto te aponta onde o dinheiro virou trabalho entregue.
+- **Efetividade não é opinião.** Quatro sinais alimentam o score (0..100): razão output/input, taxa de cache hit, avaliação manual (Bom/Neutro/Ruim por turno) e densidade de correção — detectada via regex no próximo prompt do usuário. Se você respondeu *"não, isso tá errado"*, o turno anterior perde pontos automaticamente.
+- **Zero infra pra manter.** SQLite em arquivo único, Next.js local, porta 3000. Nada pra subir, nada pra derrubar, nada saindo da sua máquina.
+
+## 5 minutos pra ver rodando
 
 ```bash
-pnpm install                            # prod + dev deps
-pnpm seed-dev                           # populate with deterministic synthetic data
-pnpm dev                                # http://localhost:3000
+pnpm install
+pnpm seed-dev          # popula com dados sintéticos pra ver a UI
+pnpm dev               # http://localhost:3000
 ```
 
-Open the browser. You should see KPI cards, a 30-day spend trend, and a top-sessions list. Click a session → transcript viewer with Good/Neutral/Bad rating buttons on each turn.
+Abriu? Você vê KPIs, tendência de 30 dias, top sessões. Clica numa → transcript completo com botões de avaliação em cada turno.
 
-When you're ready to see your **real** Claude Code history:
+Pronto pra ver seus dados reais?
 
 ```bash
-pnpm ingest                             # reads ~/.claude/projects/*.jsonl, writes data/dashboard.db
+pnpm ingest            # lê ~/.claude/projects/*.jsonl, popula data/dashboard.db
 ```
 
-Ingestion is idempotent — run it as often as you like.
+Idempotente — pode rodar quantas vezes quiser. **Mais importante**: você nem precisa. O dashboard auto-ingere a cada page load quando detecta transcripts novos. Ou seja: abriu a página, viu os dados atualizados. Sem cron, sem daemon.
 
 ---
 
-## 2. Entender — the mental model
+## Entender
 
-### The problem this solves
+### O problema
 
-`claude /cost` tells you the current session's spend. That's reactive. Grafana time-series dashboards show *consumption* but not *whether the spend produced value*. The killer feature missing from both is **drill-down**: "this session cost me $8 — was it worth it?" Answering that needs the transcript alongside the numbers, plus a way to rate individual turns.
+Você abre `/cost` no meio de uma task, vê `$0.47`, fecha e continua. Terminou o dia com $12, a semana com $60, o mês com $240. **Nenhum desses números diz onde o gasto foi trabalho entregue e onde foi retrabalho.** Sessões de refactor que deram certo têm o mesmo preço de sessões em que você ficou corrigindo o assistente três vezes. Grafana agrega no tempo, não na intenção. Cost-per-PR é bruto demais — uma PR pode ter saído de uma sessão boa e duas ruins.
 
-### Data flow
+### Como esse dashboard ataca isso
 
-```text
-~/.claude/projects/*.jsonl  ─┐
-                             ├──►  parsers  ──►  writer  ──►  data/dashboard.db
-optional OTEL Prometheus ────┘                                        │
-  (http://localhost:9464/metrics)                                     ▼
-                                                          Next.js (Server Components)
-                                                                      │
-                                                                      ▼
-                                                           http://localhost:3000
-```
+Três camadas:
 
-Everything after the arrow runs locally. Nothing is sent anywhere else.
+1. **Ingestão local**: parser JSONL tolerante + scraper OTEL Prometheus → SQLite idempotente. Sem rede.
+2. **Três views complementares**:
+   - `/` — Visão geral: quanto gastou hoje/7d/30d, cache hit, tokens, top sessões, tendência.
+   - `/sessions/[id]` — Drill-down: metadata + lista de turnos + transcript completo com user prompt, assistant text e tool calls colapsáveis. Cada turno tem rating manual.
+   - `/effectiveness` — Heurísticas: score composto, distribuição de custo por turno, razão output/input semanal, ferramentas mais usadas.
+3. **Score composto de efetividade**: um número (0..100) por sessão, ponderando:
 
-### The three views
+| Sinal | Peso | Fonte |
+|---|---|---|
+| Razão output/input (clipped a 2.0) | 40% | Agregado da sessão |
+| Taxa de cache hit | 20% | Agregado da sessão |
+| Avaliação manual média | 30% | Tabela `ratings` |
+| 1 − densidade de correção | 10% | Regex no próximo prompt |
 
-- **`/` — Overview.** Spend (today / 7d / 30d), total tokens, cache-hit %, session count, a 30-day spend sparkline, and the top-5 most expensive sessions with direct links.
-- **`/sessions` · `/sessions/[id]` — Drill-down.** The transcript with user prompts, assistant text, and tool calls (native `<details>` so no JS needed to expand). Each turn has a rating widget that persists to SQLite via `POST /api/ratings`.
-- **`/effectiveness` — How well is this spend landing?** A composite score (0–100) combining four signals, plus a cost-per-turn histogram, weekly output/input ratio, and a tool leaderboard.
+Sinais ausentes (nulos) são descartados e os pesos se redistribuem proporcionalmente. Matemática completa em [`lib/analytics/scoring.ts`](lib/analytics/scoring.ts).
 
-### The effectiveness score (what makes a turn "good")
+### Onde seus dados vivem
 
-Four signals, weighted:
-
-| Signal | Weight | Source |
-| --- | --- | --- |
-| Output/input token ratio (clipped at 2.0) | 40% | Session aggregate |
-| Cache hit ratio | 20% | Session aggregate |
-| Manual avg rating | 30% | `ratings` table |
-| 1 − correction density | 10% | Regex-detected corrections in the *next* user turn |
-
-Missing signals (null) are dropped and the remaining weights redistribute proportionally. See `lib/analytics/scoring.ts` for the math.
-
-### Where your data lives
-
-- `data/dashboard.db` — SQLite, gitignored. Back this up if you want your ratings to survive a `rm -rf`.
-- `~/.claude/projects/` — owned by Claude Code, read-only from this app's perspective.
-- No cloud. No telemetry. No network calls out.
+- `data/dashboard.db` — SQLite, gitignored. **Back up esse arquivo** se quiser preservar suas avaliações manuais.
+- `~/.claude/projects/` — owned pelo Claude Code, read-only daqui.
+- Nenhuma conexão externa. Nenhum analytics. Nenhum header `User-Agent` curioso saindo da sua máquina.
 
 ---
 
-## 3. Aprofundar — when you want more
+## Aprofundar
 
-### Enable OTEL metrics from Claude Code
+### Ativar OTEL do Claude Code (opcional, mas vale)
 
-Claude Code natively speaks Prometheus. In the shell where you run Claude Code:
+Métricas OTEL trazem contexto que o JSONL não carrega: **accept/reject de Edit/Write** (sinal direto de qualidade), `lines_of_code` alteradas, commits, PRs e `active_time`. No shell que roda o Claude Code:
 
 ```bash
 export CLAUDE_CODE_ENABLE_TELEMETRY=1
 export OTEL_METRICS_EXPORTER=prometheus
-# Metrics endpoint defaults to http://localhost:9464/metrics
+# endpoint padrão: http://localhost:9464/metrics
 ```
 
-Then ingest with the scrape URL set:
+Pronto. O dashboard detecta automaticamente na próxima ingestão (timeout de 1s — se o endpoint não tá lá, segue em frente com transcripts). Se você usar porta custom:
 
 ```bash
-OTEL_SCRAPE_URL=http://localhost:9464/metrics pnpm ingest
+OTEL_SCRAPE_URL=http://localhost:XXXX/metrics pnpm ingest
 ```
 
-Snapshots land in the `otel_scrapes` table (append-only). The UI currently surfaces consumption via the JSONL transcripts — OTEL is there for when you want to add alerts or point a real Prometheus at the same endpoint in parallel.
+### Como a ingestão permanece idempotente
 
-### How ingestion stays idempotent
+Chave natural: `session_id` (UUID da sessão do Claude Code). Writer usa `INSERT ... ON CONFLICT(id) DO UPDATE` em sessions/turns/tool_calls, tudo dentro de `db.transaction(...)`. Re-ingerir o mesmo arquivo — ou a mesma sessão vinda de arquivos diferentes — merge sem duplicar. Ratings nunca são tocadas pelo writer.
 
-The natural key is `session_id` (from the JSONL line). The writer uses `INSERT ... ON CONFLICT(id) DO UPDATE` across sessions/turns/tool_calls, wrapped in a single `db.transaction(...)`. Re-ingesting the same file — or ingesting the same session from a different source file — merges without duplication. Ratings are never touched by the writer.
+### A heurística de correção
 
-### The correction heuristic
+[`lib/analytics/scoring.ts`](lib/analytics/scoring.ts) roda duas regex bilíngues no *próximo* prompt do usuário:
 
-`lib/analytics/scoring.ts` applies two bilingual regexes to each turn's *next* user prompt:
+- **Forte (penalidade 1.0)** — `não`, `errou`, `errado`, `na verdade`, `don't`, `stop`, `wrong`, `revert`, `undo`
+- **Média (penalidade 0.5)** — `actually`, `hmm`, `wait`, `uhh`, `na real`, `reconsidera`, `reconsider`
 
-- **Strong (1.0 penalty)** — `não`, `errou`, `errado`, `na verdade`, `don't`, `stop`, `wrong`, `revert`, `undo`
-- **Mild (0.5 penalty)** — `actually`, `hmm`, `wait`, `uhh`, `na real`, `reconsidera`, `reconsider`
+A penalidade cai no turno do assistente **anterior** à correção. Sessões com muitas correções acumulam densidade alta, e o score composto cai.
 
-The penalty attaches to the assistant turn **preceding** the correction. A session with many penalized turns ends up with a high `correctionDensity`, which lowers its composite score.
+### Atualizar a tabela de preços
 
-### Update the pricing table
-
-When Anthropic ships new models or adjusts per-token pricing, edit `lib/analytics/pricing.ts`. Model lookups normalize `[1m]` context-window suffixes and trailing date stamps, so the stored `model` strings from raw transcripts resolve correctly.
+Quando a Anthropic lançar modelos novos ou ajustar preço, edita [`lib/analytics/pricing.ts`](lib/analytics/pricing.ts). Lookups normalizam sufixos de janela de contexto (`[1m]`) e carimbos de data — o que está gravado como `model` nos transcripts resolve corretamente.
 
 ### Watch mode
 
-`pnpm ingest --watch` is stubbed (runs a single pass and logs a warning). If you want continuous ingestion today, run it under `watchexec` or a LaunchAgent. The ingest is fast enough (~seconds for hundreds of sessions) that you likely don't need it.
+`pnpm ingest --watch` tá stub (roda uma passada só e loga warning). Se quiser ingestão contínua, enfie sob `watchexec` ou um LaunchAgent. Na prática **você não precisa**: o auto-ingest on-page-load já resolve pro caso comum, e a ingest bruta é rápida (segundos pra centenas de sessões).
 
-### Editing in place
+### Customizar
 
-- New shadcn/ui primitive? Drop it into `components/ui/`. Keep the API drop-in so Card/Button/etc. can be swapped for an external lib later.
-- New KPI? Add a query to the matching `lib/queries/<page>.ts`, expose a type, render it in the page. Queries use cached prepared statements via a `WeakMap<DB>` (see existing patterns).
-- New effectiveness heuristic? Add a pure function to `lib/analytics/scoring.ts`, compose it inside `effectivenessScore`, and update weights — the redistribution logic handles nulls so you don't have to code defensively.
+- **Nova primitive de UI?** Cai em `components/ui/`. Mantém a API drop-in (Card/Button/etc.) pra que possa ser trocada por uma lib externa depois sem mexer nos call sites.
+- **Novo KPI?** Adiciona uma query em `lib/queries/<page>.ts`, expõe um tipo, renderiza na página. Queries usam prepared statements em WeakMap (olha os exemplos existentes).
+- **Nova heurística de efetividade?** Função pura em `lib/analytics/scoring.ts`, entra na composição de `effectivenessScore`, ajusta pesos — a redistribuição automática quando sinais são nulos te livra de código defensivo.
 
 ### Troubleshooting
 
-| Symptom | Fix |
-| --- | --- |
-| `better-sqlite3` fails to load on install | `pnpm approve-builds`, then `pnpm install` again — allows the native postinstall. |
-| Home page shows zeros and an empty-state notice | Run `pnpm seed-dev` or `pnpm ingest`. |
-| Playwright first run hangs | `pnpm exec playwright install chromium` (one-time, ~150 MB). |
-| Port 3000 already in use | `pnpm dev -- --port 3001` (or use `PORT=3001 pnpm dev`). E2E uses `3123`. |
-| Ratings don't persist across reload | Inspect the network tab — `POST /api/ratings` must return `200`. The handler validates via Zod; bad body → `400`. |
-| `/api/ingest` returns `403` | That's the loopback-host guard doing its job. Call it from `localhost`/`127.0.0.1`. |
+| Sintoma | Resolução |
+|---|---|
+| `better-sqlite3` falha no install | `pnpm approve-builds`, depois `pnpm install` — libera o postinstall nativo. |
+| Home mostra zeros | `pnpm seed-dev` (sintético) ou `pnpm ingest` (seu histórico). Auto-ingest só roda quando tem JSONL novo. |
+| Primeira execução do Playwright trava | `pnpm exec playwright install chromium` (~150 MB, uma vez). |
+| Porta 3000 ocupada | `PORT=3001 pnpm dev`. E2E usa `3123`. |
+| Rating não persiste no reload | DevTools → Network: `POST /api/ratings` precisa retornar `200`. Payload validado via Zod; body ruim → `400`. |
+| `/api/ingest` retorna `403` | É a trava de loopback funcionando. Só aceita `localhost` / `127.0.0.1` / `::1`. |
 
 ---
 
-## 4. Referência
+## Referência
 
-### Commands
+### Comandos
 
-| Command | Purpose |
-| --- | --- |
-| `pnpm dev` | Next.js dev server on `:3000` |
+| Comando | O que faz |
+|---|---|
+| `pnpm dev` | Sobe o Next.js dev em `:3000` |
 | `pnpm build` | Production build |
-| `pnpm start` | Serve the production build |
+| `pnpm start` | Serve o build de produção |
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm lint` | ESLint |
-| `pnpm test` | Vitest (watch mode) |
+| `pnpm test` | Vitest watch |
 | `pnpm test --run` | Vitest single pass |
-| `pnpm test:e2e` | Playwright smoke suite (starts Next on `:3123`) |
-| `pnpm ingest` | Read transcripts + (optional) OTEL, populate SQLite |
-| `pnpm seed-dev` | Seed DB with deterministic synthetic data |
+| `pnpm test:e2e` | Smoke Playwright (sobe Next em `:3123`) |
+| `pnpm ingest` | Ingestão one-shot (transcripts + OTEL se disponível) |
+| `pnpm seed-dev` | Popula SQLite com dados sintéticos deterministicos |
+| `pnpm setup` | `install && seed-dev` — primeiro run |
+| `pnpm fresh` | Apaga DB e re-ingere do zero |
+| `pnpm validate` | `typecheck && lint && test --run` |
 
-### Environment
+### Variáveis de ambiente
 
-| Env var | Default | Meaning |
-| --- | --- | --- |
-| `DASHBOARD_DB_PATH` | `./data/dashboard.db` | SQLite file location |
-| `OTEL_SCRAPE_URL` | *unset* | When set, `ingest` also scrapes Prometheus metrics from this URL |
+| Env | Default | Pra quê |
+|---|---|---|
+| `DASHBOARD_DB_PATH` | `./data/dashboard.db` | Local do SQLite |
+| `OTEL_SCRAPE_URL` | `http://localhost:9464/metrics` | URL pro endpoint Prometheus do Claude Code. Set pra custom; deixa em branco pra usar o default |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 
-### Repository layout
+### Estrutura do repo
 
 ```text
-app/             Next.js App Router routes + api handlers
-components/      UI (Server Components + a few Client Components for interactivity/charts)
+app/             Next.js App Router routes + api handlers + loading states
+components/      UI (Server Components + alguns Client pra interatividade)
 lib/
   db/            better-sqlite3 client, schema.sql, migrate, types
-  ingest/        JSONL + OTEL parsers, idempotent writer
-  analytics/     pricing table + effectiveness scoring
-  queries/       server-side SQLite queries grouped by page
-  fs-paths.ts    path-traversal-safe helpers for ~/.claude/projects
-  logger.ts      level-gated console wrapper (the one place `console.*` is allowed)
-  fmt.ts         centralized Intl formatters
+  ingest/        JSONL + OTEL parsers, writer idempotente, auto-ingest
+  analytics/     tabela de preços + scoring de efetividade
+  queries/       queries SQLite server-side agrupadas por página
+  fs-paths.ts    guardas de path traversal pra ~/.claude/projects
+  logger.ts      wrapper console com níveis (único lugar onde console.* é permitido)
+  fmt.ts         formatters Intl centralizados
   result.ts      Result<T,E> discriminated union
-scripts/         ingest CLI + seed-dev CLI (run via tsx)
+scripts/         CLIs ingest + seed-dev (tsx)
 tests/           Vitest unit/integration + Playwright E2E
-.claude/         hooks, rules, agents, skills for Claude Code DX
-.specs/          SDD specs (TEMPLATE.md + completed specs)
-data/            runtime SQLite (gitignored)
+.claude/         hooks, rules, agents, skills pro Claude Code
+.specs/          specs SDD (TEMPLATE.md + specs concluídas)
+data/            SQLite runtime (gitignored)
 ```
 
-### SQLite schema (summary)
+### Schema SQLite (resumo)
 
-- `sessions` — one row per Claude Code session, keyed by `id` (session UUID). Rollups: tokens, cost, turn_count, tool_call_count. Indexes on `started_at` and `(started_at, total_cost_usd DESC)`.
-- `turns` — one per assistant response, FK to `sessions`. Stores user_prompt + assistant_text + tokens + model + cost per turn.
-- `tool_calls` — one per tool invocation, FK to `turns`.
-- `ratings` — one per turn (unique on `turn_id`), check-constrained to `{-1, 0, 1}`.
-- `otel_scrapes` — append-only, one row per (metric, labels) pair per scrape.
-- `session_effectiveness` — VIEW computing cache_hit_ratio / output_input_ratio / avg_rating / cost_per_turn.
+- `sessions` — uma linha por sessão do Claude Code (chave: UUID). Rollups de tokens/custo/turn_count/tool_call_count. Indexes em `started_at` e `(started_at, total_cost_usd DESC)`.
+- `turns` — uma linha por resposta do assistente, FK pra `sessions`. Guarda user_prompt + assistant_text + tokens + modelo + custo.
+- `tool_calls` — uma linha por tool call, FK pra `turns`.
+- `ratings` — única por turno (check constraint `{-1, 0, 1}`).
+- `otel_scrapes` — append-only, uma linha por (metric, labels) por scrape.
+- `session_effectiveness` — VIEW derivada: cache_hit_ratio / output_input_ratio / avg_rating / cost_per_turn.
 
-### API routes
+### Rotas API
 
-| Method + path | Body | Response | Notes |
-| --- | --- | --- | --- |
-| `POST /api/ratings` | `{ turnId: string, rating: -1 \| 0 \| 1, note?: string \| null }` | `{ ok: true }` or `400 { ok: false, error: "invalid body" }` | Looks up `session_id` via prepared statement, then `revalidatePath('/sessions/${sessionId}')` + `revalidatePath('/')`. |
-| `POST /api/ingest` | (none) | `{ ok: true, summary: IngestSummary }` or `403 { ok: false, error: "forbidden" }` | Loopback Host allowlist (`localhost` / `127.0.0.1` / `::1`, any port). Revalidates `/` and `/effectiveness`. |
+| Método + path | Body | Resposta | Notas |
+|---|---|---|---|
+| `POST /api/ratings` | `{ turnId, rating: -1\|0\|1, note? }` | `{ ok: true }` ou `400` | Faz lookup do `session_id` via prepared statement, aí chama `revalidatePath('/sessions/${sessionId}')` + `revalidatePath('/')`. |
+| `POST /api/ingest` | — | `{ ok: true, summary }` ou `403` | Allowlist de Host loopback (`localhost` / `127.0.0.1` / `::1`). Revalida `/` e `/effectiveness`. |
 
-### Testing matrix
+### Matriz de testes
 
-| Layer | Runner | File pattern | Coverage |
-| --- | --- | --- | --- |
-| Unit | Vitest | `lib/**/*.test.ts` | parsers, pricing, scoring, formatters, fs guards, logger |
-| Integration | Vitest + real SQLite | `tests/integration/**/*.test.ts` | schema migrate, ingestion end-to-end against tmpdir fixtures, `/api/*` route handlers |
-| E2E | Playwright | `tests/e2e/**/*.spec.ts` | seeded Next dev server, home KPIs, drill-down, rating persistence |
+| Camada | Runner | Padrão | Cobertura |
+|---|---|---|---|
+| Unit | Vitest | `lib/**/*.test.ts` | parsers, pricing, scoring, formatters, guards fs, logger |
+| Integration | Vitest + SQLite real | `tests/integration/**/*.test.ts` | migrate, ingestão contra fixtures em tmpdir, handlers de `/api/*` |
+| E2E | Playwright | `tests/e2e/**/*.spec.ts` | Next dev com seed determinístico: KPIs home, drill-down, persistência de rating |
 
-Current count: **117** unit + integration tests, **3** E2E smokes. Run `pnpm test --run && pnpm test:e2e` to exercise everything.
+Contagem atual: **117** unit+integration, **3** E2E. Rode `pnpm validate && pnpm test:e2e` pra exercer tudo.
 
-### Conventions (enforced or aspirational)
+### Convenções
 
-- TS strict — no `any`, `unknown` + narrowing at boundaries.
-- Named exports preferred; defaults only where Next requires (`page.tsx`, `layout.tsx`, `route.ts`).
-- Prepared statements reused (WeakMap-cached per DB).
-- `console.*` lives only in `lib/logger.ts`.
-- Tests colocated (`foo.ts` + `foo.test.ts`) except the cross-module integration suite under `tests/integration/`.
-- Zod at every ingestion/API boundary.
+- TS strict — sem `any`, `unknown` + narrowing nos boundaries.
+- Named exports preferidos; default só onde Next exige (`page.tsx`, `layout.tsx`, `route.ts`).
+- Prepared statements reusados (WeakMap-cached por DB).
+- `console.*` só em `lib/logger.ts`.
+- Testes colocados (`foo.ts` + `foo.test.ts`), com exceção da suíte cross-module em `tests/integration/`.
+- Zod em toda fronteira de ingestão/API.
 
-Full ruleset lives in `.claude/rules/` and is referenced by the agents and hooks documented in `CLAUDE.md`.
+Regras completas em `.claude/rules/` (auto-aplicadas via hooks + referenciadas pelos agentes documentados em `CLAUDE.md`).
 
 ### Specs
 
-Active SDD specs in `.specs/`. The MVP is captured in [.specs/dashboard-mvp.md](.specs/dashboard-mvp.md) (status: DONE). Use `[.specs/TEMPLATE.md](.specs/TEMPLATE.md)` as the starting point for any non-trivial change.
+Specs ativas em `.specs/`. O MVP completo está capturado em [.specs/dashboard-mvp.md](.specs/dashboard-mvp.md) (status: DONE). Pra qualquer mudança não-trivial, comece copiando [.specs/TEMPLATE.md](.specs/TEMPLATE.md).
