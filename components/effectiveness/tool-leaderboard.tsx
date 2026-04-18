@@ -1,0 +1,32 @@
+import { Card, CardContent } from '@/components/ui/card';
+import type { ToolLeaderboardItem } from '@/lib/queries/effectiveness';
+
+export function ToolLeaderboard({ items }: { items: ToolLeaderboardItem[] }) {
+  if (items.length === 0) {
+    return (
+      <p className="text-neutral-500 text-sm">No tool calls recorded.</p>
+    );
+  }
+  return (
+    <Card className="bg-neutral-900 border-neutral-800">
+      <CardContent className="p-0">
+        <ul className="divide-y divide-neutral-800">
+          {items.map((t) => (
+            <li
+              key={t.toolName}
+              className="flex items-center justify-between px-4 py-2 text-sm"
+            >
+              <span className="font-medium">{t.toolName}</span>
+              <div className="flex items-center gap-6 tabular-nums text-neutral-400">
+                <span>{t.count} calls</span>
+                {t.errorCount > 0 && (
+                  <span className="text-red-400">{t.errorCount} errors</span>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
