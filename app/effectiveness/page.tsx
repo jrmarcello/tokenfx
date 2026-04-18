@@ -43,14 +43,31 @@ export default async function EffectivenessPage() {
           title="Score médio de efetividade"
           value={fmtScore(kpis.avgScore)}
           hint="0..100 composto"
+          info={
+            <>
+              Métrica composta (0..100) combinando: razão output/input (40%),
+              cache hit (20%), avaliação manual (30%), ausência de correções
+              (10%). Quando algum sinal falta, os pesos se redistribuem
+              proporcionalmente.
+            </>
+          }
         />
         <KpiCard
           title="Razão output/input média"
           value={fmtRatio(kpis.avgOutputInputRatio)}
           hint="Ponderada por tokens"
+          info="Tokens gerados pelo assistente divididos pelos tokens consumidos. Sessões maiores pesam mais. Valores muito altos podem indicar respostas verbosas; muito baixos, respostas truncadas."
         />
-        <KpiCard title="Cache hit médio" value={fmtPct(kpis.avgCacheHitRatio)} />
-        <KpiCard title="Sessões avaliadas" value={kpis.ratedSessionCount} />
+        <KpiCard
+          title="Cache hit médio"
+          value={fmtPct(kpis.avgCacheHitRatio)}
+          info="Média da taxa de cache hit por sessão. Cache quente reduz custo em prompts similares. Cai quando o prompt inicial muda muito ou o TTL expira."
+        />
+        <KpiCard
+          title="Sessões avaliadas"
+          value={kpis.ratedSessionCount}
+          info="Quantas sessões têm ao menos um turno com avaliação manual (Bom / Neutro / Ruim). Quanto mais avaliações, mais confiável fica a entrada da avaliação no score composto."
+        />
       </div>
 
       {hasData ? (

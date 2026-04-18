@@ -35,10 +35,23 @@ export default async function Home() {
           title="Custo total (30d)"
           value={fmtUsd(kpis.spend30d)}
           hint={`Hoje: ${fmtUsd(kpis.spendToday)} — 7d: ${fmtUsd(kpis.spend7d)}`}
+          info="Soma dos custos de todas as sessões nos últimos 30 dias. Calculado por turno via tabela de preços por modelo (lib/analytics/pricing.ts)."
         />
-        <KpiCard title="Tokens (30d)" value={fmtCompact(kpis.tokens30d)} />
-        <KpiCard title="Taxa de cache hit" value={fmtPct(kpis.cacheHitRatio30d)} />
-        <KpiCard title="Sessões (30d)" value={kpis.sessionCount30d} />
+        <KpiCard
+          title="Tokens (30d)"
+          value={fmtCompact(kpis.tokens30d)}
+          info="Total de tokens processados (entrada + saída + cache read + cache creation) nos últimos 30 dias."
+        />
+        <KpiCard
+          title="Taxa de cache hit"
+          value={fmtPct(kpis.cacheHitRatio30d)}
+          info="Razão entre tokens lidos do cache e (entrada + cache). Quanto maior, mais barato — prompts similares reaproveitam o contexto."
+        />
+        <KpiCard
+          title="Sessões (30d)"
+          value={kpis.sessionCount30d}
+          info="Número de sessões distintas do Claude Code ingeridas nos últimos 30 dias. Uma sessão = um arquivo .jsonl em ~/.claude/projects/."
+        />
       </div>
 
       {hasData ? (

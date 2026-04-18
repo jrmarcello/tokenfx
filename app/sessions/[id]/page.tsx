@@ -4,6 +4,7 @@ import { ensureFreshIngest } from '@/lib/ingest/auto';
 import { getSession, getTurns } from '@/lib/queries/session';
 import { TranscriptViewer } from '@/components/transcript-viewer';
 import { Card, CardContent } from '@/components/ui/card';
+import { InfoTooltip } from '@/components/info-tooltip';
 import { fmtUsd, fmtDateTime, fmtPct, fmtRating } from '@/lib/fmt';
 
 export const dynamic = 'force-dynamic';
@@ -31,7 +32,13 @@ export default async function SessionPage({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
         <Card className="bg-neutral-900 border-neutral-800">
           <CardContent className="p-4">
-            <div className="text-neutral-400 text-xs">Custo</div>
+            <div className="text-neutral-400 text-xs flex items-center gap-1.5">
+              <span>Custo</span>
+              <InfoTooltip label="O que é Custo?">
+                Soma dos custos de cada turno desta sessão, calculado via
+                tabela de preços por modelo.
+              </InfoTooltip>
+            </div>
             <div className="text-xl font-semibold tabular-nums">
               {fmtUsd(session.totalCostUsd)}
             </div>
@@ -39,13 +46,25 @@ export default async function SessionPage({
         </Card>
         <Card className="bg-neutral-900 border-neutral-800">
           <CardContent className="p-4">
-            <div className="text-neutral-400 text-xs">Turnos</div>
+            <div className="text-neutral-400 text-xs flex items-center gap-1.5">
+              <span>Turnos</span>
+              <InfoTooltip label="O que é Turnos?">
+                Número de ciclos usuário → assistente na sessão. Cada
+                resposta do assistente conta como um turno.
+              </InfoTooltip>
+            </div>
             <div className="text-xl font-semibold">{session.turnCount}</div>
           </CardContent>
         </Card>
         <Card className="bg-neutral-900 border-neutral-800">
           <CardContent className="p-4">
-            <div className="text-neutral-400 text-xs">Cache hit</div>
+            <div className="text-neutral-400 text-xs flex items-center gap-1.5">
+              <span>Cache hit</span>
+              <InfoTooltip label="O que é Cache hit?">
+                Taxa de reaproveitamento de cache nesta sessão. Baixo significa
+                prompts muito diferentes entre si ou TTL de cache expirado.
+              </InfoTooltip>
+            </div>
             <div className="text-xl font-semibold">
               {fmtPct(session.cacheHitRatio)}
             </div>
@@ -53,7 +72,14 @@ export default async function SessionPage({
         </Card>
         <Card className="bg-neutral-900 border-neutral-800">
           <CardContent className="p-4">
-            <div className="text-neutral-400 text-xs">Avaliação média</div>
+            <div className="text-neutral-400 text-xs flex items-center gap-1.5">
+              <span>Avaliação média</span>
+              <InfoTooltip label="O que é Avaliação média?">
+                Média das avaliações manuais dos turnos (-1 a +1). Nulo quando
+                nenhum turno foi avaliado. Cada turno tem botões Bom / Neutro /
+                Ruim no viewer abaixo.
+              </InfoTooltip>
+            </div>
             <div className="text-xl font-semibold">
               {fmtRating(session.avgRating)}
             </div>
