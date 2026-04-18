@@ -111,18 +111,21 @@ Não-idempotente por design: `otel_scrapes` é append-only (é um log temporal; 
 Avaliação manual é o sinal mais forte do score composto (30% do peso). Critérios objetivos:
 
 **Bom (+1)** — entregou. Use quando:
+
 - O turno produziu o que você pediu e você usou o resultado sem reescrever
 - Tool calls foram precisos e sucederam (edits aplicados, comandos OK)
 - Resolveu rápido, sem rodeio desnecessário
 - O próximo turno seu NÃO começou com correção ("não, isso tá errado")
 
 **Neutro (0)** — meio do caminho. Use quando:
+
 - Tecnicamente correto mas precisou pequeno ajuste no follow-up
 - Respondeu parcialmente — cobriu o principal, deixou lacuna
 - Verbose demais pra uma task simples
 - Cache miss ou ineficiência óbvia mas sem impacto de qualidade
 
 **Ruim (-1)** — atrapalhou. Use quando:
+
 - Alucinou (API que não existe, assinatura errada)
 - Tool calls desnecessários ou que falharam em cadeia
 - Ignorou instrução explícita do prompt
