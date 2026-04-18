@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DB } from './client';
+import { reconcileAllSessions } from '@/lib/ingest/reconcile';
 
 function resolveSchemaPath(): string {
   // Support both CJS (__dirname) and ESM (import.meta.url) environments.
@@ -23,6 +24,15 @@ export function migrate(db: DB): void {
   const schemaPath = resolveSchemaPath();
   const sql = fs.readFileSync(schemaPath, 'utf8');
   db.exec(sql);
+  // Heal pre-existing data: older ingestion runs wrote per-file `sequence`
+  // values and stale rollups when a Claude Code session spanned multiple
+  // JSONL files. Fresh DBs hit the no-op path (zero sessions).
+  const hasData = db
+    .prepare('SELECT 1 FROM sessions LIMIT 1')
+    .get() !== undefined;
+  if (hasData) {
+    reconcileAllSessions(db);
+  }
 }
 
 export function ensureMigrated(db: DB): void {

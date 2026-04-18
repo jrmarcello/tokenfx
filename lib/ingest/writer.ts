@@ -6,6 +6,7 @@ import {
 } from '@/lib/ingest/transcript/parser';
 import type { ParsedSession } from '@/lib/ingest/transcript/types';
 import { fetchAndParse, type OtelScrape } from '@/lib/ingest/otel/parser';
+import { reconcileSession } from '@/lib/ingest/reconcile';
 import { computeCost } from '@/lib/analytics/pricing';
 import { deriveProjectName, listTranscriptFiles } from '@/lib/fs-paths';
 import { log } from '@/lib/logger';
@@ -219,6 +220,12 @@ export function writeSession(
     }
   });
   tx();
+
+  // Sessions can span multiple JSONL files (sub-agents, transcript rotation).
+  // After the upserts, renumber sequences chronologically and recompute
+  // rollup columns from the actual stored rows so session.turn_count et al
+  // reflect reality across all files — not just the last one ingested.
+  reconcileSession(db, parsed.id);
 }
 
 export function writeOtelScrapes(db: Database, rows: OtelScrape[]): void {
