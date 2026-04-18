@@ -1,0 +1,129 @@
+---
+applies-to: ".specs/**"
+---
+
+# SDD Spec Rules
+
+## Spec File Integrity
+
+- Never modify the Requirements section during execution (only during DRAFT status)
+- Never remove tasks — mark them as `[x]` (done) or `BLOCKED`
+- Always append to Execution Log, never overwrite previous entries
+- Status transitions: DRAFT -> APPROVED -> IN_PROGRESS -> DONE | FAILED
+
+## Task Execution
+
+- Each task must be independently verifiable (`pnpm typecheck` should pass after each task)
+- Tasks are organized by feature/domain, not by layer
+- Order tasks logically for the feature
+- If a task is unclear, mark it `BLOCKED` with a reason and stop execution
+- **Mandatory review before testing**: after implementing a task, re-read the task description and verify ALL specified files, patterns, and behaviors were implemented. Check: all files listed in `files:` metadata were created/modified, all patterns from the Design section are followed, all error handling is complete, no implementation gap vs the spec. Only then proceed to tests. This is NEVER skipped.
+
+## Task Metadata
+
+- Every task MUST have a `files:` sub-item listing files it creates or modifies
+- Tasks with dependencies MUST have a `depends:` sub-item listing prerequisite TASK-N IDs
+- `depends:` must form a DAG (no circular dependencies)
+- Tasks that share files in their `files:` lists cannot be in the same parallel batch
+- Tasks with testable code MUST have a `tests:` sub-item listing TC-IDs from the Test Plan (triggers TDD cycle in ralph-loop)
+
+## Test Plan
+
+Every spec MUST include a `## Test Plan` section between Requirements and Design. The Test Plan contains tables grouped by layer:
+
+- **Unit Tests** (TC-U-NN): pure functions, parsers, scoring, pricing, value transforms
+- **Integration Tests** (TC-I-NN): DB writer, queries, API routes with real SQLite
+- **E2E Tests** (TC-E2E-NN): Playwright against a running Next.js app
+
+Each TC row has: `| TC-ID | REQ | Category | Description | Expected |`
+
+Categories: `happy`, `validation`, `business`, `edge`, `infra`, `idempotency`, `security`
+
+For non-code specs (config/docs only), the Test Plan may be `N/A` with a justification.
+
+### Coverage Rules
+
+Every spec MUST satisfy all of the following:
+
+- Every REQ has >= 1 TC (at minimum the happy path)
+- Every typed error surfaced by a module has >= 1 TC that triggers it
+- Every validated field (Zod schema) has boundary TCs: valid min, valid max, invalid min-1, invalid max+1
+- Every external dependency call (filesystem read, HTTP fetch, DB write) has >= 1 infra-failure TC
+- Every conditional branch in a function has TCs for both paths
+- Every new API route / Server Action has integration TCs: happy path (status + response shape), each distinct error status, field boundaries, idempotency
+- **Rigor check**: error/edge TCs should outnumber happy-path TCs — review the complete Test Plan and verify no business rule untested, no error path missing, no boundary unchecked
+
+### Mutability
+
+- TCs may be **added** during IN_PROGRESS (new edge cases discovered during implementation)
+- TCs may NEVER be **removed** — if a TC is no longer applicable, mark it as `SKIPPED` with a reason
+- REQ references in TCs must remain valid
+
+### E2E Tests (Playwright)
+
+- TC-E2E-* are validated by running `pnpm test:e2e`
+- E2E tests are executed by `TASK-SMOKE` — a dedicated task at the end of the spec
+- E2E tests do NOT follow the TDD RED/GREEN cycle (they are executed directly)
+- If the app is not running, log `E2E: DEFERRED` in the Execution Log
+- E2E file convention: `tests/e2e/<feature>.spec.ts`
+
+## TDD Execution
+
+When a task has `tests:` metadata, the ralph-loop follows the TDD cycle:
+
+### RED Phase
+
+1. Write the test file FIRST (before the production code)
+2. Tests reference the function/type that will be implemented
+3. Run `pnpm test --run <file>` — tests MUST fail (compile/import failure counts as valid RED)
+4. If tests pass before implementation: the test is not testing the right thing — fix it
+
+### GREEN Phase
+
+1. Write the MINIMUM production code to make tests pass
+2. Follow existing patterns: hand-written stubs colocated in the test file, table-driven cases
+3. Run `pnpm test --run <file>` — all tests listed in `tests:` MUST pass
+4. If other tests break: fix immediately before proceeding
+
+### REFACTOR Phase
+
+1. Clean up production code: remove duplication, improve naming, extract helpers
+2. Run `pnpm test --run` again — all tests MUST still pass
+3. Run `pnpm typecheck` — must compile cleanly
+
+### Execution Log Format
+
+When a task follows TDD, the Execution Log entry includes:
+
+```text
+TDD: RED(N failing) -> GREEN(N passing) -> REFACTOR(clean)
+```
+
+### Exceptions
+
+- **E2E tests** (TC-E2E-*): executed directly via Playwright, not via TDD cycle
+- **Non-code tasks** (docs, config): no TDD — normal execution
+- **Tasks without `tests:` metadata**: normal execution (no TDD cycle required)
+
+## Parallel Batches
+
+- The Parallel Batches section is auto-generated by `/spec` based on dependency and file analysis
+- Batches are sequential: Batch N+1 starts only after all tasks in Batch N complete
+- Tasks within a batch are independent: no shared files, no inter-dependencies
+- Shared files are classified as:
+  - **exclusive** — only one task touches it (safe for parallel)
+  - **shared-additive** — multiple tasks add to it (candidate for sequential batches)
+  - **shared-mutative** — multiple tasks modify existing code (must serialize)
+
+## Merge Strategy
+
+When parallel tasks share additive files (e.g. `app/layout.tsx` shell vs content):
+
+- Prefer sequencing additive edits across batches rather than concurrent edits within a batch
+- If unavoidable, each parallel task emits a fragment under `.specs/fragments/` and a dedicated merge task applies them sequentially
+- Shared-mutative files always serialize — never run in parallel
+
+## Naming
+
+- Spec files: lowercase, hyphen-separated: `dashboard-mvp.md`, `effectiveness-scoring.md`
+- Active state files: `<name>.active.md` (auto-created by ralph-loop, do not edit manually)
