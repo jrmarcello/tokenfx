@@ -1,6 +1,6 @@
 # Guia de Contribuição
 
-Obrigado pelo interesse em contribuir com o **Token Effectiveness Dashboard**!
+Obrigado pelo interesse em contribuir com o **TokenFx**!
 
 ## Como começar
 

@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Efetividade de Tokens",
-  description: "Dashboard pessoal de efetividade de tokens do Claude Code",
+  title: "TokenFx",
+  description: "TokenFx — dashboard pessoal de efetividade de tokens do Claude Code",
 };
 
 export default function RootLayout({
