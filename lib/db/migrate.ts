@@ -7,7 +7,6 @@ function resolveSchemaPath(): string {
   // Support both CJS (__dirname) and ESM (import.meta.url) environments.
   // Vitest runs TS via ESM by default.
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const metaUrl: string | undefined = (import.meta as unknown as { url?: string }).url;
     if (metaUrl) {
       const here = path.dirname(fileURLToPath(metaUrl));

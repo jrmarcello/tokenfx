@@ -45,8 +45,9 @@ roadmap.md
 data/*.db
 data/*.db-*
 
-# Worktrees
+# Claude Code runtime state
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 
 # Test artifacts
 /test-results/
