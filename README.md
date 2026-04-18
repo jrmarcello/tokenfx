@@ -78,21 +78,46 @@ Sinais ausentes (nulos) são descartados e os pesos se redistribuem proporcional
 
 ### Ativar OTEL do Claude Code (opcional, mas vale)
 
-Métricas OTEL trazem contexto que o JSONL não carrega: **accept/reject de Edit/Write** (sinal direto de qualidade), `lines_of_code` alteradas, commits, PRs e `active_time`. No shell que roda o Claude Code:
+Métricas OTEL trazem contexto que o JSONL não carrega: **accept/reject de Edit/Write** (sinal direto de qualidade), `lines_of_code` alteradas, commits, PRs e `active_time`. Duas formas de ativar, dependendo de como você roda o Claude Code:
 
-```bash
-export CLAUDE_CODE_ENABLE_TELEMETRY=1
-export OTEL_METRICS_EXPORTER=prometheus
-# endpoint padrão: http://localhost:9464/metrics
+**Via `~/.claude/settings.json` — recomendado (funciona em qualquer contexto, inclusive VSCode):**
+
+```jsonc
+{
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_METRICS_EXPORTER": "prometheus"
+  }
+  // ... outros settings
+}
 ```
 
-Pronto. O dashboard detecta automaticamente na próxima ingestão (timeout de 1s — se o endpoint não tá lá, segue em frente com transcripts). Se você usar porta custom:
+Aplica em toda instância do Claude Code (CLI, extensão VSCode, qualquer lançador). Requer **restart do processo** pra pegar — fecha e abre o VSCode (⌘Q + relaunch), ou mata/reabre o `claude` no terminal.
+
+**Via env vars do shell — só funciona se você lança `claude` direto do terminal:**
+
+```bash
+# ~/.zshrc (ou export ad-hoc antes de rodar claude)
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_METRICS_EXPORTER=prometheus
+```
+
+> ⚠️ **Atenção com VSCode**: apps GUI no macOS **não lêem** `~/.zshrc`. Se você usa a extensão Claude Code do VSCode, a única forma que funciona de fato é o `settings.json` acima.
+
+**Endpoint padrão**: `http://localhost:9464/metrics`. Se usar porta custom, aponta o dashboard com:
 
 ```bash
 OTEL_SCRAPE_URL=http://localhost:XXXX/metrics pnpm ingest
 ```
 
-No canto superior direito do dashboard, o badge **OTEL on/off** reflete o estado atual (cache de 60s). Verde + `on` = métricas estão sendo ingeridas; cinza + `off` = só transcripts.
+**Verificar que subiu:**
+
+```bash
+curl -s http://localhost:9464/metrics | head -5
+# deve cuspir "# HELP claude_code_..."
+```
+
+**No dashboard**, o badge no canto superior direito reflete o estado (cache de 60s): **● OTEL on** (verde) = métricas sendo ingeridas; **● OTEL off** (cinza) = só transcripts.
 
 ### Como a ingestão permanece idempotente
 
