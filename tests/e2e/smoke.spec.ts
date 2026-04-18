@@ -23,6 +23,17 @@ test.describe('smoke', () => {
     await expect(page.getByText(/First user prompt for e2e-1/)).toBeVisible();
   });
 
+  test('TC-E2E-04: /effectiveness shows model breakdown section with mixed families', async ({ page }) => {
+    await page.goto('/effectiveness');
+    await expect(
+      page.getByRole('heading', { name: 'Distribuição de spend por modelo' }),
+    ).toBeVisible();
+    // Seed covers opus + sonnet + haiku; at least two family labels should appear.
+    const families = page.getByText(/^(opus|sonnet|haiku)$/);
+    await expect(families.first()).toBeVisible();
+    expect(await families.count()).toBeGreaterThanOrEqual(2);
+  });
+
   test('TC-E2E-03: rating a turn updates immediately', async ({ page }) => {
     // Warm the Next dev compiler for /api/ratings so the first user click isn't
     // racing the initial compile (cold starts can exceed expect timeouts).

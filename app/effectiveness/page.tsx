@@ -5,12 +5,14 @@ import { CostPerTurnHistogram } from '@/components/effectiveness/cost-per-turn-h
 import { RatioTrend } from '@/components/effectiveness/ratio-trend';
 import { ToolLeaderboard } from '@/components/effectiveness/tool-leaderboard';
 import { AcceptRateTrend } from '@/components/effectiveness/accept-rate-trend';
+import { ModelBreakdown } from '@/components/effectiveness/model-breakdown';
 import {
   getEffectivenessKpis,
   getWeeklyRatio,
   getCostPerTurnValues,
   getToolLeaderboard,
   getSessionScores,
+  getModelBreakdown,
 } from '@/lib/queries/effectiveness';
 import { getOtelInsights, getWeeklyAcceptRate } from '@/lib/queries/otel';
 import { bucketCostPerTurn } from '@/lib/analytics/scoring';
@@ -33,6 +35,7 @@ export default async function EffectivenessPage() {
   const costs = getCostPerTurnValues(db, 30);
   const tools = getToolLeaderboard(db, 30, 10);
   const scores = getSessionScores(db, 30);
+  const models = getModelBreakdown(db, 30);
   const histogram = bucketCostPerTurn(costs, 8);
 
   const otel = getOtelInsights(db, 30);
@@ -149,6 +152,14 @@ export default async function EffectivenessPage() {
             </h2>
             <RatioTrend data={weekly} />
           </section>
+          {models.length > 0 && (
+            <section className="lg:col-span-2">
+              <h2 className="text-lg font-medium mb-3">
+                Distribuição de spend por modelo
+              </h2>
+              <ModelBreakdown items={models} />
+            </section>
+          )}
           <section className="lg:col-span-2">
             <h2 className="text-lg font-medium mb-3">Ferramentas mais usadas</h2>
             <ToolLeaderboard items={tools} />

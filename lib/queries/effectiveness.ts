@@ -4,7 +4,13 @@ import {
   effectivenessScore,
   type TurnLike,
 } from '@/lib/analytics/scoring';
+import {
+  groupByFamily,
+  type ModelBreakdownItem,
+} from '@/lib/analytics/model';
 import { getAcceptRatesBySession } from '@/lib/queries/otel';
+
+export type { ModelBreakdownItem } from '@/lib/analytics/model';
 
 export type EffectivenessKpis = {
   avgScore: number | null;
@@ -67,6 +73,8 @@ type LeaderboardRow = {
   errorCount: number | null;
 };
 
+type ModelCostRow = { model: string; cost: number };
+
 type PreparedSet = {
   kpis: import('better-sqlite3').Statement<[number, number]>;
   weeklyRatio: import('better-sqlite3').Statement<[number]>;
@@ -74,6 +82,7 @@ type PreparedSet = {
   toolLeaderboard: import('better-sqlite3').Statement<[number, number]>;
   topSessions: import('better-sqlite3').Statement<[number, number]>;
   turnsForSessions: import('better-sqlite3').Statement<[string]>;
+  modelBreakdown: import('better-sqlite3').Statement<[number]>;
 };
 
 const cache = new WeakMap<DB, PreparedSet>();
@@ -82,8 +91,6 @@ function getPrepared(db: DB): PreparedSet {
   const existing = cache.get(db);
   if (existing) return existing;
   const prepared: PreparedSet = {
-    // Param order: [subquery cutoff (ratedSessionCount), outer WHERE cutoff].
-    // Both bind the same value but the SQL has two distinct `?` placeholders.
     kpis: db.prepare(
       `SELECT
          AVG(v.cache_hit_ratio) AS avgCacheHitRatio,
@@ -154,15 +161,34 @@ function getPrepared(db: DB): PreparedSet {
        JOIN json_each(?) j ON j.value = t.session_id
        ORDER BY t.session_id, t.sequence ASC`,
     ),
+    modelBreakdown: db.prepare(
+      // Aggregate per exact model string within the session window. Zero-cost
+      // turns are filtered upstream so `SUM(cost_usd)` is always positive.
+      // Family folding happens in JS via `groupByFamily`.
+      `SELECT t.model AS model, SUM(t.cost_usd) AS cost
+       FROM turns t
+       JOIN sessions s ON s.id = t.session_id
+       WHERE s.started_at >= ? AND t.cost_usd > 0
+       GROUP BY t.model`,
+    ),
   };
   cache.set(db, prepared);
   return prepared;
 }
 
+export function getModelBreakdown(
+  db: DB,
+  days: number,
+): ModelBreakdownItem[] {
+  const p = getPrepared(db);
+  const cutoff = Date.now() - days * DAY_MS;
+  const rows = p.modelBreakdown.all(cutoff) as ModelCostRow[];
+  return groupByFamily(rows);
+}
+
 export function getEffectivenessKpis(db: DB, days: number): EffectivenessKpis {
   const p = getPrepared(db);
   const cutoff = Date.now() - days * DAY_MS;
-  // [subquery cutoff, outer WHERE cutoff] — see prepare above.
   const row = p.kpis.get(cutoff, cutoff) as KpiRow | undefined;
 
   const avgCacheHitRatio =

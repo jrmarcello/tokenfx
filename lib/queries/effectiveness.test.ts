@@ -7,6 +7,7 @@ import {
   getCostPerTurnValues,
   getToolLeaderboard,
   getSessionScores,
+  getModelBreakdown,
 } from '@/lib/queries/effectiveness';
 
 const DAY_MS = 86_400_000;
@@ -57,6 +58,8 @@ function insertTurn(
     sessionId: string;
     sequence: number;
     userPrompt: string | null;
+    model?: string;
+    costUsd?: number;
   },
 ): void {
   db.prepare(
@@ -64,12 +67,14 @@ function insertTurn(
       id, session_id, parent_uuid, sequence, timestamp, model,
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
       cost_usd, stop_reason, user_prompt, assistant_text, tool_uses_json
-    ) VALUES (?, ?, NULL, ?, ?, 'claude', 0, 0, 0, 0, 0, NULL, ?, NULL, '[]')`,
+    ) VALUES (?, ?, NULL, ?, ?, ?, 0, 0, 0, 0, ?, NULL, ?, NULL, '[]')`,
   ).run(
     args.id,
     args.sessionId,
     args.sequence,
     Date.now(),
+    args.model ?? 'claude',
+    args.costUsd ?? 0,
     args.userPrompt,
   );
 }
@@ -161,10 +166,8 @@ describe('effectiveness queries', () => {
     it('getEffectivenessKpis returns weighted ratios and rated session count', () => {
       const kpis = getEffectivenessKpis(db, 30);
       // cache_hit_ratio: s1 = 500/1500, s2 = 1000/3000 = 0.333. Both equal => avg ~0.333
-      const ratio = kpis.avgCacheHitRatio;
-      expect(ratio).not.toBeNull();
-      if (ratio === null) throw new Error('avgCacheHitRatio null');
-      expect(ratio).toBeGreaterThan(0);
+      expect(kpis.avgCacheHitRatio).not.toBeNull();
+      expect(kpis.avgCacheHitRatio!).toBeGreaterThan(0);
       // output/input: s1 ratio = 2.0, tokens weight = 3000; s2 ratio = 0.5, weight = 3000.
       // Weighted = (2*3000 + 0.5*3000) / 6000 = 1.25
       expect(kpis.avgOutputInputRatio).toBeCloseTo(1.25, 5);
@@ -206,9 +209,10 @@ describe('effectiveness queries', () => {
       expect(scores.length).toBe(2);
       const s1 = scores.find((s) => s.sessionId === 's1');
       const s2 = scores.find((s) => s.sessionId === 's2');
-      if (!s1 || !s2) throw new Error('s1/s2 not found in scores');
-      expect(s1.score).toBeGreaterThanOrEqual(0);
-      expect(s1.score).toBeLessThanOrEqual(100);
+      expect(s1).toBeDefined();
+      expect(s2).toBeDefined();
+      expect(s1!.score).toBeGreaterThanOrEqual(0);
+      expect(s1!.score).toBeLessThanOrEqual(100);
       // s1 has a correction on t1 (1 penalty / 3 turns ≈ 0.33), s2 has none.
       // With s1's rating=1 but corrections vs s2 rating=null no corrections,
       // both scores are valid floats. Just assert presence.
@@ -227,6 +231,156 @@ describe('effectiveness queries', () => {
       expect(getCostPerTurnValues(db, 30)).toEqual([]);
       expect(getToolLeaderboard(db, 30, 10)).toEqual([]);
       expect(getSessionScores(db, 30)).toEqual([]);
+    });
+  });
+
+  describe('getModelBreakdown', () => {
+    it('TC-I-01: 3 sessions (opus/sonnet/haiku) in window → 3 items, sorted desc', () => {
+      insertSession(db, { id: 'sm1', startedAt: now - 2 * DAY_MS });
+      insertSession(db, { id: 'sm2', startedAt: now - 3 * DAY_MS });
+      insertSession(db, { id: 'sm3', startedAt: now - 4 * DAY_MS });
+      insertTurn(db, {
+        id: 'tm1',
+        sessionId: 'sm1',
+        sequence: 0,
+        userPrompt: null,
+        model: 'claude-opus-4-7',
+        costUsd: 5,
+      });
+      insertTurn(db, {
+        id: 'tm2',
+        sessionId: 'sm1',
+        sequence: 1,
+        userPrompt: null,
+        model: 'claude-opus-4-7',
+        costUsd: 7,
+      });
+      insertTurn(db, {
+        id: 'tm3',
+        sessionId: 'sm2',
+        sequence: 0,
+        userPrompt: null,
+        model: 'claude-sonnet-4-6',
+        costUsd: 3,
+      });
+      insertTurn(db, {
+        id: 'tm4',
+        sessionId: 'sm3',
+        sequence: 0,
+        userPrompt: null,
+        model: 'claude-haiku-4-5',
+        costUsd: 1,
+      });
+
+      const out = getModelBreakdown(db, 30);
+      expect(out).toHaveLength(3);
+      // Sorted desc by cost: opus(12), sonnet(3), haiku(1)
+      expect(out.map((x) => x.family)).toEqual(['opus', 'sonnet', 'haiku']);
+      const opus = out.find((x) => x.family === 'opus');
+      const sonnet = out.find((x) => x.family === 'sonnet');
+      const haiku = out.find((x) => x.family === 'haiku');
+      expect(opus?.cost).toBe(12);
+      expect(sonnet?.cost).toBe(3);
+      expect(haiku?.cost).toBe(1);
+      const total = 12 + 3 + 1;
+      expect(opus?.pct).toBeCloseTo(12 / total, 10);
+      expect(sonnet?.pct).toBeCloseTo(3 / total, 10);
+      expect(haiku?.pct).toBeCloseTo(1 / total, 10);
+    });
+
+    it('TC-I-02: session with started_at 40d old → excluded by 30d window', () => {
+      insertSession(db, { id: 'sm-old', startedAt: now - 40 * DAY_MS });
+      insertTurn(db, {
+        id: 'tm-old',
+        sessionId: 'sm-old',
+        sequence: 0,
+        userPrompt: null,
+        model: 'claude-opus-4-7',
+        costUsd: 99,
+      });
+      expect(getModelBreakdown(db, 30)).toEqual([]);
+    });
+
+    it('TC-I-03: empty DB → []', () => {
+      expect(getModelBreakdown(db, 30)).toEqual([]);
+    });
+
+    it('TC-I-04: only opus turns → 1 item with pct 1.0', () => {
+      insertSession(db, { id: 'sm-only-opus', startedAt: now - 1 * DAY_MS });
+      insertTurn(db, {
+        id: 'tm-o1',
+        sessionId: 'sm-only-opus',
+        sequence: 0,
+        userPrompt: null,
+        model: 'claude-opus-4-7',
+        costUsd: 4,
+      });
+      insertTurn(db, {
+        id: 'tm-o2',
+        sessionId: 'sm-only-opus',
+        sequence: 1,
+        userPrompt: null,
+        model: 'claude-opus-4-7',
+        costUsd: 6,
+      });
+
+      const out = getModelBreakdown(db, 30);
+      expect(out).toHaveLength(1);
+      expect(out[0].family).toBe('opus');
+      expect(out[0].cost).toBe(10);
+      expect(out[0].pct).toBeCloseTo(1.0, 10);
+    });
+
+    it('TC-I-05: turn with cost_usd = 0 → excluded from totals', () => {
+      insertSession(db, { id: 'sm-zero', startedAt: now - 1 * DAY_MS });
+      insertTurn(db, {
+        id: 'tm-z1',
+        sessionId: 'sm-zero',
+        sequence: 0,
+        userPrompt: null,
+        model: 'claude-opus-4-7',
+        costUsd: 0,
+      });
+      insertTurn(db, {
+        id: 'tm-z2',
+        sessionId: 'sm-zero',
+        sequence: 1,
+        userPrompt: null,
+        model: 'claude-sonnet-4-6',
+        costUsd: 5,
+      });
+
+      const out = getModelBreakdown(db, 30);
+      // Only sonnet should remain — opus cost was 0 and excluded.
+      expect(out).toHaveLength(1);
+      expect(out[0].family).toBe('sonnet');
+      expect(out[0].cost).toBe(5);
+    });
+
+    it('TC-I-06: unknown model grouped under family "other"', () => {
+      insertSession(db, { id: 'sm-unk', startedAt: now - 1 * DAY_MS });
+      insertTurn(db, {
+        id: 'tm-u1',
+        sessionId: 'sm-unk',
+        sequence: 0,
+        userPrompt: null,
+        model: 'gpt-4',
+        costUsd: 2,
+      });
+      insertTurn(db, {
+        id: 'tm-u2',
+        sessionId: 'sm-unk',
+        sequence: 1,
+        userPrompt: null,
+        model: 'claude-opus-4-7',
+        costUsd: 8,
+      });
+
+      const out = getModelBreakdown(db, 30);
+      expect(out).toHaveLength(2);
+      const other = out.find((x) => x.family === 'other');
+      expect(other).toBeDefined();
+      expect(other?.cost).toBe(2);
     });
   });
 });
