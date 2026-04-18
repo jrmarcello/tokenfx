@@ -40,7 +40,7 @@ Idempotente — pode rodar quantas vezes quiser. **Mais importante**: você nem 
 
 ---
 
-## Entender
+## Como funciona
 
 ### O problema
 
@@ -74,7 +74,7 @@ Sinais ausentes (nulos) são descartados e os pesos se redistribuem proporcional
 
 ---
 
-## Aprofundar
+## Na prática
 
 ### Ativar OTEL do Claude Code (opcional, mas vale)
 
@@ -300,10 +300,6 @@ Contagem atual: **117** unit+integration, **3** E2E. Rode `pnpm validate && pnpm
 - Zod em toda fronteira de ingestão/API.
 
 Regras completas em `.claude/rules/` (auto-aplicadas via hooks + referenciadas pelos agentes documentados em `CLAUDE.md`).
-
-### Specs
-
-Specs ativas em `.specs/`. O MVP está em [.specs/dashboard-mvp.md](.specs/dashboard-mvp.md) (status: `DONE`). Para mudanças não-triviais, copie [.specs/TEMPLATE.md](.specs/TEMPLATE.md) e siga o workflow SDD (`/spec` → aprovar → `/ralph-loop` → `/spec-review`).
 
 ### Contribuindo
 

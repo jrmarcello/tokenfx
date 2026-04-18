@@ -174,7 +174,7 @@ Regras detalhadas em `.claude/rules/` (auto-aplicadas via hooks).
 
 Antes de criar/modificar arquivos, consulte:
 
-- `README.md` — seção "Entender" explica o modelo mental
+- `README.md` — seção "Como funciona" explica o modelo mental
 - `CLAUDE.md` — visão geral da arquitetura, padrões e comandos
 - `.specs/dashboard-mvp.md` — spec do MVP com requisitos e test plan
 - `.claude/rules/ts-conventions.md` + `nextjs-conventions.md` — convenções
