@@ -62,7 +62,9 @@ describe('fmt', () => {
 
   it('fmtDate / fmtDateTime / fmtTime format epoch ms', () => {
     const ms = Date.UTC(2026, 0, 2, 12, 0, 0);
-    expect(fmtDate(ms)).toMatch(/Jan/);
+    // fmtDate uses pt-BR short: "2 de jan. de 2026"
+    expect(fmtDate(ms)).toMatch(/jan/i);
+    expect(fmtDate(ms)).toMatch(/2026/);
     expect(fmtDateTime(ms)).toMatch(/2026/);
     expect(typeof fmtTime(ms)).toBe('string');
     expect(fmtTime(ms).length).toBeGreaterThan(0);

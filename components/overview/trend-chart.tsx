@@ -35,7 +35,7 @@ export function TrendChart({ data }: { data: DailyPoint[] }) {
               borderRadius: 6,
               color: '#e5e5e5',
             }}
-            formatter={(v) => [`$${Number(v).toFixed(2)}`, 'Spend']}
+            formatter={(v) => [`$${Number(v).toFixed(2)}`, 'Custo']}
           />
           <Line
             type="monotone"

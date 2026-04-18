@@ -32,53 +32,53 @@ export default async function EffectivenessPage() {
   return (
     <section className="space-y-6">
       <header>
-        <h1 className="text-2xl font-semibold">Effectiveness</h1>
+        <h1 className="text-2xl font-semibold">Efetividade</h1>
         <p className="text-sm text-neutral-400 mt-1">
-          Last 30 days — cost efficiency heuristics
+          Últimos 30 dias — heurísticas de eficiência de custo
         </p>
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard
-          title="Avg effectiveness score"
+          title="Score médio de efetividade"
           value={fmtScore(kpis.avgScore)}
-          hint="0..100 composite"
+          hint="0..100 composto"
         />
         <KpiCard
-          title="Avg output/input ratio"
+          title="Razão output/input média"
           value={fmtRatio(kpis.avgOutputInputRatio)}
-          hint="Weighted by tokens"
+          hint="Ponderada por tokens"
         />
-        <KpiCard title="Avg cache hit" value={fmtPct(kpis.avgCacheHitRatio)} />
-        <KpiCard title="Rated sessions" value={kpis.ratedSessionCount} />
+        <KpiCard title="Cache hit médio" value={fmtPct(kpis.avgCacheHitRatio)} />
+        <KpiCard title="Sessões avaliadas" value={kpis.ratedSessionCount} />
       </div>
 
       {hasData ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <section>
             <h2 className="text-lg font-medium mb-3">
-              Cost per turn distribution
+              Distribuição de custo por turno
             </h2>
             <CostPerTurnHistogram data={histogram} />
           </section>
           <section>
             <h2 className="text-lg font-medium mb-3">
-              Weekly output/input ratio
+              Razão output/input semanal
             </h2>
             <RatioTrend data={weekly} />
           </section>
           <section className="lg:col-span-2">
-            <h2 className="text-lg font-medium mb-3">Top tools</h2>
+            <h2 className="text-lg font-medium mb-3">Ferramentas mais usadas</h2>
             <ToolLeaderboard items={tools} />
           </section>
         </div>
       ) : (
         <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-neutral-400 text-sm">
-          No data yet. Run{' '}
+          Sem dados ainda. Rode{' '}
           <code className="bg-neutral-800 px-1.5 py-0.5 rounded">
             pnpm ingest
           </code>{' '}
-          to populate.
+          para popular.
         </div>
       )}
     </section>

@@ -14,13 +14,14 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    command: 'pnpm exec next dev --port 3123',
+    command: 'pnpm exec next dev',
     url: 'http://127.0.0.1:3123',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
     env: {
       DASHBOARD_DB_PATH: TEST_DB,
       NODE_ENV: 'development',
+      PORT: '3123',
     },
   },
   globalSetup: path.resolve(__dirname, './tests/e2e/global-setup.ts'),

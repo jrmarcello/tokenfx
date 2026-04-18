@@ -16,12 +16,12 @@ export default async function SessionsPage() {
   return (
     <section className="space-y-6">
       <header>
-        <h1 className="text-2xl font-semibold">Sessions</h1>
-        <p className="text-sm text-neutral-400 mt-1">{items.length} recent</p>
+        <h1 className="text-2xl font-semibold">Sessões</h1>
+        <p className="text-sm text-neutral-400 mt-1">{items.length} recentes</p>
       </header>
       {items.length === 0 ? (
         <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-neutral-400 text-sm">
-          No sessions yet. Run{' '}
+          Sem sessões ainda. Rode{' '}
           <code className="bg-neutral-800 px-1.5 py-0.5 rounded">
             pnpm ingest
           </code>
@@ -48,7 +48,7 @@ export default async function SessionsPage() {
                     <div className="flex items-center gap-6 text-sm shrink-0 tabular-nums">
                       <span>{fmtUsd(s.totalCostUsd)}</span>
                       <span className="text-neutral-500">
-                        {s.turnCount} turns
+                        {s.turnCount} turnos
                       </span>
                       {s.avgRating !== null && (
                         <span className="text-neutral-400">

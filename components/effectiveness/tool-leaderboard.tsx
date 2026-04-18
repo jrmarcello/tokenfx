@@ -4,7 +4,7 @@ import type { ToolLeaderboardItem } from '@/lib/queries/effectiveness';
 export function ToolLeaderboard({ items }: { items: ToolLeaderboardItem[] }) {
   if (items.length === 0) {
     return (
-      <p className="text-neutral-500 text-sm">No tool calls recorded.</p>
+      <p className="text-neutral-500 text-sm">Nenhuma chamada de ferramenta registrada.</p>
     );
   }
   return (
@@ -18,9 +18,9 @@ export function ToolLeaderboard({ items }: { items: ToolLeaderboardItem[] }) {
             >
               <span className="font-medium">{t.toolName}</span>
               <div className="flex items-center gap-6 tabular-nums text-neutral-400">
-                <span>{t.count} calls</span>
+                <span>{t.count} chamadas</span>
                 {t.errorCount > 0 && (
-                  <span className="text-red-400">{t.errorCount} errors</span>
+                  <span className="text-red-400">{t.errorCount} erros</span>
                 )}
               </div>
             </li>

@@ -31,7 +31,7 @@ export default async function SessionPage({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
         <Card className="bg-neutral-900 border-neutral-800">
           <CardContent className="p-4">
-            <div className="text-neutral-400 text-xs">Cost</div>
+            <div className="text-neutral-400 text-xs">Custo</div>
             <div className="text-xl font-semibold tabular-nums">
               {fmtUsd(session.totalCostUsd)}
             </div>
@@ -39,7 +39,7 @@ export default async function SessionPage({
         </Card>
         <Card className="bg-neutral-900 border-neutral-800">
           <CardContent className="p-4">
-            <div className="text-neutral-400 text-xs">Turns</div>
+            <div className="text-neutral-400 text-xs">Turnos</div>
             <div className="text-xl font-semibold">{session.turnCount}</div>
           </CardContent>
         </Card>
@@ -53,7 +53,7 @@ export default async function SessionPage({
         </Card>
         <Card className="bg-neutral-900 border-neutral-800">
           <CardContent className="p-4">
-            <div className="text-neutral-400 text-xs">Avg rating</div>
+            <div className="text-neutral-400 text-xs">Avaliação média</div>
             <div className="text-xl font-semibold">
               {fmtRating(session.avgRating)}
             </div>
@@ -62,8 +62,8 @@ export default async function SessionPage({
       </div>
 
       <div className="text-xs text-neutral-500 space-x-4">
-        <span>Started: {fmtDateTime(session.startedAt)}</span>
-        <span>Ended: {fmtDateTime(session.endedAt)}</span>
+        <span>Início: {fmtDateTime(session.startedAt)}</span>
+        <span>Fim: {fmtDateTime(session.endedAt)}</span>
         {session.gitBranch && (
           <span>
             Branch: <code className="text-neutral-400">{session.gitBranch}</code>

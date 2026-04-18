@@ -26,29 +26,29 @@ export default async function Home() {
   return (
     <section className="space-y-6">
       <header>
-        <h1 className="text-2xl font-semibold">Overview</h1>
-        <p className="text-sm text-neutral-400 mt-1">Last 30 days</p>
+        <h1 className="text-2xl font-semibold">Visão geral</h1>
+        <p className="text-sm text-neutral-400 mt-1">Últimos 30 dias</p>
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard
-          title="Total spend (30d)"
+          title="Custo total (30d)"
           value={fmtUsd(kpis.spend30d)}
-          hint={`Today: ${fmtUsd(kpis.spendToday)} — 7d: ${fmtUsd(kpis.spend7d)}`}
+          hint={`Hoje: ${fmtUsd(kpis.spendToday)} — 7d: ${fmtUsd(kpis.spend7d)}`}
         />
         <KpiCard title="Tokens (30d)" value={fmtCompact(kpis.tokens30d)} />
-        <KpiCard title="Cache hit ratio" value={fmtPct(kpis.cacheHitRatio30d)} />
-        <KpiCard title="Sessions (30d)" value={kpis.sessionCount30d} />
+        <KpiCard title="Taxa de cache hit" value={fmtPct(kpis.cacheHitRatio30d)} />
+        <KpiCard title="Sessões (30d)" value={kpis.sessionCount30d} />
       </div>
 
       {hasData ? (
         <>
           <section>
-            <h2 className="text-lg font-medium mb-3">Daily spend</h2>
+            <h2 className="text-lg font-medium mb-3">Custo diário</h2>
             <TrendChart data={daily} />
           </section>
           <section>
-            <h2 className="text-lg font-medium mb-3">Top sessions</h2>
+            <h2 className="text-lg font-medium mb-3">Sessões mais caras</h2>
             <TopSessions items={top} />
           </section>
         </>

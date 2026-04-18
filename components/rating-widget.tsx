@@ -28,7 +28,7 @@ export function RatingWidget({
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
       } catch (err) {
         setValue(initial);
-        setError(err instanceof Error ? err.message : 'Failed');
+        setError(err instanceof Error ? err.message : 'Falhou');
       }
     });
   }
@@ -36,7 +36,7 @@ export function RatingWidget({
   const base = 'text-xs px-2 py-1 rounded border transition';
   return (
     <div className="flex items-center gap-2 text-xs text-neutral-400">
-      <span>Rating:</span>
+      <span>Avaliação:</span>
       <button
         className={cn(
           base,
@@ -47,7 +47,7 @@ export function RatingWidget({
         onClick={() => setRating(1)}
         disabled={pending}
       >
-        Good
+        Bom
       </button>
       <button
         className={cn(
@@ -59,7 +59,7 @@ export function RatingWidget({
         onClick={() => setRating(0)}
         disabled={pending}
       >
-        Neutral
+        Neutro
       </button>
       <button
         className={cn(
@@ -71,7 +71,7 @@ export function RatingWidget({
         onClick={() => setRating(-1)}
         disabled={pending}
       >
-        Bad
+        Ruim
       </button>
       {error && <span className="text-red-400">{error}</span>}
     </div>

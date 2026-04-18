@@ -3,11 +3,13 @@ import { test, expect } from '@playwright/test';
 test.describe('smoke', () => {
   test('TC-E2E-01: home page loads with KPIs and data', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
-    await expect(page.getByText('Total spend (30d)')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Visão geral' })).toBeVisible();
+    await expect(page.getByText('Custo total (30d)')).toBeVisible();
     await expect(page.getByText('Tokens (30d)')).toBeVisible();
-    await expect(page.getByText('Cache hit ratio')).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Top sessions' })).toBeVisible();
+    await expect(page.getByText('Taxa de cache hit')).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'Sessões mais caras' }),
+    ).toBeVisible();
   });
 
   test('TC-E2E-02: drill-down shows transcript of a session', async ({ page }) => {
@@ -30,7 +32,7 @@ test.describe('smoke', () => {
     expect(warm.ok()).toBeTruthy();
 
     await page.goto('/sessions/e2e-1');
-    const goodButton = page.getByRole('button', { name: 'Good' }).first();
+    const goodButton = page.getByRole('button', { name: 'Bom' }).first();
 
     // Wait for the POST to resolve so the test doesn't race the fetch.
     const [response] = await Promise.all([
@@ -47,7 +49,7 @@ test.describe('smoke', () => {
 
     // Persistence: reload and confirm the rating survived.
     await page.reload();
-    const afterReload = page.getByRole('button', { name: 'Good' }).first();
+    const afterReload = page.getByRole('button', { name: 'Bom' }).first();
     await expect(afterReload).toHaveClass(/emerald/);
   });
 });

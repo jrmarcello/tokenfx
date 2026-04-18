@@ -4,9 +4,9 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/cn';
 
 const links = [
-  { href: '/', label: 'Overview' },
-  { href: '/sessions', label: 'Sessions' },
-  { href: '/effectiveness', label: 'Effectiveness' },
+  { href: '/', label: 'Visão geral' },
+  { href: '/sessions', label: 'Sessões' },
+  { href: '/effectiveness', label: 'Efetividade' },
 ];
 
 export function Nav() {

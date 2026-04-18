@@ -17,7 +17,7 @@ const COMPACT = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 1,
 });
 
-const DATE = new Intl.DateTimeFormat('en-US', {
+const DATE = new Intl.DateTimeFormat('pt-BR', {
   month: 'short',
   day: 'numeric',
   year: 'numeric',

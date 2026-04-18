@@ -18,7 +18,7 @@ function fmtTime(ms: number) {
 export function TranscriptViewer({ turns }: { turns: TurnDetail[] }) {
   if (turns.length === 0) {
     return (
-      <p className="text-neutral-500 text-sm">No turns in this session.</p>
+      <p className="text-neutral-500 text-sm">Sem turnos nesta sessão.</p>
     );
   }
   return (
@@ -37,7 +37,7 @@ export function TranscriptViewer({ turns }: { turns: TurnDetail[] }) {
             <div className="flex items-center gap-4 tabular-nums">
               <span>{fmtUsd(t.costUsd)}</span>
               <span>
-                {fmtNum(t.inputTokens)} in / {fmtNum(t.outputTokens)} out /{' '}
+                {fmtNum(t.inputTokens)} entrada / {fmtNum(t.outputTokens)} saída /{' '}
                 {fmtNum(t.cacheReadTokens)} cache
               </span>
             </div>
@@ -45,7 +45,7 @@ export function TranscriptViewer({ turns }: { turns: TurnDetail[] }) {
           <div className="p-4 space-y-3 text-sm">
             {t.userPrompt && (
               <div>
-                <div className="text-xs text-neutral-500 mb-1">User</div>
+                <div className="text-xs text-neutral-500 mb-1">Usuário</div>
                 <pre className="whitespace-pre-wrap rounded bg-neutral-950 border border-neutral-800 p-3 text-neutral-200">
                   {t.userPrompt}
                 </pre>
@@ -53,7 +53,7 @@ export function TranscriptViewer({ turns }: { turns: TurnDetail[] }) {
             )}
             {t.assistantText && (
               <div>
-                <div className="text-xs text-neutral-500 mb-1">Assistant</div>
+                <div className="text-xs text-neutral-500 mb-1">Assistente</div>
                 <pre className="whitespace-pre-wrap rounded bg-neutral-950 border border-neutral-800 p-3 text-neutral-100">
                   {t.assistantText}
                 </pre>
@@ -61,7 +61,7 @@ export function TranscriptViewer({ turns }: { turns: TurnDetail[] }) {
             )}
             {t.toolCalls.length > 0 && (
               <div>
-                <div className="text-xs text-neutral-500 mb-1">Tool calls</div>
+                <div className="text-xs text-neutral-500 mb-1">Chamadas de ferramentas</div>
                 <ul className="space-y-2">
                   {t.toolCalls.map((tc) => (
                     <li
@@ -78,7 +78,7 @@ export function TranscriptViewer({ turns }: { turns: TurnDetail[] }) {
                         </summary>
                         <div className="mt-2 space-y-2">
                           <div>
-                            <div className="text-xs text-neutral-500">Input</div>
+                            <div className="text-xs text-neutral-500">Entrada</div>
                             <pre className="whitespace-pre-wrap text-xs bg-neutral-950 border border-neutral-800 rounded p-2">
                               {tc.inputJson}
                             </pre>
@@ -86,9 +86,9 @@ export function TranscriptViewer({ turns }: { turns: TurnDetail[] }) {
                           {tc.resultJson !== null && (
                             <div>
                               <div className="text-xs text-neutral-500">
-                                Result{' '}
+                                Resultado{' '}
                                 {tc.resultIsError && (
-                                  <span className="text-red-400">(error)</span>
+                                  <span className="text-red-400">(erro)</span>
                                 )}
                               </div>
                               <pre className="whitespace-pre-wrap text-xs bg-neutral-950 border border-neutral-800 rounded p-2">

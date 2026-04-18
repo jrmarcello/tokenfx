@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Token Effectiveness",
-  description: "Personal Claude Code token-effectiveness dashboard",
+  title: "Efetividade de Tokens",
+  description: "Dashboard pessoal de efetividade de tokens do Claude Code",
 };
 
 export default function RootLayout({
@@ -25,7 +25,7 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
+      lang="pt-BR"
       className={`${geistSans.variable} ${geistMono.variable}`}
     >
       <body className="bg-neutral-950 text-neutral-100 antialiased min-h-screen">
