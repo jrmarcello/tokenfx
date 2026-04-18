@@ -1,5 +1,4 @@
 import { getDb } from '@/lib/db/client';
-import { migrate } from '@/lib/db/migrate';
 import { KpiCard } from '@/components/kpi-card';
 import { TrendChart } from '@/components/overview/trend-chart';
 import { TopSessions } from '@/components/overview/top-sessions';
@@ -9,33 +8,13 @@ import {
   getDailySpend,
   getTopSessions,
 } from '@/lib/queries/overview';
+import { fmtUsd, fmtCompact, fmtPct } from '@/lib/fmt';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-function fmtUsd(n: number): string {
-  return n.toLocaleString('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
-function fmtCompact(n: number): string {
-  return Intl.NumberFormat('en-US', {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(n);
-}
-
-function fmtPct(n: number): string {
-  return `${(n * 100).toFixed(1)}%`;
-}
-
 export default async function Home() {
   const db = getDb();
-  migrate(db);
   const kpis = getOverviewKpis(db);
   const daily = getDailySpend(db, 30);
   const top = getTopSessions(db, 5, 30);

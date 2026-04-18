@@ -1,22 +1,14 @@
 import Link from 'next/link';
 import { getDb } from '@/lib/db/client';
-import { migrate } from '@/lib/db/migrate';
 import { listSessions } from '@/lib/queries/session';
 import { Card, CardContent } from '@/components/ui/card';
+import { fmtUsd, fmtDateTime } from '@/lib/fmt';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-function fmtUsd(n: number) {
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
-}
-function fmtDate(ms: number) {
-  return new Date(ms).toLocaleString();
-}
-
 export default async function SessionsPage() {
   const db = getDb();
-  migrate(db);
   const items = listSessions(db, 100);
 
   return (
@@ -48,7 +40,7 @@ export default async function SessionsPage() {
                         {s.project}
                       </div>
                       <div className="text-xs text-neutral-500 truncate">
-                        {s.id} • {fmtDate(s.startedAt)}
+                        {s.id} • {fmtDateTime(s.startedAt)}
                       </div>
                     </div>
                     <div className="flex items-center gap-6 text-sm shrink-0 tabular-nums">

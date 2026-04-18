@@ -1,5 +1,4 @@
 import { getDb } from '@/lib/db/client';
-import { migrate } from '@/lib/db/migrate';
 import { KpiCard } from '@/components/kpi-card';
 import { CostPerTurnHistogram } from '@/components/effectiveness/cost-per-turn-histogram';
 import { RatioTrend } from '@/components/effectiveness/ratio-trend';
@@ -12,23 +11,13 @@ import {
   getSessionScores,
 } from '@/lib/queries/effectiveness';
 import { bucketCostPerTurn } from '@/lib/analytics/scoring';
+import { fmtScore, fmtRatio, fmtPct } from '@/lib/fmt';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-function fmtScore(n: number | null) {
-  return n === null ? '—' : n.toFixed(1);
-}
-function fmtRatio(n: number | null) {
-  return n === null ? '—' : n.toFixed(2);
-}
-function fmtPct(n: number | null) {
-  return n === null ? '—' : `${(n * 100).toFixed(1)}%`;
-}
-
 export default async function EffectivenessPage() {
   const db = getDb();
-  migrate(db);
   const kpis = getEffectivenessKpis(db, 30);
   const weekly = getWeeklyRatio(db, 12);
   const costs = getCostPerTurnValues(db, 30);

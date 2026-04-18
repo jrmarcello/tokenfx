@@ -1,3 +1,5 @@
+import type { Result } from '@/lib/result';
+
 export type OtelScrape = {
   metricName: string;
   labels: Record<string, string>;
@@ -142,7 +144,7 @@ export function parsePrometheusText(text: string, scrapedAt: number): OtelScrape
 export async function fetchAndParse(
   url: string,
   fetchFn: typeof fetch = globalThis.fetch
-): Promise<{ ok: true; value: OtelScrape[] } | { ok: false; error: Error }> {
+): Promise<Result<OtelScrape[]>> {
   try {
     const response = await fetchFn(url);
     if (!response.ok) {

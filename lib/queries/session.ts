@@ -56,6 +56,9 @@ export type SessionListItem = {
 type PreparedSet = {
   getSession: import('better-sqlite3').Statement<[string]>;
   getTurns: import('better-sqlite3').Statement<[string]>;
+  getToolCallsBySession: import('better-sqlite3').Statement<[string]>;
+  getRatingsBySession: import('better-sqlite3').Statement<[string]>;
+  getSessionIdForTurn: import('better-sqlite3').Statement<[string]>;
   upsertRating: import('better-sqlite3').Statement<[string, number, string | null, number]>;
   listSessions: import('better-sqlite3').Statement<[number]>;
 };
@@ -82,6 +85,21 @@ function getPrepared(db: DB): PreparedSet {
        FROM turns
        WHERE session_id = ?
        ORDER BY sequence ASC`
+    ),
+    getToolCallsBySession: db.prepare(
+      `SELECT tc.id, tc.turn_id, tc.tool_name, tc.input_json, tc.result_json, tc.result_is_error
+       FROM tool_calls tc
+       JOIN turns t ON t.id = tc.turn_id
+       WHERE t.session_id = ?`
+    ),
+    getRatingsBySession: db.prepare(
+      `SELECT r.turn_id, r.rating, r.note, r.rated_at
+       FROM ratings r
+       JOIN turns t ON t.id = r.turn_id
+       WHERE t.session_id = ?`
+    ),
+    getSessionIdForTurn: db.prepare(
+      `SELECT session_id FROM turns WHERE id = ?`
     ),
     upsertRating: db.prepare(
       `INSERT INTO ratings (turn_id, rating, note, rated_at)
@@ -192,22 +210,8 @@ export function getTurns(db: DB, sessionId: string): TurnDetail[] {
   const turnRows = p.getTurns.all(sessionId) as TurnRow[];
   if (turnRows.length === 0) return [];
 
-  const turnIds = turnRows.map((t) => t.id);
-  const placeholders = turnIds.map(() => '?').join(',');
-  const toolCallRows = db
-    .prepare(
-      `SELECT id, turn_id, tool_name, input_json, result_json, result_is_error
-       FROM tool_calls
-       WHERE turn_id IN (${placeholders})`
-    )
-    .all(...turnIds) as ToolCallRow[];
-  const ratingRows = db
-    .prepare(
-      `SELECT turn_id, rating, note, rated_at
-       FROM ratings
-       WHERE turn_id IN (${placeholders})`
-    )
-    .all(...turnIds) as RatingRow[];
+  const toolCallRows = p.getToolCallsBySession.all(sessionId) as ToolCallRow[];
+  const ratingRows = p.getRatingsBySession.all(sessionId) as RatingRow[];
 
   const toolCallsByTurn = new Map<string, TurnDetail['toolCalls']>();
   for (const tc of toolCallRows) {
@@ -258,6 +262,14 @@ export function upsertRating(
 ): void {
   const p = getPrepared(db);
   p.upsertRating.run(turnId, value, note, Date.now());
+}
+
+export function getSessionIdForTurn(db: DB, turnId: string): string | null {
+  const p = getPrepared(db);
+  const row = p.getSessionIdForTurn.get(turnId) as
+    | { session_id: string }
+    | undefined;
+  return row?.session_id ?? null;
 }
 
 export function listSessions(db: DB, limit: number): SessionListItem[] {

@@ -1,12 +1,6 @@
 import { z } from 'zod';
 
-/**
- * Result type mirrors `lib/db/types.ts`. Intentionally redefined here so this
- * parser stays independent of the database module.
- */
-export type Result<T, E = Error> =
-  | { ok: true; value: T }
-  | { ok: false; error: E };
+export type { Result } from '@/lib/result';
 
 // --------- Boundary schemas (Zod) -----------------------------------------
 

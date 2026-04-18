@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { correctionPenalties } from '@/lib/analytics/scoring';
 import {
   AssistantMessageSchema,
   TranscriptLineSchema,
@@ -212,28 +213,13 @@ export function parseTranscriptString(
   };
 }
 
-const STRONG_CORRECTION =
-  /\b(n[aã]o|don'?t|stop|wrong|errou|errado|na verdade|actually that'?s wrong|revert|undo)\b/i;
-const MILD_CORRECTION = /\b(actually|hmm|wait|uhh|na real|reconsidera|reconsider)\b/i;
-
 /**
- * For each assistant turn `i`, if turn `i+1`'s userPrompt indicates a correction,
- * penalize turn `i`. Strong corrections => 1.0, mild => 0.5. Returns only
- * penalized turns.
+ * Re-export of the correction heuristic from the analytics module, kept under
+ * its legacy name so transcript-layer callers don't need to reach into
+ * analytics. The regex and scoring logic live in `lib/analytics/scoring.ts`.
  */
 export function detectCorrectionPenalty(
   turns: ParsedTurn[],
 ): Map<string, number> {
-  const out = new Map<string, number>();
-  for (let i = 0; i < turns.length - 1; i++) {
-    const next = turns[i + 1];
-    const prompt = next.userPrompt;
-    if (!prompt) continue;
-    if (STRONG_CORRECTION.test(prompt)) {
-      out.set(turns[i].id, 1.0);
-    } else if (MILD_CORRECTION.test(prompt)) {
-      out.set(turns[i].id, 0.5);
-    }
-  }
-  return out;
+  return correctionPenalties(turns);
 }

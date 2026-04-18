@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getDb } from '@/lib/db/client';
-import { migrate } from '@/lib/db/migrate';
-import { upsertRating } from '@/lib/queries/session';
+import { upsertRating, getSessionIdForTurn } from '@/lib/queries/session';
 import { revalidatePath } from 'next/cache';
 
 export const runtime = 'nodejs';
@@ -14,7 +13,7 @@ const BodySchema = z.object({
   note: z.string().nullable().optional(),
 });
 
-export async function POST(request: Request) {
+export async function POST(request: Request): Promise<NextResponse> {
   const json = await request.json().catch(() => null);
   const parsed = BodySchema.safeParse(json);
   if (!parsed.success) {
@@ -24,14 +23,16 @@ export async function POST(request: Request) {
     );
   }
   const db = getDb();
-  migrate(db);
   upsertRating(
     db,
     parsed.data.turnId,
     parsed.data.rating,
     parsed.data.note ?? null
   );
-  revalidatePath(`/sessions/${parsed.data.turnId}`);
+  const sessionId = getSessionIdForTurn(db, parsed.data.turnId);
+  if (sessionId) {
+    revalidatePath(`/sessions/${sessionId}`);
+  }
   revalidatePath('/');
   return NextResponse.json({ ok: true });
 }
