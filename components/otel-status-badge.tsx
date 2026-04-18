@@ -16,7 +16,11 @@ export async function OtelStatusBadge() {
         )}
       />
       <span>OTEL {active ? 'on' : 'off'}</span>
-      <InfoTooltip label={active ? 'OTEL ativo' : 'OTEL inativo'}>
+      <InfoTooltip
+        label={active ? 'OTEL ativo' : 'OTEL inativo'}
+        side="bottom"
+        align="end"
+      >
         {active ? (
           <>
             Claude Code está exportando métricas Prometheus em{' '}

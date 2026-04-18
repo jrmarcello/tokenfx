@@ -1,22 +1,38 @@
 import { cn } from '@/lib/cn';
 
+type Side = 'top' | 'bottom';
+type Align = 'start' | 'center' | 'end';
+
 /**
  * Hover/focus-revealed explanatory tooltip.
  *
  * CSS-only (no client-side JS, no Radix) — the popup visibility is
- * controlled purely via Tailwind `group-hover` / `group-focus-within`
- * on a wrapping span. Accessible: the trigger is a keyboard-focusable
- * `<button>`; keyboard users see the same popup when they tab to it.
+ * controlled via Tailwind `group-hover` / `group-focus-within` on a
+ * wrapping span. Placement is static: pick `side` ('top' | 'bottom')
+ * and `align` ('start' | 'center' | 'end') at the call site based on
+ * where the trigger sits in the layout, since there's no JS to flip
+ * it automatically when the popup would overflow the viewport.
  */
 export function InfoTooltip({
   children,
   label = 'Mais informação',
   className,
+  side = 'top',
+  align = 'center',
 }: {
   children: React.ReactNode;
   label?: string;
   className?: string;
+  side?: Side;
+  align?: Align;
 }) {
+  const sideClass = side === 'top' ? 'bottom-full mb-2' : 'top-full mt-2';
+  const alignClass =
+    align === 'center'
+      ? 'left-1/2 -translate-x-1/2'
+      : align === 'start'
+        ? 'left-0'
+        : 'right-0';
   return (
     <span className={cn('relative group inline-flex items-center', className)}>
       <button
@@ -28,7 +44,11 @@ export function InfoTooltip({
       </button>
       <span
         role="tooltip"
-        className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-xs font-normal leading-snug text-neutral-200 shadow-xl shadow-black/40 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100"
+        className={cn(
+          'pointer-events-none absolute z-50 w-64 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-xs font-normal leading-snug text-neutral-200 opacity-0 shadow-xl shadow-black/40 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100',
+          sideClass,
+          alignClass,
+        )}
       >
         {children}
       </span>
