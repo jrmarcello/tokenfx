@@ -161,8 +161,10 @@ describe('effectiveness queries', () => {
     it('getEffectivenessKpis returns weighted ratios and rated session count', () => {
       const kpis = getEffectivenessKpis(db, 30);
       // cache_hit_ratio: s1 = 500/1500, s2 = 1000/3000 = 0.333. Both equal => avg ~0.333
-      expect(kpis.avgCacheHitRatio).not.toBeNull();
-      expect(kpis.avgCacheHitRatio!).toBeGreaterThan(0);
+      const ratio = kpis.avgCacheHitRatio;
+      expect(ratio).not.toBeNull();
+      if (ratio === null) throw new Error('avgCacheHitRatio null');
+      expect(ratio).toBeGreaterThan(0);
       // output/input: s1 ratio = 2.0, tokens weight = 3000; s2 ratio = 0.5, weight = 3000.
       // Weighted = (2*3000 + 0.5*3000) / 6000 = 1.25
       expect(kpis.avgOutputInputRatio).toBeCloseTo(1.25, 5);
@@ -204,10 +206,9 @@ describe('effectiveness queries', () => {
       expect(scores.length).toBe(2);
       const s1 = scores.find((s) => s.sessionId === 's1');
       const s2 = scores.find((s) => s.sessionId === 's2');
-      expect(s1).toBeDefined();
-      expect(s2).toBeDefined();
-      expect(s1!.score).toBeGreaterThanOrEqual(0);
-      expect(s1!.score).toBeLessThanOrEqual(100);
+      if (!s1 || !s2) throw new Error('s1/s2 not found in scores');
+      expect(s1.score).toBeGreaterThanOrEqual(0);
+      expect(s1.score).toBeLessThanOrEqual(100);
       // s1 has a correction on t1 (1 penalty / 3 turns ≈ 0.33), s2 has none.
       // With s1's rating=1 but corrections vs s2 rating=null no corrections,
       // both scores are valid floats. Just assert presence.

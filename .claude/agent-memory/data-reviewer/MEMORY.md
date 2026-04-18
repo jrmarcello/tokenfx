@@ -1,0 +1,1 @@
+- [TokenFx schema overview](project_schema_overview.md) — SQLite schema, PRAGMA config, idempotency, reconcile patterns and known gaps

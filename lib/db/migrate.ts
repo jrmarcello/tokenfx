@@ -8,6 +8,8 @@ function resolveSchemaPath(): string {
   // Support both CJS (__dirname) and ESM (import.meta.url) environments.
   // Vitest runs TS via ESM by default.
   try {
+    // ESM: import.meta.url exists; CJS: it doesn't — the double cast avoids
+    // tsconfig lib differences between the Next.js build and the tsx script.
     const metaUrl: string | undefined = (import.meta as unknown as { url?: string }).url;
     if (metaUrl) {
       const here = path.dirname(fileURLToPath(metaUrl));

@@ -40,12 +40,18 @@ function seedSession(
   );
 }
 
+// Monotonic scraped_at so repeat inserts for the same series don't collide
+// with the UNIQUE(metric_name, labels_json, scraped_at) constraint. Each call
+// yields a timestamp strictly greater than the previous one.
+let nextScrapedAt = Date.now();
+const uniqueScrapedAt = (): number => ++nextScrapedAt;
+
 function insertDecision(
   db: DB,
   sessionId: string,
   decision: 'accept' | 'reject',
   value: number,
-  scrapedAt: number = Date.now(),
+  scrapedAt: number = uniqueScrapedAt(),
 ): void {
   db.prepare(
     `INSERT INTO otel_scrapes (scraped_at, metric_name, labels_json, value)
@@ -62,7 +68,7 @@ function insertLines(
   db.prepare(
     `INSERT INTO otel_scrapes (scraped_at, metric_name, labels_json, value)
      VALUES (?, 'claude_code_lines_of_code_count_total', ?, ?)`,
-  ).run(Date.now(), JSON.stringify({ session_id: sessionId, type }), value);
+  ).run(uniqueScrapedAt(), JSON.stringify({ session_id: sessionId, type }), value);
 }
 
 function insertScalar(
@@ -74,7 +80,7 @@ function insertScalar(
   db.prepare(
     `INSERT INTO otel_scrapes (scraped_at, metric_name, labels_json, value)
      VALUES (?, ?, ?, ?)`,
-  ).run(Date.now(), metric, JSON.stringify({ session_id: sessionId }), value);
+  ).run(uniqueScrapedAt(), metric, JSON.stringify({ session_id: sessionId }), value);
 }
 
 describe('getOtelInsights', () => {

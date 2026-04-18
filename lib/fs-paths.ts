@@ -40,6 +40,16 @@ export function resolveWithinClaudeProjects(p: string): string {
 
 export async function listTranscriptFiles(root?: string): Promise<string[]> {
   const base = root ?? claudeProjectsRoot();
+  // Enumeration follows symlinks by default, so a symlinked directory
+  // inside ~/.claude/projects pointing elsewhere would surface .jsonl
+  // files outside the allowed root. Re-validate every candidate with
+  // resolveWithinClaudeProjects (which uses realpath) and drop escapes.
+  let realBase = base;
+  try {
+    realBase = fs.realpathSync(base);
+  } catch {
+    // Root may not exist — listing will return [] below.
+  }
   try {
     const entries = await fs.promises.readdir(base, {
       recursive: true,
@@ -55,7 +65,16 @@ export async function listTranscriptFiles(root?: string): Promise<string[]> {
         (entry as unknown as { parentPath?: string; path?: string }).parentPath ??
         (entry as unknown as { path?: string }).path ??
         base;
-      files.push(path.resolve(parent, entry.name));
+      const candidate = path.resolve(parent, entry.name);
+      try {
+        const real = fs.realpathSync(candidate);
+        if (real !== realBase && !real.startsWith(realBase + path.sep)) {
+          continue; // symlink escapes the root — drop silently
+        }
+        files.push(real);
+      } catch {
+        // racy: file vanished between readdir and realpath; ignore
+      }
     }
     files.sort();
     return files;

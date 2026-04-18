@@ -1,4 +1,5 @@
-PRAGMA foreign_keys = ON;
+-- foreign_keys is set per-connection in lib/db/client.ts (PRAGMA inside a
+-- transactioned db.exec() is a no-op). Do not re-add here.
 
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   source_file TEXT NOT NULL,
   ingested_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at);
 
 CREATE TABLE IF NOT EXISTS turns (
   id TEXT PRIMARY KEY,
@@ -61,7 +63,8 @@ CREATE TABLE IF NOT EXISTS otel_scrapes (
   scraped_at INTEGER NOT NULL,
   metric_name TEXT NOT NULL,
   labels_json TEXT NOT NULL,
-  value REAL NOT NULL
+  value REAL NOT NULL,
+  UNIQUE(metric_name, labels_json, scraped_at)
 );
 CREATE INDEX IF NOT EXISTS idx_otel_scrape_metric_time ON otel_scrapes(metric_name, scraped_at);
 

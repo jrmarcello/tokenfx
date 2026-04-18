@@ -20,6 +20,9 @@ export function openDatabase(dbPath?: string): DB {
   db.pragma('foreign_keys = ON');
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
+  // Wait up to 5s on SQLITE_BUSY before failing. The dev server and
+  // `pnpm ingest` can run concurrently and WAL writers may briefly lock.
+  db.pragma('busy_timeout = 5000');
   return db;
 }
 

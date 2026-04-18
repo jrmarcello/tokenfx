@@ -1,5 +1,6 @@
+import type { Statement } from 'better-sqlite3';
 import { statSync } from 'node:fs';
-import { getDb } from '@/lib/db/client';
+import { getDb, type DB } from '@/lib/db/client';
 import { listTranscriptFiles } from '@/lib/fs-paths';
 import { ingestAll, type IngestSummary } from '@/lib/ingest/writer';
 import { log } from '@/lib/logger';
@@ -12,6 +13,19 @@ import { log } from '@/lib/logger';
 const DEFAULT_OTEL_URL = 'http://localhost:9464/metrics';
 
 let inflight: Promise<IngestSummary | null> | null = null;
+
+type Prepared = { lastIngest: Statement };
+const preparedCache = new WeakMap<DB, Prepared>();
+
+function getPrepared(db: DB): Prepared {
+  const existing = preparedCache.get(db);
+  if (existing) return existing;
+  const prepared: Prepared = {
+    lastIngest: db.prepare('SELECT MAX(ingested_at) AS last FROM sessions'),
+  };
+  preparedCache.set(db, prepared);
+  return prepared;
+}
 
 /**
  * Transparently re-ingest transcripts + OTEL metrics when the on-disk JSONL
@@ -54,9 +68,8 @@ async function run(): Promise<IngestSummary | null> {
       }
     }
 
-    const row = db
-      .prepare('SELECT MAX(ingested_at) AS last FROM sessions')
-      .get() as { last: number | null } | undefined;
+    const p = getPrepared(db);
+    const row = p.lastIngest.get() as { last: number | null } | undefined;
     const lastIngest = row?.last ?? 0;
 
     if (newestJsonl <= lastIngest) return null;

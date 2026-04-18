@@ -110,9 +110,13 @@ function getStatements(db: Database): Prepared {
       result_is_error = excluded.result_is_error
   `);
 
+  // Dedup natural key is (metric_name, labels_json, scraped_at). Repeated
+  // ingests of the same Prometheus scrape otherwise accumulate duplicate
+  // rows — the MAX aggregation in queries masks them, but the table grows.
   const insertOtel = db.prepare(`
     INSERT INTO otel_scrapes (scraped_at, metric_name, labels_json, value)
     VALUES (@scraped_at, @metric_name, @labels_json, @value)
+    ON CONFLICT(metric_name, labels_json, scraped_at) DO NOTHING
   `);
 
   cached = { insertSession, insertTurn, insertToolCall, insertOtel };

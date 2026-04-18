@@ -82,6 +82,8 @@ function getPrepared(db: DB): PreparedSet {
   const existing = cache.get(db);
   if (existing) return existing;
   const prepared: PreparedSet = {
+    // Param order: [subquery cutoff (ratedSessionCount), outer WHERE cutoff].
+    // Both bind the same value but the SQL has two distinct `?` placeholders.
     kpis: db.prepare(
       `SELECT
          AVG(v.cache_hit_ratio) AS avgCacheHitRatio,
@@ -160,6 +162,7 @@ function getPrepared(db: DB): PreparedSet {
 export function getEffectivenessKpis(db: DB, days: number): EffectivenessKpis {
   const p = getPrepared(db);
   const cutoff = Date.now() - days * DAY_MS;
+  // [subquery cutoff, outer WHERE cutoff] — see prepare above.
   const row = p.kpis.get(cutoff, cutoff) as KpiRow | undefined;
 
   const avgCacheHitRatio =

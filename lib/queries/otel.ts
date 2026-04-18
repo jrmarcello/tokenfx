@@ -1,3 +1,4 @@
+import type { Statement } from 'better-sqlite3';
 import type { DB } from '@/lib/db/client';
 
 /**
@@ -88,10 +89,118 @@ const LINES_SERIES_SQL = `
   GROUP BY session_id, type
 `;
 
-function hasAnyOtelScrapes(db: DB): boolean {
-  const row = db
-    .prepare('SELECT 1 FROM otel_scrapes LIMIT 1')
-    .get() as unknown;
+type PreparedSet = {
+  hasAnyScrape: Statement;
+  decisionWindow: Statement<[string, number]>;
+  linesWindow: Statement<[string, number]>;
+  scalarWindow: Statement<[string, number]>;
+  costInWindow: Statement<[number]>;
+  weeklyAcceptRate: Statement<[string, number]>;
+  sessionDecision: Statement<[string, string]>;
+  sessionLines: Statement<[string, string]>;
+  sessionScalar: Statement<[string, string]>;
+  acceptRatesBySession: Statement<[string, number]>;
+};
+
+const cache = new WeakMap<DB, PreparedSet>();
+
+function getPrepared(db: DB): PreparedSet {
+  const existing = cache.get(db);
+  if (existing) return existing;
+  const prepared: PreparedSet = {
+    hasAnyScrape: db.prepare('SELECT 1 FROM otel_scrapes LIMIT 1'),
+    decisionWindow: db.prepare(
+      `WITH d AS (${DECISION_SERIES_SQL})
+       SELECT
+         COALESCE(SUM(CASE WHEN decision = 'accept' THEN final_value ELSE 0 END), 0) AS accepts,
+         COALESCE(SUM(CASE WHEN decision = 'reject' THEN final_value ELSE 0 END), 0) AS rejects
+       FROM d
+       JOIN sessions s ON s.id = d.session_id
+       WHERE s.started_at >= ?`,
+    ),
+    linesWindow: db.prepare(
+      `WITH l AS (${LINES_SERIES_SQL})
+       SELECT
+         COALESCE(SUM(CASE WHEN type = 'added' THEN final_value ELSE 0 END), 0) AS added,
+         COALESCE(SUM(CASE WHEN type = 'removed' THEN final_value ELSE 0 END), 0) AS removed
+       FROM l
+       JOIN sessions s ON s.id = l.session_id
+       WHERE s.started_at >= ?`,
+    ),
+    scalarWindow: db.prepare(
+      `SELECT COALESCE(SUM(max_val), 0) AS v FROM (
+         SELECT MAX(value) AS max_val
+         FROM otel_scrapes o
+         JOIN sessions s
+           ON s.id = json_extract(o.labels_json, '$.session_id')
+         WHERE o.metric_name = ?
+           AND s.started_at >= ?
+         GROUP BY json_extract(o.labels_json, '$.session_id')
+       )`,
+    ),
+    costInWindow: db.prepare(
+      'SELECT COALESCE(SUM(total_cost_usd), 0) AS v FROM sessions WHERE started_at >= ?',
+    ),
+    weeklyAcceptRate: db.prepare(
+      `WITH d AS (${DECISION_SERIES_SQL})
+       SELECT
+         strftime('%Y-%W', s.started_at/1000, 'unixepoch', 'localtime') AS week,
+         COALESCE(SUM(CASE WHEN d.decision = 'accept' THEN d.final_value ELSE 0 END), 0) AS accepts,
+         COALESCE(SUM(CASE WHEN d.decision = 'reject' THEN d.final_value ELSE 0 END), 0) AS rejects
+       FROM d
+       JOIN sessions s ON s.id = d.session_id
+       WHERE s.started_at >= ?
+       GROUP BY week
+       ORDER BY week ASC`,
+    ),
+    sessionDecision: db.prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN json_extract(labels_json, '$.decision') = 'accept' THEN max_val ELSE 0 END), 0) AS accepts,
+         COALESCE(SUM(CASE WHEN json_extract(labels_json, '$.decision') = 'reject' THEN max_val ELSE 0 END), 0) AS rejects
+       FROM (
+         SELECT labels_json, MAX(value) AS max_val
+         FROM otel_scrapes
+         WHERE metric_name = ?
+           AND json_extract(labels_json, '$.session_id') = ?
+         GROUP BY json_extract(labels_json, '$.decision')
+       )`,
+    ),
+    sessionLines: db.prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN json_extract(labels_json, '$.type') = 'added' THEN max_val ELSE 0 END), 0) AS added,
+         COALESCE(SUM(CASE WHEN json_extract(labels_json, '$.type') = 'removed' THEN max_val ELSE 0 END), 0) AS removed
+       FROM (
+         SELECT labels_json, MAX(value) AS max_val
+         FROM otel_scrapes
+         WHERE metric_name = ?
+           AND json_extract(labels_json, '$.session_id') = ?
+         GROUP BY json_extract(labels_json, '$.type')
+       )`,
+    ),
+    sessionScalar: db.prepare(
+      `SELECT COALESCE(MAX(value), 0) AS v
+       FROM otel_scrapes
+       WHERE metric_name = ?
+         AND json_extract(labels_json, '$.session_id') = ?`,
+    ),
+    acceptRatesBySession: db.prepare(
+      `WITH d AS (${DECISION_SERIES_SQL})
+       SELECT
+         d.session_id AS sessionId,
+         COALESCE(SUM(CASE WHEN d.decision = 'accept' THEN d.final_value ELSE 0 END), 0) AS accepts,
+         COALESCE(SUM(CASE WHEN d.decision = 'reject' THEN d.final_value ELSE 0 END), 0) AS rejects
+       FROM d
+       JOIN sessions s ON s.id = d.session_id
+       WHERE s.started_at >= ?
+       GROUP BY d.session_id`,
+    ),
+  };
+  cache.set(db, prepared);
+  return prepared;
+}
+
+function hasAnyOtelScrapes(p: PreparedSet): boolean {
+  const row = p.hasAnyScrape.get() as unknown;
   return row !== undefined;
 }
 
@@ -114,48 +223,21 @@ export function getOtelInsights(db: DB, days: number): OtelInsights {
     totalActiveSeconds: 0,
     costPerLineOfCode: null,
   };
-  if (!hasAnyOtelScrapes(db)) return empty;
+  const p = getPrepared(db);
+  if (!hasAnyOtelScrapes(p)) return empty;
 
   const cutoff = Date.now() - days * DAY_MS;
 
-  const decisionRow = db
-    .prepare(
-      `WITH d AS (${DECISION_SERIES_SQL})
-       SELECT
-         COALESCE(SUM(CASE WHEN decision = 'accept' THEN final_value ELSE 0 END), 0) AS accepts,
-         COALESCE(SUM(CASE WHEN decision = 'reject' THEN final_value ELSE 0 END), 0) AS rejects
-       FROM d
-       JOIN sessions s ON s.id = d.session_id
-       WHERE s.started_at >= ?`,
-    )
-    .get(METRIC_DECISION, cutoff) as { accepts: number; rejects: number } | undefined;
+  const decisionRow = p.decisionWindow.get(METRIC_DECISION, cutoff) as
+    | { accepts: number; rejects: number }
+    | undefined;
 
-  const linesRow = db
-    .prepare(
-      `WITH l AS (${LINES_SERIES_SQL})
-       SELECT
-         COALESCE(SUM(CASE WHEN type = 'added' THEN final_value ELSE 0 END), 0) AS added,
-         COALESCE(SUM(CASE WHEN type = 'removed' THEN final_value ELSE 0 END), 0) AS removed
-       FROM l
-       JOIN sessions s ON s.id = l.session_id
-       WHERE s.started_at >= ?`,
-    )
-    .get(METRIC_LINES, cutoff) as { added: number; removed: number } | undefined;
+  const linesRow = p.linesWindow.get(METRIC_LINES, cutoff) as
+    | { added: number; removed: number }
+    | undefined;
 
   const scalar = (metric: string): number => {
-    const row = db
-      .prepare(
-        `SELECT COALESCE(SUM(max_val), 0) AS v FROM (
-           SELECT MAX(value) AS max_val
-           FROM otel_scrapes o
-           JOIN sessions s
-             ON s.id = json_extract(o.labels_json, '$.session_id')
-           WHERE o.metric_name = ?
-             AND s.started_at >= ?
-           GROUP BY json_extract(o.labels_json, '$.session_id')
-         )`,
-      )
-      .get(metric, cutoff) as NumRow | undefined;
+    const row = p.scalarWindow.get(metric, cutoff) as NumRow | undefined;
     return row?.v ?? 0;
   };
 
@@ -177,11 +259,7 @@ export function getOtelInsights(db: DB, days: number): OtelInsights {
   // rest of the dashboard.
   let costPerLineOfCode: number | null = null;
   if (totalLinesTouched > 0) {
-    const costRow = db
-      .prepare(
-        'SELECT COALESCE(SUM(total_cost_usd), 0) AS v FROM sessions WHERE started_at >= ?',
-      )
-      .get(cutoff) as NumRow | undefined;
+    const costRow = p.costInWindow.get(cutoff) as NumRow | undefined;
     const cost = costRow?.v ?? 0;
     costPerLineOfCode = cost / totalLinesTouched;
   }
@@ -215,22 +293,14 @@ export function getWeeklyAcceptRate(
   db: DB,
   weeks: number,
 ): WeeklyAcceptRatePoint[] {
-  if (!hasAnyOtelScrapes(db)) return [];
+  const p = getPrepared(db);
+  if (!hasAnyOtelScrapes(p)) return [];
   const cutoff = Date.now() - weeks * WEEK_MS;
-  const rows = db
-    .prepare(
-      `WITH d AS (${DECISION_SERIES_SQL})
-       SELECT
-         strftime('%Y-%W', s.started_at/1000, 'unixepoch', 'localtime') AS week,
-         COALESCE(SUM(CASE WHEN d.decision = 'accept' THEN d.final_value ELSE 0 END), 0) AS accepts,
-         COALESCE(SUM(CASE WHEN d.decision = 'reject' THEN d.final_value ELSE 0 END), 0) AS rejects
-       FROM d
-       JOIN sessions s ON s.id = d.session_id
-       WHERE s.started_at >= ?
-       GROUP BY week
-       ORDER BY week ASC`,
-    )
-    .all(METRIC_DECISION, cutoff) as Array<{ week: string; accepts: number; rejects: number }>;
+  const rows = p.weeklyAcceptRate.all(METRIC_DECISION, cutoff) as Array<{
+    week: string;
+    accepts: number;
+    rejects: number;
+  }>;
 
   return rows
     .filter((r) => r.accepts + r.rejects > 0)
@@ -261,51 +331,19 @@ export function getSessionOtelStats(
     activeSeconds: 0,
     commits: 0,
   };
-  if (!hasAnyOtelScrapes(db)) return empty;
+  const p = getPrepared(db);
+  if (!hasAnyOtelScrapes(p)) return empty;
 
-  const decisionRow = db
-    .prepare(
-      `SELECT
-         COALESCE(SUM(CASE WHEN json_extract(labels_json, '$.decision') = 'accept' THEN max_val ELSE 0 END), 0) AS accepts,
-         COALESCE(SUM(CASE WHEN json_extract(labels_json, '$.decision') = 'reject' THEN max_val ELSE 0 END), 0) AS rejects
-       FROM (
-         SELECT labels_json, MAX(value) AS max_val
-         FROM otel_scrapes
-         WHERE metric_name = ?
-           AND json_extract(labels_json, '$.session_id') = ?
-         GROUP BY json_extract(labels_json, '$.decision')
-       )`,
-    )
-    .get(METRIC_DECISION, sessionId) as
+  const decisionRow = p.sessionDecision.get(METRIC_DECISION, sessionId) as
     | { accepts: number; rejects: number }
     | undefined;
 
-  const linesRow = db
-    .prepare(
-      `SELECT
-         COALESCE(SUM(CASE WHEN json_extract(labels_json, '$.type') = 'added' THEN max_val ELSE 0 END), 0) AS added,
-         COALESCE(SUM(CASE WHEN json_extract(labels_json, '$.type') = 'removed' THEN max_val ELSE 0 END), 0) AS removed
-       FROM (
-         SELECT labels_json, MAX(value) AS max_val
-         FROM otel_scrapes
-         WHERE metric_name = ?
-           AND json_extract(labels_json, '$.session_id') = ?
-         GROUP BY json_extract(labels_json, '$.type')
-       )`,
-    )
-    .get(METRIC_LINES, sessionId) as
+  const linesRow = p.sessionLines.get(METRIC_LINES, sessionId) as
     | { added: number; removed: number }
     | undefined;
 
   const scalarForSession = (metric: string): number => {
-    const row = db
-      .prepare(
-        `SELECT COALESCE(MAX(value), 0) AS v
-         FROM otel_scrapes
-         WHERE metric_name = ?
-           AND json_extract(labels_json, '$.session_id') = ?`,
-      )
-      .get(metric, sessionId) as NumRow | undefined;
+    const row = p.sessionScalar.get(metric, sessionId) as NumRow | undefined;
     return row?.v ?? 0;
   };
 
@@ -347,21 +385,10 @@ export function getAcceptRatesBySession(
   days: number,
 ): Map<string, number> {
   const out = new Map<string, number>();
-  if (!hasAnyOtelScrapes(db)) return out;
+  const p = getPrepared(db);
+  if (!hasAnyOtelScrapes(p)) return out;
   const cutoff = Date.now() - days * DAY_MS;
-  const rows = db
-    .prepare(
-      `WITH d AS (${DECISION_SERIES_SQL})
-       SELECT
-         d.session_id AS sessionId,
-         COALESCE(SUM(CASE WHEN d.decision = 'accept' THEN d.final_value ELSE 0 END), 0) AS accepts,
-         COALESCE(SUM(CASE WHEN d.decision = 'reject' THEN d.final_value ELSE 0 END), 0) AS rejects
-       FROM d
-       JOIN sessions s ON s.id = d.session_id
-       WHERE s.started_at >= ?
-       GROUP BY d.session_id`,
-    )
-    .all(METRIC_DECISION, cutoff) as Array<{
+  const rows = p.acceptRatesBySession.all(METRIC_DECISION, cutoff) as Array<{
     sessionId: string;
     accepts: number;
     rejects: number;

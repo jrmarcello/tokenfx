@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { correctionPenalties } from '@/lib/analytics/scoring';
 import {
   AssistantMessageSchema,
@@ -11,6 +12,17 @@ import {
   type Result,
   type TranscriptLine,
 } from './types';
+
+// Local schema for the tool_result sub-shape of UserContentBlock. The union
+// in types.ts isn't a discriminatedUnion (the third passthrough arm accepts
+// any type:string), so TS can't narrow on block.type alone. safeParsing
+// here gives us typed access to tool_use_id/content/is_error without a cast.
+const ToolResultBlockSchema = z.object({
+  type: z.literal('tool_result'),
+  tool_use_id: z.string(),
+  content: z.unknown().optional(),
+  is_error: z.boolean().optional(),
+});
 
 type WarnFn = (msg: string) => void;
 const noopWarn: WarnFn = () => {};
@@ -91,18 +103,12 @@ export function parseTranscriptString(
     if (!msg.success) continue;
     if (typeof msg.data.content === 'string') continue;
     for (const block of msg.data.content) {
-      if (block.type === 'tool_result') {
-        const b = block as {
-          type: 'tool_result';
-          tool_use_id: string;
-          content?: unknown;
-          is_error?: boolean;
-        };
-        toolResultMap.set(b.tool_use_id, {
-          content: b.content,
-          isError: b.is_error === true,
-        });
-      }
+      const tr = ToolResultBlockSchema.safeParse(block);
+      if (!tr.success) continue;
+      toolResultMap.set(tr.data.tool_use_id, {
+        content: tr.data.content,
+        isError: tr.data.is_error === true,
+      });
     }
   }
 

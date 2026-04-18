@@ -35,6 +35,8 @@ const cleanupDb = (dbPath: string) => {
   }
 };
 
+const LOOPBACK_HEADERS = { 'content-type': 'application/json', host: 'localhost' };
+
 describe('POST /api/ratings', () => {
   let tmpDb: string;
   let prevEnv: string | undefined;
@@ -59,13 +61,14 @@ describe('POST /api/ratings', () => {
     const res = await POST(
       new Request('http://localhost/api/ratings', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: LOOPBACK_HEADERS,
         body: JSON.stringify({ turnId: 'x' }),
       }),
     );
     expect(res.status).toBe(400);
-    const body = (await res.json()) as { ok: boolean };
-    expect(body.ok).toBe(false);
+    const body = (await res.json()) as { error?: { message: string; code?: string } };
+    expect(body.error?.message).toBe('invalid body');
+    expect(body.error?.code).toBe('VALIDATION_ERROR');
   });
 
   it('returns 400 for non-JSON body', async () => {
@@ -73,7 +76,7 @@ describe('POST /api/ratings', () => {
     const res = await POST(
       new Request('http://localhost/api/ratings', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: LOOPBACK_HEADERS,
         body: 'not json',
       }),
     );
@@ -85,11 +88,60 @@ describe('POST /api/ratings', () => {
     const res = await POST(
       new Request('http://localhost/api/ratings', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: LOOPBACK_HEADERS,
         body: JSON.stringify({ turnId: 'x', rating: 5 }),
       }),
     );
     expect(res.status).toBe(400);
+  });
+
+  it('returns 400 for note exceeding 4096 chars', async () => {
+    const { POST } = await import('@/app/api/ratings/route');
+    const res = await POST(
+      new Request('http://localhost/api/ratings', {
+        method: 'POST',
+        headers: LOOPBACK_HEADERS,
+        body: JSON.stringify({
+          turnId: 'x',
+          rating: 1,
+          note: 'a'.repeat(4097),
+        }),
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it.each(['evil.example.com', '192.168.1.100', ''])(
+    'returns 403 for non-loopback Host "%s"',
+    async (host) => {
+      const { POST } = await import('@/app/api/ratings/route');
+      const res = await POST(
+        new Request('http://example.com/api/ratings', {
+          method: 'POST',
+          headers: host
+            ? { 'content-type': 'application/json', host }
+            : { 'content-type': 'application/json' },
+          body: JSON.stringify({ turnId: 'x', rating: 1 }),
+        }),
+      );
+      expect(res.status).toBe(403);
+    },
+  );
+
+  it('returns 403 when Origin is not a loopback origin', async () => {
+    const { POST } = await import('@/app/api/ratings/route');
+    const res = await POST(
+      new Request('http://localhost/api/ratings', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          host: 'localhost',
+          origin: 'http://evil.example.com',
+        },
+        body: JSON.stringify({ turnId: 'x', rating: 1 }),
+      }),
+    );
+    expect(res.status).toBe(403);
   });
 
   it('persists a valid rating and is idempotent', async () => {
@@ -113,7 +165,7 @@ describe('POST /api/ratings', () => {
     const res1 = await POST(
       new Request('http://localhost/api/ratings', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: LOOPBACK_HEADERS,
         body: JSON.stringify({ turnId: 't-1', rating: 1 }),
       }),
     );
@@ -122,7 +174,7 @@ describe('POST /api/ratings', () => {
     const res2 = await POST(
       new Request('http://localhost/api/ratings', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: LOOPBACK_HEADERS,
         body: JSON.stringify({ turnId: 't-1', rating: -1 }),
       }),
     );
@@ -170,6 +222,17 @@ describe('POST /api/ingest', () => {
       new Request('http://example.com/api/ingest', {
         method: 'POST',
         headers: host ? { host } : {},
+      }),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 403 when Origin is not a loopback origin', async () => {
+    const { POST } = await import('@/app/api/ingest/route');
+    const res = await POST(
+      new Request('http://localhost/api/ingest', {
+        method: 'POST',
+        headers: { host: 'localhost', origin: 'http://evil.example.com' },
       }),
     );
     expect(res.status).toBe(403);

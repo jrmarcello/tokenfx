@@ -155,7 +155,7 @@ describe('writer', () => {
     expect(turnCount).toBe(3);
   });
 
-  it('TC-I-WRITER-04: otel scrapes are append-only', () => {
+  it('TC-I-WRITER-04: otel scrapes dedup on (metric, labels, scraped_at)', () => {
     const rows: OtelScrape[] = [
       {
         metricName: 'claude_tokens_total',
@@ -177,11 +177,26 @@ describe('writer', () => {
       },
     ];
     writeOtelScrapes(db, rows);
+    // Re-ingesting the same scrape is a no-op — the UNIQUE constraint on
+    // (metric_name, labels_json, scraped_at) + ON CONFLICT DO NOTHING keeps
+    // the table from growing unboundedly when the cron runs repeatedly.
     writeOtelScrapes(db, rows);
     const count = (
       db.prepare('SELECT COUNT(*) as c FROM otel_scrapes').get() as { c: number }
     ).c;
-    expect(count).toBe(6);
+    expect(count).toBe(3);
+
+    // A new scrape at a later timestamp IS appended.
+    const later: OtelScrape[] = rows.map((r) => ({
+      ...r,
+      scrapedAt: r.scrapedAt + 1,
+      value: r.value + 1,
+    }));
+    writeOtelScrapes(db, later);
+    const count2 = (
+      db.prepare('SELECT COUNT(*) as c FROM otel_scrapes').get() as { c: number }
+    ).c;
+    expect(count2).toBe(6);
   });
 });
 
