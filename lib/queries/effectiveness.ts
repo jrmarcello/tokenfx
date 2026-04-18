@@ -28,10 +28,6 @@ export type SessionScore = {
 
 const DAY_MS = 86_400_000;
 const WEEK_MS = 7 * DAY_MS;
-// Cap on how many top-cost sessions get scored per call. Query count is
-// constant (top-sessions + accept-rates + all-turns-for-those-sessions),
-// but the correction-penalty scan runs in JS over every turn of every
-// scored session. 50 is a comfortable upper bound for a personal dashboard.
 const MAX_SCORED_SESSIONS = 50;
 
 type KpiRow = {
