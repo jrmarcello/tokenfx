@@ -1,0 +1,1 @@
+- [Project state after batch-4](project_state.md) — Known architectural debt and issues discovered in the 2026-04-18 full review

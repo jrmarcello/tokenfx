@@ -1,0 +1,2 @@
+- [Project threat model](project_threat_model.md) — localhost-only dashboard; transcripts are user's own Claude Code history
+- [User language preference](user_language.md) — user prefers pt-BR for prose; technical terms stay in English
