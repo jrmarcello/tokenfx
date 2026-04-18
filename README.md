@@ -1,10 +1,16 @@
 # Token Effectiveness Dashboard
 
+![Next.js 16](https://img.shields.io/badge/Next.js-16-black?logo=nextdotjs&logoColor=white)
+![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)
+![Tailwind v4](https://img.shields.io/badge/Tailwind-v4-06b6d4?logo=tailwindcss&logoColor=white)
+![better-sqlite3](https://img.shields.io/badge/SQLite-better--sqlite3-003b57?logo=sqlite&logoColor=white)
+![Vitest 4](https://img.shields.io/badge/Vitest-4-6e9f18?logo=vitest&logoColor=white)
+![Playwright](https://img.shields.io/badge/Playwright-1.59-2ead33?logo=playwright&logoColor=white)
+![Localhost only](https://img.shields.io/badge/deployment-localhost--only-222)
+
 **Quanto o Claude Code te cobra é fácil. Saber se a conta valeu — não.**
 
 Esse dashboard ingere os transcripts locais do Claude Code (`~/.claude/projects/*.jsonl`) + métricas OTEL opcionais, guarda tudo num SQLite na sua máquina e te dá a foto completa: quanto você gastou, em qual projeto, em qual sessão, em qual turno — e quão efetivo foi cada um. Roda 100% local, sem cloud, sem telemetria pra fora.
-
-Stack: Next.js 16 · TypeScript estrito · better-sqlite3 · Recharts · Vitest · Playwright.
 
 ---
 
@@ -52,7 +58,7 @@ Três camadas:
 3. **Score composto de efetividade**: um número (0..100) por sessão, ponderando:
 
 | Sinal | Peso | Fonte |
-|---|---|---|
+| --- | --- | --- |
 | Razão output/input (clipped a 2.0) | 40% | Agregado da sessão |
 | Taxa de cache hit | 20% | Agregado da sessão |
 | Avaliação manual média | 30% | Tabela `ratings` |
@@ -86,22 +92,79 @@ Pronto. O dashboard detecta automaticamente na próxima ingestão (timeout de 1s
 OTEL_SCRAPE_URL=http://localhost:XXXX/metrics pnpm ingest
 ```
 
+No canto superior direito do dashboard, o badge **OTEL on/off** reflete o estado atual (cache de 60s). Verde + `on` = métricas estão sendo ingeridas; cinza + `off` = só transcripts.
+
 ### Como a ingestão permanece idempotente
 
-Chave natural: `session_id` (UUID da sessão do Claude Code). Writer usa `INSERT ... ON CONFLICT(id) DO UPDATE` em sessions/turns/tool_calls, tudo dentro de `db.transaction(...)`. Re-ingerir o mesmo arquivo — ou a mesma sessão vinda de arquivos diferentes — merge sem duplicar. Ratings nunca são tocadas pelo writer.
+**Sim, `pnpm ingest` é seguro de rodar quantas vezes você quiser.** Três camadas garantem isso:
+
+1. **Chave natural `session_id`** (UUID emitido pelo Claude Code): writer usa `INSERT ... ON CONFLICT(id) DO UPDATE` em sessions/turns/tool_calls. Re-ingerir o mesmo arquivo atualiza em vez de duplicar.
+2. **Reconciliação pós-write**: depois de qualquer ingestão, as sequences e rollups da session são recalculados a partir das linhas de turnos reais — então sessões que ficam espalhadas em múltiplos `.jsonl` (sub-agents, rotação de transcript) terminam com `turn_count`, `total_cost_usd` e `started_at/ended_at` sempre coerentes com o estado autoritativo.
+3. **Transações atômicas**: writes múltiplos rodam dentro de `db.transaction(fn)` — se algo falhar no meio, nada parcial fica no DB.
+
+Ratings manuais **nunca** são tocadas pela ingestão — é seu dado mais precioso.
+
+Não-idempotente por design: `otel_scrapes` é append-only (é um log temporal; cada scrape é uma nova linha).
+
+### Como avaliar um turno (Bom / Neutro / Ruim)
+
+Avaliação manual é o sinal mais forte do score composto (30% do peso). Critérios objetivos:
+
+**Bom (+1)** — entregou. Use quando:
+- O turno produziu o que você pediu e você usou o resultado sem reescrever
+- Tool calls foram precisos e sucederam (edits aplicados, comandos OK)
+- Resolveu rápido, sem rodeio desnecessário
+- O próximo turno seu NÃO começou com correção ("não, isso tá errado")
+
+**Neutro (0)** — meio do caminho. Use quando:
+- Tecnicamente correto mas precisou pequeno ajuste no follow-up
+- Respondeu parcialmente — cobriu o principal, deixou lacuna
+- Verbose demais pra uma task simples
+- Cache miss ou ineficiência óbvia mas sem impacto de qualidade
+
+**Ruim (-1)** — atrapalhou. Use quando:
+- Alucinou (API que não existe, assinatura errada)
+- Tool calls desnecessários ou que falharam em cadeia
+- Ignorou instrução explícita do prompt
+- Forçou retrabalho ("deixa, eu faço manual")
+- Causou regressão (quebrou algo que funcionava)
+
+Regra prática: se você se lembra do turno **com frustração**, é Ruim. Se lembra **feliz de ter economizado tempo**, é Bom. Neutro é tudo no meio.
 
 ### A heurística de correção
 
-[`lib/analytics/scoring.ts`](lib/analytics/scoring.ts) roda duas regex bilíngues no *próximo* prompt do usuário:
+[`lib/analytics/scoring.ts`](lib/analytics/scoring.ts) roda duas regex bilíngues (pt + en) no *próximo* prompt do usuário. Vocabulário curado pra minimizar falso-positivo:
 
-- **Forte (penalidade 1.0)** — `não`, `errou`, `errado`, `na verdade`, `don't`, `stop`, `wrong`, `revert`, `undo`
-- **Média (penalidade 0.5)** — `actually`, `hmm`, `wait`, `uhh`, `na real`, `reconsidera`, `reconsider`
+- **Forte (penalidade 1.0)** — sinais explícitos de erro/undo/retry: `não`, `errou`, `errado`, `refaz`, `apaga`, `quebrou`, `volta atrás`, `não funcionou`, `tá ruim`, `don't`, `wrong`, `broken`, `doesn't work`, `failed`, `try again`, `not what i wanted`, `fix this`, `revert`, `undo` (entre outros).
+- **Média (penalidade 0.5)** — hedge/hesitação: `repensa`, `ajusta`, `talvez`, `acho que não`, `hmm`, `actually`, `wait`, `rethink`, `reconsider`, `i'm not sure` (entre outros).
+
+Palavras com alta taxa de falso-positivo (`bug`, `melhora`, `improve`) estão **fora do pool** porque aparecem frequentemente em pedidos legítimos de primeiro turno ("melhora a doc", "there's a bug, fix it").
 
 A penalidade cai no turno do assistente **anterior** à correção. Sessões com muitas correções acumulam densidade alta, e o score composto cai.
 
+### A heurística de efetividade
+
+Score composto (0..100) combina 5 sinais ponderados:
+
+| Sinal | Peso | Tipo | Descrição |
+| --- | --- | --- | --- |
+| Avaliação manual média | 30% | manual | Média dos ratings (-1..1) mapeada pra 0..1 |
+| (1 − densidade de correção) | 20% | auto | Proporção de turnos seguidos por prompt de correção |
+| Razão output/input | 20% | auto | Clipped em 2.0; sinal fraco, intencionalmente pouco ponderado |
+| (1 − taxa de erro de tool) | 15% | auto | Proporção de tool calls com `is_error=1` |
+| Taxa de cache hit | 15% | auto | Reaproveitamento de cache |
+
+Quando algum sinal é nulo (ex.: sessão sem tool calls → sem `toolErrorRate`), os pesos se redistribuem proporcionalmente. Peso manual é o mais alto porque julgamento humano capta o que regex e agregados não pegam.
+
 ### Atualizar a tabela de preços
 
-Quando a Anthropic lançar modelos novos ou ajustar preço, edita [`lib/analytics/pricing.ts`](lib/analytics/pricing.ts). Lookups normalizam sufixos de janela de contexto (`[1m]`) e carimbos de data — o que está gravado como `model` nos transcripts resolve corretamente.
+Anthropic **não expõe uma API de pricing**, e scraping da página é frágil (o markup muda sem aviso). O caminho pragmático está em [`lib/analytics/pricing.ts`](lib/analytics/pricing.ts):
+
+1. Constante `PRICING_LAST_UPDATED` registra a última auditoria manual
+2. `pnpm ingest` loga warning se a tabela tem mais de 90 dias
+3. Lookups normalizam sufixos de janela (`[1m]`) e data (`-YYYYMMDD`)
+
+Cadência recomendada: conferir `https://www.anthropic.com/pricing` a cada 30–60 dias, atualizar a tabela + bump da constante. É 2 minutos de trabalho por auditoria.
 
 ### Watch mode
 
@@ -116,7 +179,7 @@ Quando a Anthropic lançar modelos novos ou ajustar preço, edita [`lib/analytic
 ### Troubleshooting
 
 | Sintoma | Resolução |
-|---|---|
+| --- | --- |
 | `better-sqlite3` falha no install | `pnpm approve-builds`, depois `pnpm install` — libera o postinstall nativo. |
 | Home mostra zeros | `pnpm seed-dev` (sintético) ou `pnpm ingest` (seu histórico). Auto-ingest só roda quando tem JSONL novo. |
 | Primeira execução do Playwright trava | `pnpm exec playwright install chromium` (~150 MB, uma vez). |
@@ -131,7 +194,7 @@ Quando a Anthropic lançar modelos novos ou ajustar preço, edita [`lib/analytic
 ### Comandos
 
 | Comando | O que faz |
-|---|---|
+| --- | --- |
 | `pnpm dev` | Sobe o Next.js dev em `:3000` |
 | `pnpm build` | Production build |
 | `pnpm start` | Serve o build de produção |
@@ -149,7 +212,7 @@ Quando a Anthropic lançar modelos novos ou ajustar preço, edita [`lib/analytic
 ### Variáveis de ambiente
 
 | Env | Default | Pra quê |
-|---|---|---|
+| --- | --- | --- |
 | `DASHBOARD_DB_PATH` | `./data/dashboard.db` | Local do SQLite |
 | `OTEL_SCRAPE_URL` | `http://localhost:9464/metrics` | URL pro endpoint Prometheus do Claude Code. Set pra custom; deixa em branco pra usar o default |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
@@ -187,14 +250,14 @@ data/            SQLite runtime (gitignored)
 ### Rotas API
 
 | Método + path | Body | Resposta | Notas |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `POST /api/ratings` | `{ turnId, rating: -1\|0\|1, note? }` | `{ ok: true }` ou `400` | Faz lookup do `session_id` via prepared statement, aí chama `revalidatePath('/sessions/${sessionId}')` + `revalidatePath('/')`. |
 | `POST /api/ingest` | — | `{ ok: true, summary }` ou `403` | Allowlist de Host loopback (`localhost` / `127.0.0.1` / `::1`). Revalida `/` e `/effectiveness`. |
 
 ### Matriz de testes
 
 | Camada | Runner | Padrão | Cobertura |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Unit | Vitest | `lib/**/*.test.ts` | parsers, pricing, scoring, formatters, guards fs, logger |
 | Integration | Vitest + SQLite real | `tests/integration/**/*.test.ts` | migrate, ingestão contra fixtures em tmpdir, handlers de `/api/*` |
 | E2E | Playwright | `tests/e2e/**/*.spec.ts` | Next dev com seed determinístico: KPIs home, drill-down, persistência de rating |
@@ -211,7 +274,3 @@ Contagem atual: **117** unit+integration, **3** E2E. Rode `pnpm validate && pnpm
 - Zod em toda fronteira de ingestão/API.
 
 Regras completas em `.claude/rules/` (auto-aplicadas via hooks + referenciadas pelos agentes documentados em `CLAUDE.md`).
-
-### Specs
-
-Specs ativas em `.specs/`. O MVP completo está capturado em [.specs/dashboard-mvp.md](.specs/dashboard-mvp.md) (status: DONE). Pra qualquer mudança não-trivial, comece copiando [.specs/TEMPLATE.md](.specs/TEMPLATE.md).

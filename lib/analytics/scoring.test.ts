@@ -6,11 +6,15 @@ import {
   type TurnLike,
 } from '@/lib/analytics/scoring';
 
-function makeTurn(id: string, sequence: number, userPrompt: string | null): TurnLike {
+function makeTurn(
+  id: string,
+  sequence: number,
+  userPrompt: string | null,
+): TurnLike {
   return { id, sequence, userPrompt };
 }
 
-describe('correctionPenalties (TC-U-SCORING-01..05)', () => {
+describe('correctionPenalties — core semantics', () => {
   it('strong match in Portuguese ("não, isso tá errado") penalizes preceding turn with 1.0', () => {
     const turns = [
       makeTurn('a', 0, 'pode ajudar?'),
@@ -60,70 +64,205 @@ describe('correctionPenalties (TC-U-SCORING-01..05)', () => {
   });
 });
 
-describe('effectivenessScore (TC-U-SCORING-06..09)', () => {
-  it('all inputs present (happy path) produces a score in (0,100]', () => {
-    const score = effectivenessScore({
-      outputInputRatio: 1.0,
-      cacheHitRatio: 0.5,
-      avgRating: 1,
-      correctionDensity: 0,
-    });
-    // 0.4 * 0.5 + 0.2 * 0.5 + 0.3 * 1 + 0.1 * 1 = 0.2 + 0.1 + 0.3 + 0.1 = 0.7
-    expect(score).toBeCloseTo(70, 5);
+describe('correctionPenalties — expanded vocabulary', () => {
+  const strongCases = [
+    // pt
+    'refaz isso',
+    'refazer do zero',
+    'apaga esse trecho',
+    'apague tudo',
+    'remove isso daí',
+    'quebrou agora',
+    'quebrado, nada funciona',
+    'não funcionou',
+    'não rodou',
+    'não compila mais',
+    'não era isso que eu queria',
+    'não era assim',
+    'não era pra fazer',
+    'volta atrás',
+    'volta pra versão anterior',
+    'tá errado, rever',
+    'tá ruim esse código',
+    'acho que não é por aí', // matches via "não"
+    "i don't think that's right", // matches via "don't"
+    // en
+    "doesn't work",
+    "didn't work",
+    'not working at all',
+    'broken now',
+    'failed to build',
+    'try again',
+    "that's wrong",
+    'this is wrong',
+    'not what i wanted',
+    'not what i asked',
+    'not what i meant',
+    'fix this',
+    'remove that',
+    'delete that line',
+  ];
+
+  it.each(strongCases)('"%s" triggers STRONG penalty', (prompt) => {
+    const turns = [makeTurn('a', 0, 'x'), makeTurn('b', 1, prompt)];
+    expect(correctionPenalties(turns).get('a')).toBe(1.0);
   });
 
-  it('all null inputs => 0', () => {
+  const mildCases = [
+    // pt
+    'repensa essa abordagem',
+    'repense isso',
+    'ajusta aí o formato',
+    'ajuste só essa linha',
+    'talvez seja melhor outra',
+    'será que tem como?',
+    'hmm, interessante',
+    // en
+    'rethink the approach',
+    "i'm not sure about that",
+    'reconsider this',
+  ];
+
+  it.each(mildCases)('"%s" triggers MILD penalty', (prompt) => {
+    const turns = [makeTurn('a', 0, 'x'), makeTurn('b', 1, prompt)];
+    expect(correctionPenalties(turns).get('a')).toBe(0.5);
+  });
+
+  const nonCorrectionCases = [
+    // These should NOT trigger — legitimate first-turn content
+    'crie uma função pra somar',
+    'please write a test',
+    'add a new column',
+    'melhora o readme', // intentionally excluded from pool
+    'improve the docs', // intentionally excluded from pool
+    'existe um bug no código X, qual a solução?', // "bug" not in pool
+    'thanks, looks good',
+  ];
+
+  it.each(nonCorrectionCases)('"%s" does NOT trigger penalty', (prompt) => {
+    const turns = [makeTurn('a', 0, 'x'), makeTurn('b', 1, prompt)];
+    expect(correctionPenalties(turns).size).toBe(0);
+  });
+});
+
+describe('effectivenessScore', () => {
+  it('all inputs present (happy) — weighted sum', () => {
+    const score = effectivenessScore({
+      outputInputRatio: 1.0, // clipped/2 = 0.5, w=0.20 => 0.10
+      cacheHitRatio: 0.5, //            0.5, w=0.15 => 0.075
+      avgRating: 1, //                  1.0, w=0.30 => 0.30
+      correctionDensity: 0, //          1.0, w=0.20 => 0.20
+      toolErrorRate: 0, //              1.0, w=0.15 => 0.15
+    });
+    // Sum = 0.10 + 0.075 + 0.30 + 0.20 + 0.15 = 0.825 => 82.5
+    expect(score).toBeCloseTo(82.5, 5);
+  });
+
+  it('all quality signals null => 0 (correctionDensity alone insufficient)', () => {
     const score = effectivenessScore({
       outputInputRatio: null,
       cacheHitRatio: null,
       avgRating: null,
       correctionDensity: 0,
+      toolErrorRate: null,
     });
     expect(score).toBe(0);
   });
 
-  it('redistributes weights among present inputs when some are null', () => {
-    // Only cacheHitRatio (0.2 weight) + correctionDensity (0.1 weight) present.
-    // cacheHitRatio = 1.0, correctionDensity = 0 => value = 1, 1.
-    // Total weight 0.3, so sum = (0.2/0.3)*1 + (0.1/0.3)*1 = 1.0 => 100.
+  it('redistributes weights when some signals are null', () => {
+    // Only cacheHitRatio (0.15) + correctionDensity (0.20) => both =1.0
+    // Total weight 0.35; normalized sum = 1.0 => 100.
     const score = effectivenessScore({
       outputInputRatio: null,
       cacheHitRatio: 1.0,
       avgRating: null,
       correctionDensity: 0,
+      toolErrorRate: null,
     });
     expect(score).toBeCloseTo(100, 5);
   });
 
-  it('correctionDensity of 1 drags score down meaningfully', () => {
+  it('correctionDensity of 1 drags score meaningfully', () => {
     const a = effectivenessScore({
       outputInputRatio: 1.0,
       cacheHitRatio: 0.5,
       avgRating: 0,
       correctionDensity: 0,
+      toolErrorRate: 0,
     });
     const b = effectivenessScore({
       outputInputRatio: 1.0,
       cacheHitRatio: 0.5,
       avgRating: 0,
       correctionDensity: 1,
+      toolErrorRate: 0,
     });
     expect(b).toBeLessThan(a);
+    // correctionDensity weight = 0.2 => 20 points max difference
+    expect(a - b).toBeCloseTo(20, 5);
   });
 
-  it('output/input ratio clipped at 2.0 for full marks', () => {
-    const score = effectivenessScore({
-      outputInputRatio: 10.0, // absurdly high, should clip
+  it('toolErrorRate of 1 drags score meaningfully', () => {
+    const a = effectivenessScore({
+      outputInputRatio: 1.0,
+      cacheHitRatio: 0.5,
+      avgRating: 0,
+      correctionDensity: 0,
+      toolErrorRate: 0,
+    });
+    const b = effectivenessScore({
+      outputInputRatio: 1.0,
+      cacheHitRatio: 0.5,
+      avgRating: 0,
+      correctionDensity: 0,
+      toolErrorRate: 1,
+    });
+    expect(b).toBeLessThan(a);
+    // toolErrorRate weight = 0.15 => 15 points max difference
+    expect(a - b).toBeCloseTo(15, 5);
+  });
+
+  it('output/input ratio clipped at 2.0 (ratio of 10 scores same as ratio of 2)', () => {
+    const a = effectivenessScore({
+      outputInputRatio: 10.0,
       cacheHitRatio: null,
       avgRating: null,
       correctionDensity: 0,
+      toolErrorRate: null,
     });
-    // only ratio (0.4) + density (0.1), value 1 and 1 => 100
-    expect(score).toBeCloseTo(100, 5);
+    const b = effectivenessScore({
+      outputInputRatio: 2.0,
+      cacheHitRatio: null,
+      avgRating: null,
+      correctionDensity: 0,
+      toolErrorRate: null,
+    });
+    expect(a).toBeCloseTo(b, 5);
+  });
+
+  it('null toolErrorRate is ignored (session with no tool calls)', () => {
+    const withNull = effectivenessScore({
+      outputInputRatio: null,
+      cacheHitRatio: null,
+      avgRating: 1,
+      correctionDensity: 0,
+      toolErrorRate: null,
+    });
+    const withZero = effectivenessScore({
+      outputInputRatio: null,
+      cacheHitRatio: null,
+      avgRating: 1,
+      correctionDensity: 0,
+      toolErrorRate: 0,
+    });
+    // Both should be 100 because the remaining signals are all perfect;
+    // null vs zero just changes the weight redistribution.
+    expect(withNull).toBeCloseTo(100, 5);
+    expect(withZero).toBeCloseTo(100, 5);
   });
 });
 
-describe('bucketCostPerTurn (TC-U-SCORING-10..12)', () => {
+describe('bucketCostPerTurn', () => {
   it('empty input => []', () => {
     expect(bucketCostPerTurn([], 5)).toEqual([]);
   });
@@ -134,7 +273,6 @@ describe('bucketCostPerTurn (TC-U-SCORING-10..12)', () => {
     expect(buckets.length).toBe(5);
     const total = buckets.reduce((acc, b) => acc + b.count, 0);
     expect(total).toBe(10);
-    // Lower of first = 0.1, upper of last = 1.0
     expect(buckets[0].lower).toBeCloseTo(0.1, 5);
     expect(buckets[4].upper).toBeCloseTo(1.0, 5);
   });

@@ -5,6 +5,29 @@ export type ModelPricing = {
   cacheCreation: number; // $ per 1M tokens (5-minute TTL variant)
 };
 
+/**
+ * Last time the pricing table below was reviewed against
+ * https://www.anthropic.com/pricing. Update this constant alongside any
+ * price change — the CLI logs a warning when the table is older than
+ * {@link STALE_THRESHOLD_DAYS} so stale costs don't silently accumulate.
+ *
+ * Anthropic does not expose a pricing API. Auto-scraping the pricing page
+ * is fragile (the markup is not a stable contract). The practical path is:
+ * a quick manual audit every ~30–60 days + this staleness check.
+ */
+export const PRICING_LAST_UPDATED = '2026-04-18';
+export const STALE_THRESHOLD_DAYS = 90;
+
+/**
+ * Days since `PRICING_LAST_UPDATED`. Used by the ingest CLI to emit a
+ * gentle warning if the table hasn't been audited in a while.
+ */
+export function getPricingAgeDays(now: number = Date.now()): number {
+  const updatedAt = Date.parse(PRICING_LAST_UPDATED);
+  if (Number.isNaN(updatedAt)) return 0;
+  return Math.floor((now - updatedAt) / 86_400_000);
+}
+
 const OPUS: ModelPricing = {
   input: 15,
   output: 75,

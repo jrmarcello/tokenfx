@@ -50,6 +50,7 @@ type TopSessionRow = {
   cacheHitRatio: number | null;
   outputInputRatio: number | null;
   avgRating: number | null;
+  toolErrorRate: number | null;
 };
 
 type TurnRow = {
@@ -129,7 +130,12 @@ function getPrepared(db: DB): PreparedSet {
               s.project AS project,
               v.cache_hit_ratio AS cacheHitRatio,
               v.output_input_ratio AS outputInputRatio,
-              v.avg_rating AS avgRating
+              v.avg_rating AS avgRating,
+              (SELECT CAST(SUM(tc.result_is_error) AS REAL) /
+                      NULLIF(COUNT(tc.id), 0)
+                 FROM tool_calls tc
+                 JOIN turns t ON t.id = tc.turn_id
+                 WHERE t.session_id = s.id) AS toolErrorRate
        FROM sessions s
        LEFT JOIN session_effectiveness v ON v.id = s.id
        WHERE s.started_at >= ?
@@ -232,6 +238,7 @@ export function getSessionScores(db: DB, days: number): SessionScore[] {
       cacheHitRatio: s.cacheHitRatio,
       avgRating: s.avgRating,
       correctionDensity,
+      toolErrorRate: s.toolErrorRate,
     });
     out.push({ sessionId: s.id, project: s.project, score });
   }

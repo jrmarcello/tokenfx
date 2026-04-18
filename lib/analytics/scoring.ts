@@ -4,10 +4,93 @@ export type TurnLike = {
   sequence: number;
 };
 
-const STRONG_CORRECTION =
-  /\b(n[aã]o|don'?t|stop|wrong|errou|errado|na verdade|actually that'?s wrong|revert|undo)\b/i;
-const MILD_CORRECTION =
-  /\b(actually|hmm|wait|uhh|na real|reconsidera|reconsider)\b/i;
+/**
+ * Correction detection regexes. Two tiers:
+ *
+ * - STRONG: explicit error/undo/retry signals. Penalizes the preceding
+ *   assistant turn with weight 1.0.
+ * - MILD: hedge/hesitation/"could be better" signals. Weight 0.5.
+ *
+ * Bilingual (pt-BR + en). Kept conservative — words with high false-positive
+ * rates ("bug", "melhora", "improve" on their own) are excluded because they
+ * often appear in legitimate first-turn requests ("melhora a doc",
+ * "improve the prompt") rather than as corrections.
+ */
+const STRONG_CORRECTION = new RegExp(
+  '\\b(?:' +
+    [
+      // --- pt
+      'n[aã]o', // no (bare)
+      'n[aã]o era (?:isso|assim|pra|bem|esse|essa|desse)',
+      'errou',
+      'errado',
+      'na verdade',
+      'volta atr[aá]s',
+      'volta pra',
+      'refaz',
+      'refazer',
+      'apaga(?:r|\\b)',
+      'apague',
+      'remove isso',
+      'quebrou',
+      'quebrado',
+      'n[aã]o funcionou',
+      'n[aã]o rodou',
+      'n[aã]o compila',
+      't[aá] errado',
+      't[aá] ruim',
+      // --- en
+      "don'?t",
+      'stop',
+      'wrong',
+      "actually that'?s wrong",
+      'revert',
+      'undo',
+      "doesn'?t work",
+      "didn'?t work",
+      'not working',
+      'broken',
+      'failed',
+      'try again',
+      'not what i (?:wanted|asked|meant|said)',
+      'fix this',
+      'remove that',
+      'delete that',
+      "that'?s (?:wrong|incorrect|not right)",
+      'this is wrong',
+    ].join('|') +
+    ')\\b',
+  'i',
+);
+
+const MILD_CORRECTION = new RegExp(
+  '\\b(?:' +
+    [
+      // --- pt
+      'na real',
+      'reconsidera',
+      'repensa',
+      'repense',
+      'ajusta',
+      'ajuste',
+      'ajustar',
+      'talvez',
+      'ser[aá] que',
+      'acho que n[aã]o',
+      'hmm+',
+      // --- en
+      'actually',
+      'hmm+',
+      'wait',
+      'uhh+',
+      'reconsider',
+      'rethink',
+      "i don'?t think",
+      "i'?m not sure",
+    ].join('|') +
+    ')\\b',
+  'i',
+);
 
 /**
  * For each turn i, look at turn i+1's userPrompt. If it matches the "strong"
@@ -32,30 +115,53 @@ export function correctionPenalties(
   return out;
 }
 
-type ScoreInput = {
+export type ScoreInput = {
   outputInputRatio: number | null;
   cacheHitRatio: number | null;
   avgRating: number | null;
   correctionDensity: number;
+  /**
+   * Fraction of tool calls in the session that returned is_error=1.
+   * Null when the session had zero tool calls.
+   */
+  toolErrorRate: number | null;
 };
 
 /**
  * Composite score in [0, 100].
- * Weights:
- *   output/input ratio (clipped at 2.0): 40%
- *   cache hit ratio (linear):            20%
- *   avg rating (-1..1 mapped 0..1):      30%
- *   (1 - correctionDensity):             10%
- * Null inputs are skipped and weights redistributed proportionally.
+ *
+ * Weights (sum = 1.0):
+ *   output/input ratio (clipped at 2.0):     20%
+ *   cache hit ratio (linear):                15%
+ *   avg manual rating (-1..1 mapped 0..1):   30%
+ *   (1 - correction density):                20%
+ *   (1 - tool error rate):                   15%
+ *
+ * Null inputs are skipped and remaining weights are redistributed
+ * proportionally. correctionDensity is never null (zero when no turns);
+ * toolErrorRate is null when the session had no tool calls.
+ *
+ * Design notes:
+ * - Manual rating is the strongest single signal (30%). It reflects human
+ *   judgment that no heuristic can capture.
+ * - Correction density (20%) is the most reliable automatic signal: when
+ *   the next user prompt says "não, isso tá errado", the previous turn
+ *   clearly missed the mark.
+ * - Output/input ratio is intentionally down-weighted (from 40% to 20%)
+ *   because it's a weak quality signal in practice — high ratio can mean
+ *   useful explanation OR verbose rambling; low can mean focused edits OR
+ *   empty responses.
+ * - Tool error rate is a new automatic signal (15%) that penalizes
+ *   sessions where the assistant's tool calls frequently failed.
  */
 export function effectivenessScore(input: ScoreInput): number {
-  // If every signal is null, return 0 — correctionDensity alone is not
-  // enough information to score a session.
-  if (
-    input.outputInputRatio === null &&
-    input.cacheHitRatio === null &&
-    input.avgRating === null
-  ) {
+  const hasQualitySignal =
+    input.outputInputRatio !== null ||
+    input.cacheHitRatio !== null ||
+    input.avgRating !== null ||
+    input.toolErrorRate !== null;
+  if (!hasQualitySignal) {
+    // correctionDensity alone isn't enough to score a session.
     return 0;
   }
 
@@ -63,18 +169,22 @@ export function effectivenessScore(input: ScoreInput): number {
 
   if (input.outputInputRatio !== null) {
     const clipped = Math.max(0, Math.min(input.outputInputRatio, 2.0));
-    parts.push({ weight: 0.4, value: clipped / 2.0 });
+    parts.push({ weight: 0.2, value: clipped / 2.0 });
   }
   if (input.cacheHitRatio !== null) {
     const clipped = Math.max(0, Math.min(input.cacheHitRatio, 1.0));
-    parts.push({ weight: 0.2, value: clipped });
+    parts.push({ weight: 0.15, value: clipped });
   }
   if (input.avgRating !== null) {
     const clipped = Math.max(-1, Math.min(input.avgRating, 1));
     parts.push({ weight: 0.3, value: (clipped + 1) / 2 });
   }
   const density = Math.max(0, Math.min(input.correctionDensity, 1));
-  parts.push({ weight: 0.1, value: 1 - density });
+  parts.push({ weight: 0.2, value: 1 - density });
+  if (input.toolErrorRate !== null) {
+    const rate = Math.max(0, Math.min(input.toolErrorRate, 1));
+    parts.push({ weight: 0.15, value: 1 - rate });
+  }
 
   const totalWeight = parts.reduce((acc, p) => acc + p.weight, 0);
   if (totalWeight === 0) return 0;

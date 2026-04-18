@@ -9,22 +9,23 @@ const links = [
   { href: '/effectiveness', label: 'Efetividade' },
 ];
 
-export function Nav() {
+export function Nav({ slot }: { slot?: React.ReactNode }) {
   const pathname = usePathname();
   return (
     <nav className="border-b border-neutral-800 bg-neutral-950">
-      <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-6">
+      <div className="mx-auto flex max-w-7xl items-center gap-6 px-6 py-4">
         <span className="font-semibold">TokenFx</span>
         <ul className="flex gap-4">
           {links.map((l) => {
-            const active = l.href === '/' ? pathname === '/' : pathname?.startsWith(l.href);
+            const active =
+              l.href === '/' ? pathname === '/' : pathname?.startsWith(l.href);
             return (
               <li key={l.href}>
                 <Link
                   href={l.href}
                   className={cn(
-                    'text-sm text-neutral-400 hover:text-neutral-100 transition',
-                    active && 'text-neutral-100 font-medium'
+                    'text-sm text-neutral-400 transition hover:text-neutral-100',
+                    active && 'font-medium text-neutral-100',
                   )}
                 >
                   {l.label}
@@ -33,6 +34,7 @@ export function Nav() {
             );
           })}
         </ul>
+        {slot && <div className="ml-auto">{slot}</div>}
       </div>
     </nav>
   );
