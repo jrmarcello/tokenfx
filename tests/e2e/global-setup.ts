@@ -1,11 +1,20 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { openDatabase } from '../../lib/db/client';
+import Database from 'better-sqlite3';
+import type { Database as DatabaseType } from 'better-sqlite3';
 import { computeCost } from '../../lib/analytics/pricing';
 
-// Inline migrate to avoid import.meta.url (ESM-only) in the Playwright
-// CJS loader — read the schema file directly from a known relative path.
-function migrateInline(db: ReturnType<typeof openDatabase>): void {
+// Inline openDatabase + migrate to avoid import.meta.url (ESM-only) and the
+// getDb() singleton side-effect that Playwright's CJS loader can't resolve.
+function openDbInline(dbPath: string): DatabaseType {
+  const db = new Database(dbPath);
+  db.pragma('foreign_keys = ON');
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  return db;
+}
+
+function migrateInline(db: DatabaseType): void {
   const schemaPath = path.resolve(__dirname, '../../lib/db/schema.sql');
   const sql = fs.readFileSync(schemaPath, 'utf8');
   db.exec(sql);
@@ -136,7 +145,7 @@ export default async function globalSetup(): Promise<void> {
 
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-  const db = openDatabase(dbPath);
+  const db = openDbInline(dbPath);
   migrateInline(db);
 
   const insertSession = db.prepare(
