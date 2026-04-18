@@ -3,6 +3,7 @@ import { openDatabase, type DB } from '@/lib/db/client';
 import { migrate } from '@/lib/db/migrate';
 import {
   getSession,
+  getSessionIdForTurn,
   getTurns,
   upsertRating,
   listSessions,
@@ -193,6 +194,28 @@ describe('session queries', () => {
 
     it('getSession returns null', () => {
       expect(getSession(db, 'anything')).toBeNull();
+    });
+
+    it('getSessionIdForTurn returns null for an unknown turn', () => {
+      expect(getSessionIdForTurn(db, 'nope')).toBeNull();
+    });
+  });
+
+  describe('getSessionIdForTurn', () => {
+    it('resolves the session_id of an existing turn', () => {
+      seedSession(db, 'sess-lookup');
+      db.prepare(
+        `INSERT INTO turns (
+          id, session_id, parent_uuid, sequence, timestamp, model,
+          input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+          cost_usd, stop_reason, user_prompt, assistant_text, tool_uses_json
+        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, '[]')`,
+      ).run('turn-xyz', 'sess-lookup', 0, 1, 'm', 0, 0, 0, 0, 0);
+      expect(getSessionIdForTurn(db, 'turn-xyz')).toBe('sess-lookup');
+    });
+
+    it('returns null for a missing turn id', () => {
+      expect(getSessionIdForTurn(db, 'ghost')).toBeNull();
     });
   });
 });
