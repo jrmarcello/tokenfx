@@ -143,10 +143,14 @@ export function parsePrometheusText(text: string, scrapedAt: number): OtelScrape
 
 export async function fetchAndParse(
   url: string,
-  fetchFn: typeof fetch = globalThis.fetch
+  fetchFn: typeof fetch = globalThis.fetch,
+  options?: { timeoutMs?: number }
 ): Promise<Result<OtelScrape[]>> {
+  const timeoutMs = options?.timeoutMs ?? 1000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchFn(url);
+    const response = await fetchFn(url, { signal: controller.signal });
     if (!response.ok) {
       return {
         ok: false,
@@ -159,5 +163,7 @@ export async function fetchAndParse(
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     return { ok: false, error };
+  } finally {
+    clearTimeout(timer);
   }
 }

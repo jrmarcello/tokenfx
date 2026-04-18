@@ -1,4 +1,5 @@
 import { getDb } from '@/lib/db/client';
+import { ensureFreshIngest } from '@/lib/ingest/auto';
 import { KpiCard } from '@/components/kpi-card';
 import { TrendChart } from '@/components/overview/trend-chart';
 import { TopSessions } from '@/components/overview/top-sessions';
@@ -14,6 +15,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export default async function Home() {
+  await ensureFreshIngest();
   const db = getDb();
   const kpis = getOverviewKpis(db);
   const daily = getDailySpend(db, 30);

@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import { getDb } from '@/lib/db/client';
+import { ensureFreshIngest } from '@/lib/ingest/auto';
 import { getSession, getTurns } from '@/lib/queries/session';
 import { TranscriptViewer } from '@/components/transcript-viewer';
 import { Card, CardContent } from '@/components/ui/card';
@@ -14,6 +15,7 @@ export default async function SessionPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+  await ensureFreshIngest();
   const db = getDb();
   const session = getSession(db, id);
   if (!session) notFound();

@@ -1,4 +1,5 @@
 import { getDb } from '@/lib/db/client';
+import { ensureFreshIngest } from '@/lib/ingest/auto';
 import { KpiCard } from '@/components/kpi-card';
 import { CostPerTurnHistogram } from '@/components/effectiveness/cost-per-turn-histogram';
 import { RatioTrend } from '@/components/effectiveness/ratio-trend';
@@ -17,6 +18,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export default async function EffectivenessPage() {
+  await ensureFreshIngest();
   const db = getDb();
   const kpis = getEffectivenessKpis(db, 30);
   const weekly = getWeeklyRatio(db, 12);

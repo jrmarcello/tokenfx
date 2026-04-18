@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { getDb } from '@/lib/db/client';
+import { ensureFreshIngest } from '@/lib/ingest/auto';
 import { listSessions } from '@/lib/queries/session';
 import { Card, CardContent } from '@/components/ui/card';
 import { fmtUsd, fmtDateTime } from '@/lib/fmt';
@@ -8,6 +9,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export default async function SessionsPage() {
+  await ensureFreshIngest();
   const db = getDb();
   const items = listSessions(db, 100);
 

@@ -242,6 +242,8 @@ export async function ingestAll(options?: {
   transcriptsRoot?: string;
   otelUrl?: string;
   fetchFn?: typeof fetch;
+  otelTimeoutMs?: number;
+  otelOptional?: boolean;
 }): Promise<IngestSummary> {
   const db = options?.db ?? getDb();
   migrate(db);
@@ -285,11 +287,13 @@ export async function ingestAll(options?: {
   }
 
   if (options?.otelUrl) {
-    const otelResult = await fetchAndParse(options.otelUrl, options.fetchFn);
+    const otelResult = await fetchAndParse(options.otelUrl, options.fetchFn, {
+      timeoutMs: options.otelTimeoutMs,
+    });
     if (otelResult.ok) {
       writeOtelScrapes(db, otelResult.value);
       summary.otelScrapes = otelResult.value.length;
-    } else {
+    } else if (!options.otelOptional) {
       summary.errors.push({
         file: options.otelUrl,
         error: otelResult.error.message,

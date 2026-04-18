@@ -11,7 +11,10 @@
     "test": "vitest",
     "test:e2e": "playwright test",
     "ingest": "tsx scripts/ingest.ts",
-    "seed-dev": "tsx scripts/seed-dev.ts"
+    "seed-dev": "tsx scripts/seed-dev.ts",
+    "setup": "pnpm install && pnpm seed-dev",
+    "fresh": "rm -f data/dashboard.db data/dashboard.db-wal data/dashboard.db-shm && pnpm ingest",
+    "validate": "pnpm typecheck && pnpm lint && pnpm test --run"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",

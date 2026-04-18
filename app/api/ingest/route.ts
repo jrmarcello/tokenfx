@@ -7,6 +7,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const LOCALHOST_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
+const DEFAULT_OTEL_URL = 'http://localhost:9464/metrics';
 
 export async function POST(request: Request): Promise<NextResponse> {
   // Defense in depth: this project is localhost-only. Reject requests that
@@ -20,7 +21,13 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
   const db = getDb();
-  const summary = await ingestAll({ db, otelUrl: process.env.OTEL_SCRAPE_URL });
+  const otelUrl = process.env.OTEL_SCRAPE_URL ?? DEFAULT_OTEL_URL;
+  const summary = await ingestAll({
+    db,
+    otelUrl,
+    otelOptional: true,
+    otelTimeoutMs: 1000,
+  });
   revalidatePath('/');
   revalidatePath('/effectiveness');
   return NextResponse.json({ ok: true, summary });
