@@ -28,12 +28,10 @@ export type SessionScore = {
 
 const DAY_MS = 86_400_000;
 const WEEK_MS = 7 * DAY_MS;
-// Cap on how many top-cost sessions get scored per call. `getSessionScores`
-// fetches turns per session to compute correction penalties, so total queries
-// scale as 2 + N (one top-sessions query + one accept-rates aggregate + one
-// turns query per session). 50 is a reasonable upper bound for a personal
-// dashboard; raising it means more queries per page load. To remove the cap
-// entirely, push the penalty computation into SQL.
+// Cap on how many top-cost sessions get scored per call. Query count is
+// constant (top-sessions + accept-rates + all-turns-for-those-sessions),
+// but the correction-penalty scan runs in JS over every turn of every
+// scored session. 50 is a comfortable upper bound for a personal dashboard.
 const MAX_SCORED_SESSIONS = 50;
 
 type KpiRow = {
@@ -61,6 +59,7 @@ type TopSessionRow = {
 };
 
 type TurnRow = {
+  session_id: string;
   id: string;
   sequence: number;
   user_prompt: string | null;
@@ -78,7 +77,7 @@ type PreparedSet = {
   costPerTurn: import('better-sqlite3').Statement<[number]>;
   toolLeaderboard: import('better-sqlite3').Statement<[number, number]>;
   topSessions: import('better-sqlite3').Statement<[number, number]>;
-  turnsForSession: import('better-sqlite3').Statement<[string]>;
+  turnsForSessions: import('better-sqlite3').Statement<[string]>;
 };
 
 const cache = new WeakMap<DB, PreparedSet>();
@@ -149,11 +148,13 @@ function getPrepared(db: DB): PreparedSet {
        ORDER BY s.total_cost_usd DESC
        LIMIT ?`,
     ),
-    turnsForSession: db.prepare(
-      `SELECT id, sequence, user_prompt
-       FROM turns
-       WHERE session_id = ?
-       ORDER BY sequence ASC`,
+    turnsForSessions: db.prepare(
+      // Single round-trip for all top-N sessions. `?` binds a JSON array of
+      // session ids; `json_each` unpacks it into a virtual table we join on.
+      `SELECT t.session_id, t.id, t.sequence, t.user_prompt
+       FROM turns t
+       JOIN json_each(?) j ON j.value = t.session_id
+       ORDER BY t.session_id, t.sequence ASC`,
     ),
   };
   cache.set(db, prepared);
@@ -229,15 +230,27 @@ export function getSessionScores(db: DB, days: number): SessionScore[] {
   const p = getPrepared(db);
   const cutoff = Date.now() - days * DAY_MS;
   const sessions = p.topSessions.all(cutoff, MAX_SCORED_SESSIONS) as TopSessionRow[];
+  if (sessions.length === 0) return [];
   const acceptRates = getAcceptRatesBySession(db, days);
-  const out: SessionScore[] = [];
-  for (const s of sessions) {
-    const turnRows = p.turnsForSession.all(s.id) as TurnRow[];
-    const turns: TurnLike[] = turnRows.map((t) => ({
-      id: t.id,
-      sequence: t.sequence,
-      userPrompt: t.user_prompt,
-    }));
+
+  // Fetch turns for all top sessions in a single query, then bucket by
+  // session id. Keeps total DB round-trips constant (3) regardless of N.
+  const ids = sessions.map((s) => s.id);
+  const turnRows = p.turnsForSessions.all(JSON.stringify(ids)) as TurnRow[];
+  const turnsBySession = new Map<string, TurnLike[]>();
+  for (const r of turnRows) {
+    const list = turnsBySession.get(r.session_id);
+    const turn: TurnLike = {
+      id: r.id,
+      sequence: r.sequence,
+      userPrompt: r.user_prompt,
+    };
+    if (list) list.push(turn);
+    else turnsBySession.set(r.session_id, [turn]);
+  }
+
+  return sessions.map((s) => {
+    const turns = turnsBySession.get(s.id) ?? [];
     const penalties = correctionPenalties(turns);
     const correctionDensity =
       turns.length > 0 ? penalties.size / turns.length : 0;
@@ -249,7 +262,6 @@ export function getSessionScores(db: DB, days: number): SessionScore[] {
       toolErrorRate: s.toolErrorRate,
       acceptRate: acceptRates.get(s.id) ?? null,
     });
-    out.push({ sessionId: s.id, project: s.project, score });
-  }
-  return out;
+    return { sessionId: s.id, project: s.project, score };
+  });
 }
