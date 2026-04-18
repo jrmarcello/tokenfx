@@ -4,6 +4,7 @@ import {
   effectivenessScore,
   type TurnLike,
 } from '@/lib/analytics/scoring';
+import { getAcceptRatesBySession } from '@/lib/queries/otel';
 
 export type EffectivenessKpis = {
   avgScore: number | null;
@@ -222,6 +223,7 @@ export function getSessionScores(db: DB, days: number): SessionScore[] {
   const p = getPrepared(db);
   const cutoff = Date.now() - days * DAY_MS;
   const sessions = p.topSessions.all(cutoff, MAX_SCORED_SESSIONS) as TopSessionRow[];
+  const acceptRates = getAcceptRatesBySession(db, days);
   const out: SessionScore[] = [];
   for (const s of sessions) {
     const turnRows = p.turnsForSession.all(s.id) as TurnRow[];
@@ -239,6 +241,7 @@ export function getSessionScores(db: DB, days: number): SessionScore[] {
       avgRating: s.avgRating,
       correctionDensity,
       toolErrorRate: s.toolErrorRate,
+      acceptRate: acceptRates.get(s.id) ?? null,
     });
     out.push({ sessionId: s.id, project: s.project, score });
   }

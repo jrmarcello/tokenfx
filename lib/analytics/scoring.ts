@@ -125,41 +125,48 @@ export type ScoreInput = {
    * Null when the session had zero tool calls.
    */
   toolErrorRate: number | null;
+  /**
+   * OTEL-only signal: accepts / (accepts + rejects) on Edit/Write/
+   * NotebookEdit tool decisions. Null when OTEL is disabled or the
+   * session had zero decision events.
+   */
+  acceptRate: number | null;
 };
 
 /**
  * Composite score in [0, 100].
  *
  * Weights (sum = 1.0):
- *   output/input ratio (clipped at 2.0):     20%
- *   cache hit ratio (linear):                15%
  *   avg manual rating (-1..1 mapped 0..1):   30%
  *   (1 - correction density):                20%
+ *   accept rate (OTEL):                      15%
  *   (1 - tool error rate):                   15%
+ *   cache hit ratio (linear):                10%
+ *   output/input ratio (clipped at 2.0):     10%
  *
  * Null inputs are skipped and remaining weights are redistributed
  * proportionally. correctionDensity is never null (zero when no turns);
- * toolErrorRate is null when the session had no tool calls.
+ * toolErrorRate is null when the session had no tool calls; acceptRate
+ * is null when OTEL is off or the session had no Edit/Write decisions.
  *
  * Design notes:
- * - Manual rating is the strongest single signal (30%). It reflects human
- *   judgment that no heuristic can capture.
- * - Correction density (20%) is the most reliable automatic signal: when
- *   the next user prompt says "não, isso tá errado", the previous turn
- *   clearly missed the mark.
- * - Output/input ratio is intentionally down-weighted (from 40% to 20%)
- *   because it's a weak quality signal in practice — high ratio can mean
- *   useful explanation OR verbose rambling; low can mean focused edits OR
- *   empty responses.
- * - Tool error rate is a new automatic signal (15%) that penalizes
- *   sessions where the assistant's tool calls frequently failed.
+ * - Manual rating (30%) is the strongest single signal — human judgment
+ *   captures what no heuristic can.
+ * - Three automatic signals combine for 50% of the score: correction
+ *   density (20%), accept rate (15%), tool error rate (15%). Each
+ *   penalizes a different failure mode — retries, rejected edits,
+ *   failed tool calls.
+ * - Cache hit (10%) and output/input ratio (10%) are the weakest
+ *   signals; output/input ratio is especially noisy (high can mean
+ *   useful explanation OR verbose rambling).
  */
 export function effectivenessScore(input: ScoreInput): number {
   const hasQualitySignal =
     input.outputInputRatio !== null ||
     input.cacheHitRatio !== null ||
     input.avgRating !== null ||
-    input.toolErrorRate !== null;
+    input.toolErrorRate !== null ||
+    input.acceptRate !== null;
   if (!hasQualitySignal) {
     // correctionDensity alone isn't enough to score a session.
     return 0;
@@ -169,11 +176,11 @@ export function effectivenessScore(input: ScoreInput): number {
 
   if (input.outputInputRatio !== null) {
     const clipped = Math.max(0, Math.min(input.outputInputRatio, 2.0));
-    parts.push({ weight: 0.2, value: clipped / 2.0 });
+    parts.push({ weight: 0.1, value: clipped / 2.0 });
   }
   if (input.cacheHitRatio !== null) {
     const clipped = Math.max(0, Math.min(input.cacheHitRatio, 1.0));
-    parts.push({ weight: 0.15, value: clipped });
+    parts.push({ weight: 0.1, value: clipped });
   }
   if (input.avgRating !== null) {
     const clipped = Math.max(-1, Math.min(input.avgRating, 1));
@@ -184,6 +191,10 @@ export function effectivenessScore(input: ScoreInput): number {
   if (input.toolErrorRate !== null) {
     const rate = Math.max(0, Math.min(input.toolErrorRate, 1));
     parts.push({ weight: 0.15, value: 1 - rate });
+  }
+  if (input.acceptRate !== null) {
+    const rate = Math.max(0, Math.min(input.acceptRate, 1));
+    parts.push({ weight: 0.15, value: rate });
   }
 
   const totalWeight = parts.reduce((acc, p) => acc + p.weight, 0);

@@ -148,14 +148,15 @@ describe('correctionPenalties — expanded vocabulary', () => {
 describe('effectivenessScore', () => {
   it('all inputs present (happy) — weighted sum', () => {
     const score = effectivenessScore({
-      outputInputRatio: 1.0, // clipped/2 = 0.5, w=0.20 => 0.10
-      cacheHitRatio: 0.5, //            0.5, w=0.15 => 0.075
-      avgRating: 1, //                  1.0, w=0.30 => 0.30
-      correctionDensity: 0, //          1.0, w=0.20 => 0.20
-      toolErrorRate: 0, //              1.0, w=0.15 => 0.15
+      outputInputRatio: 1.0, // clipped/2 = 0.5, w=0.10 => 0.05
+      cacheHitRatio: 0.5, //             0.5, w=0.10 => 0.05
+      avgRating: 1, //                   1.0, w=0.30 => 0.30
+      correctionDensity: 0, //           1.0, w=0.20 => 0.20
+      toolErrorRate: 0, //               1.0, w=0.15 => 0.15
+      acceptRate: 1, //                  1.0, w=0.15 => 0.15
     });
-    // Sum = 0.10 + 0.075 + 0.30 + 0.20 + 0.15 = 0.825 => 82.5
-    expect(score).toBeCloseTo(82.5, 5);
+    // Sum = 0.05 + 0.05 + 0.30 + 0.20 + 0.15 + 0.15 = 0.90 => 90.0
+    expect(score).toBeCloseTo(90, 5);
   });
 
   it('all quality signals null => 0 (correctionDensity alone insufficient)', () => {
@@ -165,19 +166,21 @@ describe('effectivenessScore', () => {
       avgRating: null,
       correctionDensity: 0,
       toolErrorRate: null,
+      acceptRate: null,
     });
     expect(score).toBe(0);
   });
 
   it('redistributes weights when some signals are null', () => {
-    // Only cacheHitRatio (0.15) + correctionDensity (0.20) => both =1.0
-    // Total weight 0.35; normalized sum = 1.0 => 100.
+    // Only cacheHitRatio (0.10) + correctionDensity (0.20) => both =1.0
+    // Total weight 0.30; normalized sum = 1.0 => 100.
     const score = effectivenessScore({
       outputInputRatio: null,
       cacheHitRatio: 1.0,
       avgRating: null,
       correctionDensity: 0,
       toolErrorRate: null,
+      acceptRate: null,
     });
     expect(score).toBeCloseTo(100, 5);
   });
@@ -189,6 +192,7 @@ describe('effectivenessScore', () => {
       avgRating: 0,
       correctionDensity: 0,
       toolErrorRate: 0,
+      acceptRate: 1,
     });
     const b = effectivenessScore({
       outputInputRatio: 1.0,
@@ -196,6 +200,7 @@ describe('effectivenessScore', () => {
       avgRating: 0,
       correctionDensity: 1,
       toolErrorRate: 0,
+      acceptRate: 1,
     });
     expect(b).toBeLessThan(a);
     // correctionDensity weight = 0.2 => 20 points max difference
@@ -209,6 +214,7 @@ describe('effectivenessScore', () => {
       avgRating: 0,
       correctionDensity: 0,
       toolErrorRate: 0,
+      acceptRate: 1,
     });
     const b = effectivenessScore({
       outputInputRatio: 1.0,
@@ -216,9 +222,32 @@ describe('effectivenessScore', () => {
       avgRating: 0,
       correctionDensity: 0,
       toolErrorRate: 1,
+      acceptRate: 1,
     });
     expect(b).toBeLessThan(a);
     // toolErrorRate weight = 0.15 => 15 points max difference
+    expect(a - b).toBeCloseTo(15, 5);
+  });
+
+  it('acceptRate of 0 drags score meaningfully', () => {
+    const a = effectivenessScore({
+      outputInputRatio: 1.0,
+      cacheHitRatio: 0.5,
+      avgRating: 0,
+      correctionDensity: 0,
+      toolErrorRate: 0,
+      acceptRate: 1,
+    });
+    const b = effectivenessScore({
+      outputInputRatio: 1.0,
+      cacheHitRatio: 0.5,
+      avgRating: 0,
+      correctionDensity: 0,
+      toolErrorRate: 0,
+      acceptRate: 0,
+    });
+    expect(b).toBeLessThan(a);
+    // acceptRate weight = 0.15 => 15 points max difference
     expect(a - b).toBeCloseTo(15, 5);
   });
 
@@ -229,6 +258,7 @@ describe('effectivenessScore', () => {
       avgRating: null,
       correctionDensity: 0,
       toolErrorRate: null,
+      acceptRate: null,
     });
     const b = effectivenessScore({
       outputInputRatio: 2.0,
@@ -236,29 +266,44 @@ describe('effectivenessScore', () => {
       avgRating: null,
       correctionDensity: 0,
       toolErrorRate: null,
+      acceptRate: null,
     });
     expect(a).toBeCloseTo(b, 5);
   });
 
   it('null toolErrorRate is ignored (session with no tool calls)', () => {
+    const score = effectivenessScore({
+      outputInputRatio: null,
+      cacheHitRatio: null,
+      avgRating: 1,
+      correctionDensity: 0,
+      toolErrorRate: null,
+      acceptRate: null,
+    });
+    expect(score).toBeCloseTo(100, 5);
+  });
+
+  it('null acceptRate is ignored (OTEL off or no decisions)', () => {
     const withNull = effectivenessScore({
       outputInputRatio: null,
       cacheHitRatio: null,
       avgRating: 1,
       correctionDensity: 0,
       toolErrorRate: null,
+      acceptRate: null,
     });
-    const withZero = effectivenessScore({
+    const withPerfect = effectivenessScore({
       outputInputRatio: null,
       cacheHitRatio: null,
       avgRating: 1,
       correctionDensity: 0,
-      toolErrorRate: 0,
+      toolErrorRate: null,
+      acceptRate: 1,
     });
-    // Both should be 100 because the remaining signals are all perfect;
-    // null vs zero just changes the weight redistribution.
+    // Both should be 100 because remaining signals are perfect;
+    // null just changes weight redistribution.
     expect(withNull).toBeCloseTo(100, 5);
-    expect(withZero).toBeCloseTo(100, 5);
+    expect(withPerfect).toBeCloseTo(100, 5);
   });
 });
 

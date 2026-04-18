@@ -47,6 +47,9 @@ function main(): number {
     db.prepare('DELETE FROM tool_calls').run();
     db.prepare('DELETE FROM turns').run();
     db.prepare("DELETE FROM sessions WHERE id LIKE 'seed-%'").run();
+    db.prepare(
+      "DELETE FROM otel_scrapes WHERE json_extract(labels_json, '$.session_id') LIKE 'seed-%'",
+    ).run();
 
     const insertSession = db.prepare(
       `INSERT INTO sessions (
@@ -82,6 +85,10 @@ function main(): number {
     );
     const insertRating = db.prepare(
       `INSERT INTO ratings (turn_id, rating, note, rated_at) VALUES (@turn_id, @rating, @note, @rated_at)`
+    );
+    const insertOtel = db.prepare(
+      `INSERT INTO otel_scrapes (scraped_at, metric_name, labels_json, value)
+       VALUES (@scraped_at, @metric_name, @labels_json, @value)`
     );
 
     const now = Date.now();
@@ -234,6 +241,60 @@ function main(): number {
             rated_at: now,
           });
           totalRatings += 1;
+        }
+
+        // OTEL synthetic data for ~70% of sessions, to exercise the
+        // effectiveness OTEL insights section. Covers Edit/Write decisions,
+        // lines of code, active time, and commits.
+        const hasOtel = rand() < 0.7;
+        if (hasOtel) {
+          const edits = sessionToolCallCount > 0 ? sessionToolCallCount : turnCount;
+          const accepts = Math.max(1, Math.round(edits * (0.6 + rand() * 0.35)));
+          const rejects = Math.max(0, edits - accepts);
+          const linesAdded = randInt(turnCount * 5, turnCount * 40);
+          const linesRemoved = randInt(Math.floor(linesAdded * 0.1), Math.floor(linesAdded * 0.4));
+          const activeSeconds = Math.max(60, Math.round(durationMin * 60 * (0.4 + rand() * 0.5)));
+          const commits = rand() < 0.5 ? randInt(1, 3) : 0;
+
+          const scrapedAt = endedAt;
+          insertOtel.run({
+            scraped_at: scrapedAt,
+            metric_name: 'claude_code_code_edit_tool_decision_count_total',
+            labels_json: JSON.stringify({ session_id: sessionId, decision: 'accept' }),
+            value: accepts,
+          });
+          insertOtel.run({
+            scraped_at: scrapedAt,
+            metric_name: 'claude_code_code_edit_tool_decision_count_total',
+            labels_json: JSON.stringify({ session_id: sessionId, decision: 'reject' }),
+            value: rejects,
+          });
+          insertOtel.run({
+            scraped_at: scrapedAt,
+            metric_name: 'claude_code_lines_of_code_count_total',
+            labels_json: JSON.stringify({ session_id: sessionId, type: 'added' }),
+            value: linesAdded,
+          });
+          insertOtel.run({
+            scraped_at: scrapedAt,
+            metric_name: 'claude_code_lines_of_code_count_total',
+            labels_json: JSON.stringify({ session_id: sessionId, type: 'removed' }),
+            value: linesRemoved,
+          });
+          insertOtel.run({
+            scraped_at: scrapedAt,
+            metric_name: 'claude_code_active_time_total_seconds_total',
+            labels_json: JSON.stringify({ session_id: sessionId }),
+            value: activeSeconds,
+          });
+          if (commits > 0) {
+            insertOtel.run({
+              scraped_at: scrapedAt,
+              metric_name: 'claude_code_commit_count_total',
+              labels_json: JSON.stringify({ session_id: sessionId }),
+              value: commits,
+            });
+          }
         }
       });
       runTx();

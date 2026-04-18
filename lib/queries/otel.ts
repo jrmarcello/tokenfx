@@ -1,0 +1,374 @@
+import type { DB } from '@/lib/db/client';
+
+/**
+ * Aggregations over the `otel_scrapes` append-only table.
+ *
+ * Claude Code exports Prometheus counters with `session_id` as a label, so
+ * each (session_id, metric, labels...) combination is a distinct time
+ * series that grows monotonically until the Claude Code process exits.
+ * We scrape periodically, so a single series has multiple rows in
+ * `otel_scrapes` with increasing values — the last (MAX) value is the
+ * "final count" for that series.
+ *
+ * All queries here MAX per series and then aggregate, which is correct for
+ * counters that don't reset within a series' active lifetime. Counter
+ * resets across Claude Code process restarts aren't handled — for a
+ * personal dashboard the small undercounting that implies is acceptable.
+ *
+ * When there are no scrapes at all (OTEL disabled), every query returns
+ * zeros/empty arrays and `hasOtelData` is false. Callers use that flag
+ * to hide OTEL-derived UI gracefully.
+ */
+
+const DAY_MS = 86_400_000;
+const WEEK_MS = 7 * DAY_MS;
+
+const METRIC_DECISION = 'claude_code_code_edit_tool_decision_count_total';
+const METRIC_LINES = 'claude_code_lines_of_code_count_total';
+const METRIC_COMMITS = 'claude_code_commit_count_total';
+const METRIC_PRS = 'claude_code_pull_request_count_total';
+const METRIC_ACTIVE = 'claude_code_active_time_total_seconds_total';
+
+export type OtelInsights = {
+  hasOtelData: boolean;
+  acceptRate: number | null; // accepts / (accepts + rejects); null when zero decisions
+  totalAccepts: number;
+  totalRejects: number;
+  totalLinesAdded: number;
+  totalLinesRemoved: number;
+  totalCommits: number;
+  totalPullRequests: number;
+  totalActiveSeconds: number;
+  costPerLineOfCode: number | null; // null when no code events
+};
+
+export type WeeklyAcceptRatePoint = {
+  week: string;
+  acceptRate: number;
+  accepts: number;
+  rejects: number;
+};
+
+export type SessionOtelStats = {
+  hasData: boolean;
+  accepts: number;
+  rejects: number;
+  acceptRate: number | null;
+  linesAdded: number;
+  linesRemoved: number;
+  activeSeconds: number;
+  commits: number;
+};
+
+type NumRow = { v: number | null };
+
+/**
+ * SQL fragment that yields one row per (session_id, decision) with the
+ * MAX observed counter value for that series. Used by multiple queries.
+ */
+const DECISION_SERIES_SQL = `
+  SELECT json_extract(labels_json, '$.session_id') AS session_id,
+         json_extract(labels_json, '$.decision')   AS decision,
+         MAX(value)                                AS final_value
+  FROM otel_scrapes
+  WHERE metric_name = '${METRIC_DECISION}'
+    AND json_extract(labels_json, '$.session_id') IS NOT NULL
+  GROUP BY session_id, decision
+`;
+
+const LINES_SERIES_SQL = `
+  SELECT json_extract(labels_json, '$.session_id') AS session_id,
+         json_extract(labels_json, '$.type')       AS type,
+         MAX(value)                                AS final_value
+  FROM otel_scrapes
+  WHERE metric_name = '${METRIC_LINES}'
+    AND json_extract(labels_json, '$.session_id') IS NOT NULL
+  GROUP BY session_id, type
+`;
+
+function hasAnyOtelScrapes(db: DB): boolean {
+  const row = db
+    .prepare('SELECT 1 FROM otel_scrapes LIMIT 1')
+    .get() as unknown;
+  return row !== undefined;
+}
+
+/**
+ * Global OTEL insights for the dashboard's /effectiveness page. Scoped to
+ * sessions that started within the last `days`. All numeric fields fall
+ * back to 0 (or null for rates) when OTEL has no data — callers should
+ * check `hasOtelData` before rendering the section.
+ */
+export function getOtelInsights(db: DB, days: number): OtelInsights {
+  const empty: OtelInsights = {
+    hasOtelData: false,
+    acceptRate: null,
+    totalAccepts: 0,
+    totalRejects: 0,
+    totalLinesAdded: 0,
+    totalLinesRemoved: 0,
+    totalCommits: 0,
+    totalPullRequests: 0,
+    totalActiveSeconds: 0,
+    costPerLineOfCode: null,
+  };
+  if (!hasAnyOtelScrapes(db)) return empty;
+
+  const cutoff = Date.now() - days * DAY_MS;
+
+  const decisionRow = db
+    .prepare(
+      `WITH d AS (${DECISION_SERIES_SQL})
+       SELECT
+         COALESCE(SUM(CASE WHEN decision = 'accept' THEN final_value ELSE 0 END), 0) AS accepts,
+         COALESCE(SUM(CASE WHEN decision = 'reject' THEN final_value ELSE 0 END), 0) AS rejects
+       FROM d
+       JOIN sessions s ON s.id = d.session_id
+       WHERE s.started_at >= ?`,
+    )
+    .get(cutoff) as { accepts: number; rejects: number } | undefined;
+
+  const linesRow = db
+    .prepare(
+      `WITH l AS (${LINES_SERIES_SQL})
+       SELECT
+         COALESCE(SUM(CASE WHEN type = 'added' THEN final_value ELSE 0 END), 0) AS added,
+         COALESCE(SUM(CASE WHEN type = 'removed' THEN final_value ELSE 0 END), 0) AS removed
+       FROM l
+       JOIN sessions s ON s.id = l.session_id
+       WHERE s.started_at >= ?`,
+    )
+    .get(cutoff) as { added: number; removed: number } | undefined;
+
+  const scalar = (metric: string): number => {
+    const row = db
+      .prepare(
+        `SELECT COALESCE(SUM(max_val), 0) AS v FROM (
+           SELECT MAX(value) AS max_val
+           FROM otel_scrapes o
+           JOIN sessions s
+             ON s.id = json_extract(o.labels_json, '$.session_id')
+           WHERE o.metric_name = ?
+             AND s.started_at >= ?
+           GROUP BY json_extract(o.labels_json, '$.session_id')
+         )`,
+      )
+      .get(metric, cutoff) as NumRow | undefined;
+    return row?.v ?? 0;
+  };
+
+  const totalCommits = scalar(METRIC_COMMITS);
+  const totalPullRequests = scalar(METRIC_PRS);
+  const totalActiveSeconds = scalar(METRIC_ACTIVE);
+
+  const accepts = decisionRow?.accepts ?? 0;
+  const rejects = decisionRow?.rejects ?? 0;
+  const decisions = accepts + rejects;
+  const acceptRate = decisions > 0 ? accepts / decisions : null;
+
+  const totalLinesAdded = linesRow?.added ?? 0;
+  const totalLinesRemoved = linesRow?.removed ?? 0;
+  const totalLinesTouched = totalLinesAdded + totalLinesRemoved;
+
+  // Cost per line = total session cost (in window) / lines touched. Uses
+  // the canonical sessions.total_cost_usd so the metric matches the
+  // rest of the dashboard.
+  let costPerLineOfCode: number | null = null;
+  if (totalLinesTouched > 0) {
+    const costRow = db
+      .prepare(
+        'SELECT COALESCE(SUM(total_cost_usd), 0) AS v FROM sessions WHERE started_at >= ?',
+      )
+      .get(cutoff) as NumRow | undefined;
+    const cost = costRow?.v ?? 0;
+    costPerLineOfCode = cost / totalLinesTouched;
+  }
+
+  const hasOtelData =
+    decisions > 0 ||
+    totalLinesTouched > 0 ||
+    totalCommits > 0 ||
+    totalPullRequests > 0 ||
+    totalActiveSeconds > 0;
+
+  return {
+    hasOtelData,
+    acceptRate,
+    totalAccepts: accepts,
+    totalRejects: rejects,
+    totalLinesAdded,
+    totalLinesRemoved,
+    totalCommits,
+    totalPullRequests,
+    totalActiveSeconds,
+    costPerLineOfCode,
+  };
+}
+
+/**
+ * Weekly accept rate (accepts / (accepts + rejects)) grouped by the week
+ * a session started in. Returns [] when there's no OTEL decision data.
+ */
+export function getWeeklyAcceptRate(
+  db: DB,
+  weeks: number,
+): WeeklyAcceptRatePoint[] {
+  if (!hasAnyOtelScrapes(db)) return [];
+  const cutoff = Date.now() - weeks * WEEK_MS;
+  const rows = db
+    .prepare(
+      `WITH d AS (${DECISION_SERIES_SQL})
+       SELECT
+         strftime('%Y-%W', s.started_at/1000, 'unixepoch', 'localtime') AS week,
+         COALESCE(SUM(CASE WHEN d.decision = 'accept' THEN d.final_value ELSE 0 END), 0) AS accepts,
+         COALESCE(SUM(CASE WHEN d.decision = 'reject' THEN d.final_value ELSE 0 END), 0) AS rejects
+       FROM d
+       JOIN sessions s ON s.id = d.session_id
+       WHERE s.started_at >= ?
+       GROUP BY week
+       ORDER BY week ASC`,
+    )
+    .all(cutoff) as Array<{ week: string; accepts: number; rejects: number }>;
+
+  return rows
+    .filter((r) => r.accepts + r.rejects > 0)
+    .map((r) => ({
+      week: r.week,
+      accepts: r.accepts,
+      rejects: r.rejects,
+      acceptRate: r.accepts / (r.accepts + r.rejects),
+    }));
+}
+
+/**
+ * Per-session OTEL stats for the session detail page. Returns hasData=false
+ * when the session has no OTEL events (either OTEL is off, or the session
+ * pre-dates OTEL activation). Callers should hide the extra KPI row then.
+ */
+export function getSessionOtelStats(
+  db: DB,
+  sessionId: string,
+): SessionOtelStats {
+  const empty: SessionOtelStats = {
+    hasData: false,
+    accepts: 0,
+    rejects: 0,
+    acceptRate: null,
+    linesAdded: 0,
+    linesRemoved: 0,
+    activeSeconds: 0,
+    commits: 0,
+  };
+  if (!hasAnyOtelScrapes(db)) return empty;
+
+  const decisionRow = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN json_extract(labels_json, '$.decision') = 'accept' THEN max_val ELSE 0 END), 0) AS accepts,
+         COALESCE(SUM(CASE WHEN json_extract(labels_json, '$.decision') = 'reject' THEN max_val ELSE 0 END), 0) AS rejects
+       FROM (
+         SELECT labels_json, MAX(value) AS max_val
+         FROM otel_scrapes
+         WHERE metric_name = ?
+           AND json_extract(labels_json, '$.session_id') = ?
+         GROUP BY json_extract(labels_json, '$.decision')
+       )`,
+    )
+    .get(METRIC_DECISION, sessionId) as
+    | { accepts: number; rejects: number }
+    | undefined;
+
+  const linesRow = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN json_extract(labels_json, '$.type') = 'added' THEN max_val ELSE 0 END), 0) AS added,
+         COALESCE(SUM(CASE WHEN json_extract(labels_json, '$.type') = 'removed' THEN max_val ELSE 0 END), 0) AS removed
+       FROM (
+         SELECT labels_json, MAX(value) AS max_val
+         FROM otel_scrapes
+         WHERE metric_name = ?
+           AND json_extract(labels_json, '$.session_id') = ?
+         GROUP BY json_extract(labels_json, '$.type')
+       )`,
+    )
+    .get(METRIC_LINES, sessionId) as
+    | { added: number; removed: number }
+    | undefined;
+
+  const scalarForSession = (metric: string): number => {
+    const row = db
+      .prepare(
+        `SELECT COALESCE(MAX(value), 0) AS v
+         FROM otel_scrapes
+         WHERE metric_name = ?
+           AND json_extract(labels_json, '$.session_id') = ?`,
+      )
+      .get(metric, sessionId) as NumRow | undefined;
+    return row?.v ?? 0;
+  };
+
+  const accepts = decisionRow?.accepts ?? 0;
+  const rejects = decisionRow?.rejects ?? 0;
+  const linesAdded = linesRow?.added ?? 0;
+  const linesRemoved = linesRow?.removed ?? 0;
+  const activeSeconds = scalarForSession(METRIC_ACTIVE);
+  const commits = scalarForSession(METRIC_COMMITS);
+
+  const hasData =
+    accepts + rejects > 0 ||
+    linesAdded + linesRemoved > 0 ||
+    activeSeconds > 0 ||
+    commits > 0;
+
+  const acceptRate =
+    accepts + rejects > 0 ? accepts / (accepts + rejects) : null;
+
+  return {
+    hasData,
+    accepts,
+    rejects,
+    acceptRate,
+    linesAdded,
+    linesRemoved,
+    activeSeconds,
+    commits,
+  };
+}
+
+/**
+ * Map of sessionId → acceptRate, for sessions in the given window that
+ * have OTEL decision data. Used by `effectiveness.ts` to feed the score
+ * composite without running a per-session query in a loop.
+ */
+export function getAcceptRatesBySession(
+  db: DB,
+  days: number,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!hasAnyOtelScrapes(db)) return out;
+  const cutoff = Date.now() - days * DAY_MS;
+  const rows = db
+    .prepare(
+      `WITH d AS (${DECISION_SERIES_SQL})
+       SELECT
+         d.session_id AS sessionId,
+         COALESCE(SUM(CASE WHEN d.decision = 'accept' THEN d.final_value ELSE 0 END), 0) AS accepts,
+         COALESCE(SUM(CASE WHEN d.decision = 'reject' THEN d.final_value ELSE 0 END), 0) AS rejects
+       FROM d
+       JOIN sessions s ON s.id = d.session_id
+       WHERE s.started_at >= ?
+       GROUP BY d.session_id`,
+    )
+    .all(cutoff) as Array<{
+    sessionId: string;
+    accepts: number;
+    rejects: number;
+  }>;
+  for (const r of rows) {
+    const decisions = r.accepts + r.rejects;
+    if (decisions > 0) {
+      out.set(r.sessionId, r.accepts / decisions);
+    }
+  }
+  return out;
+}

@@ -2,10 +2,17 @@ import { notFound } from 'next/navigation';
 import { getDb } from '@/lib/db/client';
 import { ensureFreshIngest } from '@/lib/ingest/auto';
 import { getSession, getTurns } from '@/lib/queries/session';
+import { getSessionOtelStats } from '@/lib/queries/otel';
 import { TranscriptViewer } from '@/components/transcript-viewer';
 import { KpiCard } from '@/components/kpi-card';
 import { BranchIcon } from '@/components/icons';
-import { fmtUsd, fmtDateTime, fmtPct, fmtRating } from '@/lib/fmt';
+import {
+  fmtUsd,
+  fmtDateTime,
+  fmtPct,
+  fmtRating,
+  fmtCompact,
+} from '@/lib/fmt';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -21,6 +28,14 @@ export default async function SessionPage({
   const session = getSession(db, id);
   if (!session) notFound();
   const turns = getTurns(db, id);
+  const otel = getSessionOtelStats(db, id);
+
+  const fmtDurationShort = (s: number): string => {
+    if (s <= 0) return '0s';
+    if (s < 60) return `${Math.round(s)}s`;
+    if (s < 3600) return `${Math.round(s / 60)}m`;
+    return `${(s / 3600).toFixed(1)}h`;
+  };
 
   return (
     <section className="space-y-8">
@@ -74,6 +89,33 @@ export default async function SessionPage({
           info="Média das avaliações manuais dos turnos (-1 a +1). Nulo quando nenhum turno foi avaliado. Cada turno tem botões Bom / Neutro / Ruim no viewer abaixo."
         />
       </div>
+
+      {otel.hasData && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <KpiCard
+            title="Accept rate (OTEL)"
+            value={fmtPct(otel.acceptRate)}
+            hint={`${fmtCompact(otel.accepts)} aceitas · ${fmtCompact(otel.rejects)} rejeitadas`}
+            info="Proporção de Edit/Write/NotebookEdit aceitos nesta sessão. Só aparece quando o Claude Code está exportando Prometheus."
+          />
+          <KpiCard
+            title="Linhas +"
+            value={fmtCompact(otel.linesAdded)}
+            info="Linhas de código adicionadas pelo Claude Code nesta sessão (apenas via edits aceitos)."
+          />
+          <KpiCard
+            title="Linhas −"
+            value={fmtCompact(otel.linesRemoved)}
+            info="Linhas de código removidas pelo Claude Code nesta sessão."
+          />
+          <KpiCard
+            title="Active time"
+            value={fmtDurationShort(otel.activeSeconds)}
+            hint={otel.commits > 0 ? `${otel.commits} commits` : undefined}
+            info="Tempo real de uso ativo nesta sessão (não calendar time). Útil pra ver se a sessão foi densa ou teve muitas pausas."
+          />
+        </div>
+      )}
 
       <TranscriptViewer turns={turns} />
     </section>
