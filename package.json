@@ -14,7 +14,9 @@
     "seed-dev": "tsx scripts/seed-dev.ts",
     "setup": "pnpm install && pnpm seed-dev",
     "fresh": "rm -f data/dashboard.db data/dashboard.db-wal data/dashboard.db-shm && pnpm ingest",
-    "validate": "pnpm typecheck && pnpm lint && pnpm test --run"
+    "validate": "pnpm typecheck && pnpm lint && pnpm test --run",
+    "changelog": "git-cliff --output /dev/stdout",
+    "release": "bash scripts/release.sh"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",

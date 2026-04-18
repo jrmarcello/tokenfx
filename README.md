@@ -236,6 +236,8 @@ Cadência recomendada: conferir `https://www.anthropic.com/pricing` a cada 30–
 | `pnpm setup` | `install && seed-dev` — primeiro run |
 | `pnpm fresh` | Apaga DB e re-ingere do zero |
 | `pnpm validate` | `typecheck && lint && test --run` |
+| `pnpm changelog` | Preview do CHANGELOG.md a partir dos commits (não sobrescreve arquivo) |
+| `pnpm release VERSION=X.Y.Z` | Gera CHANGELOG via `git-cliff`, cria tag anotada e publica GitHub Release |
 
 ### Variáveis de ambiente
 
@@ -302,3 +304,24 @@ Contagem atual: **117** unit+integration, **3** E2E. Rode `pnpm validate && pnpm
 - Zod em toda fronteira de ingestão/API.
 
 Regras completas em `.claude/rules/` (auto-aplicadas via hooks + referenciadas pelos agentes documentados em `CLAUDE.md`).
+
+### Specs
+
+Specs ativas em `.specs/`. O MVP está em [.specs/dashboard-mvp.md](.specs/dashboard-mvp.md) (status: `DONE`). Para mudanças não-triviais, copie [.specs/TEMPLATE.md](.specs/TEMPLATE.md) e siga o workflow SDD (`/spec` → aprovar → `/ralph-loop` → `/spec-review`).
+
+### Contribuindo
+
+Guia completo em [CONTRIBUTING.md](CONTRIBUTING.md) — cobre setup, convenções de commit, checklist de PR, fluxo de release e workflow SDD.
+
+Commits seguem **Conventional Commits** e o `cliff.toml` roteia cada tipo pra uma seção do [CHANGELOG.md](CHANGELOG.md):
+
+```text
+feat(scope):     Funcionalidades
+fix(scope):      Correções
+refactor(scope): Refatoração
+docs(scope):     Documentação
+test(scope):     Testes
+chore(scope):    Manutenção
+```
+
+Não edite `CHANGELOG.md` à mão — ele é regenerado por `git-cliff` a cada `pnpm release VERSION=X.Y.Z`. Para prever o output a qualquer momento: `pnpm changelog`.

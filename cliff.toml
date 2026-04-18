@@ -1,0 +1,63 @@
+# git-cliff configuration
+# Generates CHANGELOG.md from Conventional Commits.
+# Usage:
+#   pnpm changelog               → preview on stdout
+#   pnpm release VERSION=X.Y.Z   → write CHANGELOG.md + tag + push
+
+[changelog]
+header = """# Changelog
+
+Todas as mudanças notáveis deste projeto estão documentadas aqui.
+
+Formato baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Commits seguem [Conventional Commits](https://www.conventionalcommits.org/).
+
+---
+
+"""
+body = """
+{% if version %}\
+    ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+    ## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+    ### {{ group | striptags | trim | upper_first }}
+    {% for commit in commits %}
+        - {% if commit.scope %}**{{ commit.scope }}**: {% endif %}\
+            {{ commit.message | upper_first }}\
+    {% endfor %}
+{% endfor %}\n
+"""
+footer = """
+---
+
+> Gerado automaticamente com [git-cliff](https://github.com/orhun/git-cliff).
+> Para entradas manuais, edite `CHANGELOG.md` após `pnpm release`.
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+
+commit_parsers = [
+    { message = "^feat",     group = "Funcionalidades" },
+    { message = "^fix",      group = "Correções" },
+    { message = "^refactor", group = "Refatoração" },
+    { message = "^docs",     group = "Documentação" },
+    { message = "^test",     group = "Testes" },
+    { message = "^chore",    group = "Manutenção" },
+    { message = "^perf",     group = "Performance" },
+    { message = "^ci",       group = "CI/CD" },
+    { message = "^style",    group = "Estilo" },
+    { message = "^build",    group = "Build" },
+    # Skip merge commits
+    { message = "^Merge",    skip = true },
+    { message = "^Merged",   skip = true },
+]
+
+filter_commits = false
+tag_pattern = "v[0-9].*"
+sort_commits = "newest"
