@@ -19,6 +19,8 @@ export type TopSession = {
   turnCount: number;
 };
 
+type NumRow = { v: number };
+
 type PreparedSet = {
   spendSince: import('better-sqlite3').Statement<[number]>;
   tokensSince: import('better-sqlite3').Statement<[number]>;
@@ -90,14 +92,14 @@ export function getOverviewKpis(db: DB): OverviewKpis {
   const cutoff7 = now - 7 * DAY_MS;
   const cutoffToday = startOfTodayLocalMs(now);
 
-  const spend30d = (p.spendSince.get(cutoff30) as { v: number } | undefined)?.v ?? 0;
-  const spendToday = (p.spendSince.get(cutoffToday) as { v: number } | undefined)?.v ?? 0;
-  const spend7d = (p.spendSince.get(cutoff7) as { v: number } | undefined)?.v ?? 0;
-  const tokens30d = (p.tokensSince.get(cutoff30) as { v: number } | undefined)?.v ?? 0;
+  const spend30d = (p.spendSince.get(cutoff30) as NumRow | undefined)?.v ?? 0;
+  const spendToday = (p.spendSince.get(cutoffToday) as NumRow | undefined)?.v ?? 0;
+  const spend7d = (p.spendSince.get(cutoff7) as NumRow | undefined)?.v ?? 0;
+  const tokens30d = (p.tokensSince.get(cutoff30) as NumRow | undefined)?.v ?? 0;
   const cacheHitRatio30d =
-    (p.cacheRatioSince.get(cutoff30) as { v: number } | undefined)?.v ?? 0;
+    (p.cacheRatioSince.get(cutoff30) as NumRow | undefined)?.v ?? 0;
   const sessionCount30d =
-    (p.sessionCountSince.get(cutoff30) as { v: number } | undefined)?.v ?? 0;
+    (p.sessionCountSince.get(cutoff30) as NumRow | undefined)?.v ?? 0;
 
   return {
     spend30d,

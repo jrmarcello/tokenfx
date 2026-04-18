@@ -86,7 +86,9 @@ export type ParsedToolCall = {
 export type ParsedTurn = {
   id: string;
   parentUuid: string | null;
-  sequence: number;
+  // null at parse time; the writer's reconcile pass assigns the authoritative
+  // chronological sequence after all files for a session have been ingested.
+  sequence: number | null;
   timestamp: number;
   model: string;
   inputTokens: number;

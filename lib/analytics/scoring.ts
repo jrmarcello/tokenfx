@@ -1,7 +1,9 @@
 export type TurnLike = {
   id: string;
   userPrompt: string | null;
-  sequence: number;
+  // Retained for callers that order by sequence before passing an array in;
+  // `correctionPenalties` itself only uses array order.
+  sequence: number | null;
 };
 
 /**

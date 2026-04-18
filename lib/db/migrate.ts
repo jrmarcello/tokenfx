@@ -23,16 +23,18 @@ function resolveSchemaPath(): string {
 export function migrate(db: DB): void {
   const schemaPath = resolveSchemaPath();
   const sql = fs.readFileSync(schemaPath, 'utf8');
-  db.exec(sql);
-  // Heal pre-existing data: older ingestion runs wrote per-file `sequence`
-  // values and stale rollups when a Claude Code session spanned multiple
-  // JSONL files. Fresh DBs hit the no-op path (zero sessions).
-  const hasData = db
-    .prepare('SELECT 1 FROM sessions LIMIT 1')
-    .get() !== undefined;
-  if (hasData) {
-    reconcileAllSessions(db);
-  }
+  // Atomic migration: schema creation + reconciliation run in a single
+  // transaction so a crash mid-migrate leaves no partial state.
+  const tx = db.transaction(() => {
+    db.exec(sql);
+    const hasData = db
+      .prepare('SELECT 1 FROM sessions LIMIT 1')
+      .get() !== undefined;
+    if (hasData) {
+      reconcileAllSessions(db);
+    }
+  });
+  tx();
 }
 
 export function ensureMigrated(db: DB): void {

@@ -194,10 +194,6 @@ Anthropic **não expõe uma API de pricing**, e scraping da página é frágil (
 
 Cadência recomendada: conferir `https://www.anthropic.com/pricing` a cada 30–60 dias, atualizar a tabela + bump da constante. É 2 minutos de trabalho por auditoria.
 
-### Watch mode
-
-`pnpm ingest --watch` tá stub (roda uma passada só e loga warning). Se quiser ingestão contínua, enfie sob `watchexec` ou um LaunchAgent. Na prática **você não precisa**: o auto-ingest on-page-load já resolve pro caso comum, e a ingest bruta é rápida (segundos pra centenas de sessões).
-
 ### Customizar
 
 - **Nova primitive de UI?** Cai em `components/ui/`. Mantém a API drop-in (Card/Button/etc.) pra que possa ser trocada por uma lib externa depois sem mexer nos call sites.

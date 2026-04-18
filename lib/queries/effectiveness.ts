@@ -28,6 +28,12 @@ export type SessionScore = {
 
 const DAY_MS = 86_400_000;
 const WEEK_MS = 7 * DAY_MS;
+// Cap on how many top-cost sessions get scored per call. `getSessionScores`
+// fetches turns per session to compute correction penalties, so total queries
+// scale as 2 + N (one top-sessions query + one accept-rates aggregate + one
+// turns query per session). 50 is a reasonable upper bound for a personal
+// dashboard; raising it means more queries per page load. To remove the cap
+// entirely, push the penalty computation into SQL.
 const MAX_SCORED_SESSIONS = 50;
 
 type KpiRow = {

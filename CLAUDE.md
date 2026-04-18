@@ -1,5 +1,3 @@
-@AGENTS.md
-
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -21,7 +19,6 @@ pnpm test                 # Vitest watch mode
 pnpm test --run           # Vitest single run
 pnpm test:e2e             # Playwright end-to-end tests
 pnpm ingest               # One-shot ingestion of transcripts + OTEL metrics
-pnpm ingest --watch       # Continuous ingestion
 pnpm seed-dev             # Seed local DB with synthetic data for development
 ```
 

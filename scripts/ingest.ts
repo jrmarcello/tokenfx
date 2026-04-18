@@ -11,8 +11,6 @@ import { log } from '@/lib/logger';
 const DEFAULT_OTEL_URL = 'http://localhost:9464/metrics';
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const watch = args.includes('--watch');
   // Auto-detect OTEL: try the default Prometheus endpoint that Claude Code
   // exposes when telemetry is enabled. If it isn't up, the fetch fails fast
   // (1s timeout) and transcript ingestion still succeeds.
@@ -26,10 +24,6 @@ async function main(): Promise<void> {
         `Costs may be inaccurate — audit lib/analytics/pricing.ts against ` +
         `https://www.anthropic.com/pricing.`,
     );
-  }
-
-  if (watch) {
-    log.warn('watch mode: not implemented yet; running single pass');
   }
 
   const summary = await ingestAll({

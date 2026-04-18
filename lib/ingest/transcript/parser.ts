@@ -106,9 +106,11 @@ export function parseTranscriptString(
     }
   }
 
-  // Build turns from assistant entries (in file order)
+  // Build turns from assistant entries (in file order). `sequence` is left
+  // null here — a session can span multiple JSONL files (sub-agents, rotation)
+  // and per-file numbering would collide. The writer's reconcile pass assigns
+  // 1..N chronologically after all files are ingested.
   const turns: ParsedTurn[] = [];
-  let seq = 0;
   for (let idx = 0; idx < entries.length; idx++) {
     const e = entries[idx];
     if (e.type !== 'assistant') continue;
@@ -164,7 +166,7 @@ export function parseTranscriptString(
     turns.push({
       id: e.uuid,
       parentUuid: e.parentUuid ?? null,
-      sequence: seq++,
+      sequence: null,
       timestamp: Date.parse(e.timestamp),
       model: msg.data.model,
       inputTokens: usage.input_tokens ?? 0,

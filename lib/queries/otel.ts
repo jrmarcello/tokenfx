@@ -65,13 +65,15 @@ type NumRow = { v: number | null };
 /**
  * SQL fragment that yields one row per (session_id, decision) with the
  * MAX observed counter value for that series. Used by multiple queries.
+ * `metric_name` is a bound parameter — callers must bind METRIC_DECISION
+ * as the first positional parameter before any query-specific bindings.
  */
 const DECISION_SERIES_SQL = `
   SELECT json_extract(labels_json, '$.session_id') AS session_id,
          json_extract(labels_json, '$.decision')   AS decision,
          MAX(value)                                AS final_value
   FROM otel_scrapes
-  WHERE metric_name = '${METRIC_DECISION}'
+  WHERE metric_name = ?
     AND json_extract(labels_json, '$.session_id') IS NOT NULL
   GROUP BY session_id, decision
 `;
@@ -81,7 +83,7 @@ const LINES_SERIES_SQL = `
          json_extract(labels_json, '$.type')       AS type,
          MAX(value)                                AS final_value
   FROM otel_scrapes
-  WHERE metric_name = '${METRIC_LINES}'
+  WHERE metric_name = ?
     AND json_extract(labels_json, '$.session_id') IS NOT NULL
   GROUP BY session_id, type
 `;
@@ -126,7 +128,7 @@ export function getOtelInsights(db: DB, days: number): OtelInsights {
        JOIN sessions s ON s.id = d.session_id
        WHERE s.started_at >= ?`,
     )
-    .get(cutoff) as { accepts: number; rejects: number } | undefined;
+    .get(METRIC_DECISION, cutoff) as { accepts: number; rejects: number } | undefined;
 
   const linesRow = db
     .prepare(
@@ -138,7 +140,7 @@ export function getOtelInsights(db: DB, days: number): OtelInsights {
        JOIN sessions s ON s.id = l.session_id
        WHERE s.started_at >= ?`,
     )
-    .get(cutoff) as { added: number; removed: number } | undefined;
+    .get(METRIC_LINES, cutoff) as { added: number; removed: number } | undefined;
 
   const scalar = (metric: string): number => {
     const row = db
@@ -228,7 +230,7 @@ export function getWeeklyAcceptRate(
        GROUP BY week
        ORDER BY week ASC`,
     )
-    .all(cutoff) as Array<{ week: string; accepts: number; rejects: number }>;
+    .all(METRIC_DECISION, cutoff) as Array<{ week: string; accepts: number; rejects: number }>;
 
   return rows
     .filter((r) => r.accepts + r.rejects > 0)
@@ -359,7 +361,7 @@ export function getAcceptRatesBySession(
        WHERE s.started_at >= ?
        GROUP BY d.session_id`,
     )
-    .all(cutoff) as Array<{
+    .all(METRIC_DECISION, cutoff) as Array<{
     sessionId: string;
     accepts: number;
     rejects: number;
