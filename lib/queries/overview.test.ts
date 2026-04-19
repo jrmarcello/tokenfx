@@ -165,6 +165,50 @@ describe('overview queries', () => {
       const totalSpend = series.reduce((acc, pt) => acc + pt.spend, 0);
       expect(totalSpend).toBeCloseTo(1.5 + 2.25 + 5.0, 5);
     });
+
+    // TC-I-01: REQ-8, happy — two sessions on same local day aggregate sessionCount + spend
+    it('getDailySpend: TC-I-01 — same-day sessions aggregate sessionCount and sum spend', () => {
+      const isolatedDb = freshDb();
+      const start = new Date();
+      start.setHours(9, 0, 0, 0);
+      const at9am = start.getTime();
+      const at3pm = at9am + 6 * 60 * 60 * 1000;
+      insertSession(isolatedDb, {
+        id: 'same-day-1',
+        startedAt: at9am,
+        costUsd: 1.25,
+      });
+      insertSession(isolatedDb, {
+        id: 'same-day-2',
+        startedAt: at3pm,
+        costUsd: 2.75,
+      });
+
+      const series = getDailySpend(isolatedDb, 30);
+      const y = start.getFullYear();
+      const m = String(start.getMonth() + 1).padStart(2, '0');
+      const d = String(start.getDate()).padStart(2, '0');
+      const todayKey = `${y}-${m}-${d}`;
+      const todayPoint = series.find((pt) => pt.date === todayKey);
+      expect(todayPoint).toBeDefined();
+      expect(todayPoint?.sessionCount).toBe(2);
+      expect(todayPoint?.spend).toBeCloseTo(1.25 + 2.75, 5);
+    });
+
+    // TC-I-02: REQ-8, edge — zero-filled day has sessionCount: 0, spend: 0
+    it('getDailySpend: TC-I-02 — days without sessions emit sessionCount:0, spend:0', () => {
+      const series = getDailySpend(db, 30);
+      // Find a day with no session (15 days ago — no seeded session on this day)
+      const fifteenDaysAgo = new Date(now - 15 * DAY_MS);
+      const y = fifteenDaysAgo.getFullYear();
+      const m = String(fifteenDaysAgo.getMonth() + 1).padStart(2, '0');
+      const d = String(fifteenDaysAgo.getDate()).padStart(2, '0');
+      const key = `${y}-${m}-${d}`;
+      const point = series.find((pt) => pt.date === key);
+      expect(point).toBeDefined();
+      expect(point?.sessionCount).toBe(0);
+      expect(point?.spend).toBe(0);
+    });
   });
 
   describe('with empty database', () => {

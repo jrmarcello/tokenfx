@@ -23,6 +23,49 @@ test.describe('smoke', () => {
     await expect(page.getByText(/First user prompt for e2e-1/)).toBeVisible();
   });
 
+  test('TC-E2E-05: home page renders activity heatmap with at least one non-empty cell', async ({ page }) => {
+    await page.goto('/');
+    await expect(
+      page.getByRole('heading', { name: 'Atividade do último ano' }),
+    ).toBeVisible();
+    // Seed contains a session "today" (daysAgo: 0) → at least one cell with spend > 0.
+    const allCells = page.locator('rect[data-date][data-spend]');
+    const total = await allCells.count();
+    expect(total).toBeGreaterThan(0);
+    let nonZero = 0;
+    for (let i = 0; i < total; i++) {
+      const spend = await allCells.nth(i).getAttribute('data-spend');
+      if (spend && Number(spend) > 0) nonZero++;
+    }
+    expect(nonZero).toBeGreaterThan(0);
+  });
+
+  test('TC-E2E-06: clicking a heatmap cell navigates to filtered /sessions', async ({ page }) => {
+    await page.goto('/');
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, '0');
+    const d = String(today.getDate()).padStart(2, '0');
+    const iso = `${y}-${m}-${d}`;
+    const todayCell = page.locator(`rect[data-date="${iso}"]`);
+    await expect(todayCell).toHaveCount(1);
+    await todayCell.click();
+    await expect(page).toHaveURL(new RegExp(`/sessions\\?date=${iso}$`));
+    await expect(
+      page.getByText(`Sessões de ${iso}`, { exact: false }),
+    ).toBeVisible();
+    await expect(page.getByText('e2e-project-today')).toBeVisible();
+  });
+
+  test('TC-E2E-07: /sessions?date=abc shows invalid banner + full list', async ({ page }) => {
+    await page.goto('/sessions?date=abc');
+    await expect(
+      page.getByText(/Par.metro date inv.lido/i),
+    ).toBeVisible();
+    // Full list still renders — seed e2e-1..3 should all be visible.
+    await expect(page.getByText('e2e-project-alpha')).toBeVisible();
+  });
+
   test('TC-E2E-04: /effectiveness shows model breakdown section with mixed families', async ({ page }) => {
     await page.goto('/effectiveness');
     await expect(

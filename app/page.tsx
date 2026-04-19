@@ -3,6 +3,7 @@ import { ensureFreshIngest } from '@/lib/ingest/auto';
 import { KpiCard } from '@/components/kpi-card';
 import { TrendChart } from '@/components/overview/trend-chart';
 import { TopSessions } from '@/components/overview/top-sessions';
+import { ActivityHeatmap } from '@/components/overview/activity-heatmap';
 import { OverviewEmptyState } from '@/components/overview/empty-state';
 import {
   getOverviewKpis,
@@ -19,6 +20,7 @@ export default async function Home() {
   const db = getDb();
   const kpis = getOverviewKpis(db);
   const daily = getDailySpend(db, 30);
+  const yearly = getDailySpend(db, 365);
   const top = getTopSessions(db, 5, 30);
 
   const hasData = kpis.sessionCount30d > 0;
@@ -53,6 +55,11 @@ export default async function Home() {
           info="Número de sessões distintas do Claude Code ingeridas nos últimos 30 dias. Uma sessão = um arquivo .jsonl em ~/.claude/projects/."
         />
       </div>
+
+      <section>
+        <h2 className="text-lg font-medium mb-3">Atividade do último ano</h2>
+        <ActivityHeatmap data={yearly} />
+      </section>
 
       {hasData ? (
         <>

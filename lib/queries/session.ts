@@ -61,6 +61,7 @@ type PreparedSet = {
   getSessionIdForTurn: import('better-sqlite3').Statement<[string]>;
   upsertRating: import('better-sqlite3').Statement<[string, number, string | null, number]>;
   listSessions: import('better-sqlite3').Statement<[number]>;
+  listSessionsByDate: import('better-sqlite3').Statement<[number, number]>;
 };
 
 const cache = new WeakMap<DB, PreparedSet>();
@@ -120,6 +121,18 @@ function getPrepared(db: DB): PreparedSet {
        LEFT JOIN session_effectiveness v ON v.id = s.id
        ORDER BY s.started_at DESC
        LIMIT ?`
+    ),
+    listSessionsByDate: db.prepare(
+      `SELECT s.id AS id,
+              s.project AS project,
+              s.started_at AS startedAt,
+              s.total_cost_usd AS totalCostUsd,
+              s.turn_count AS turnCount,
+              v.avg_rating AS avgRating
+       FROM sessions s
+       LEFT JOIN session_effectiveness v ON v.id = s.id
+       WHERE s.started_at >= ? AND s.started_at < ?
+       ORDER BY s.started_at DESC`
     ),
   };
   cache.set(db, prepared);
@@ -275,4 +288,32 @@ export function getSessionIdForTurn(db: DB, turnId: string): string | null {
 export function listSessions(db: DB, limit: number): SessionListItem[] {
   const p = getPrepared(db);
   return p.listSessions.all(limit) as SessionListItem[];
+}
+
+const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+export function listSessionsByDate(
+  db: DB,
+  date: string
+): SessionListItem[] {
+  const match = DATE_RE.exec(date);
+  if (!match) return [];
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const d = new Date(year, month - 1, day, 0, 0, 0, 0);
+  // Reject rollovers (e.g. 2026-02-30 becomes 2026-03-02).
+  if (
+    d.getFullYear() !== year ||
+    d.getMonth() !== month - 1 ||
+    d.getDate() !== day
+  ) {
+    return [];
+  }
+  const start = d.getTime();
+  // Use next-day local-midnight to respect DST transitions (a local day can
+  // be 23 or 25 hours long, not always exactly 86_400_000 ms).
+  const end = new Date(year, month - 1, day + 1, 0, 0, 0, 0).getTime();
+  const p = getPrepared(db);
+  return p.listSessionsByDate.all(start, end) as SessionListItem[];
 }

@@ -9,7 +9,12 @@ export type OverviewKpis = {
   sessionCount30d: number;
 };
 
-export type DailyPoint = { date: string; spend: number; tokens: number };
+export type DailyPoint = {
+  date: string;
+  spend: number;
+  tokens: number;
+  sessionCount: number;
+};
 
 export type TopSession = {
   id: string;
@@ -51,7 +56,8 @@ function getPrepared(db: DB): PreparedSet {
     dailySpend: db.prepare(
       `SELECT strftime('%Y-%m-%d', started_at/1000, 'unixepoch', 'localtime') AS date,
               COALESCE(SUM(total_cost_usd), 0) AS spend,
-              COALESCE(SUM(total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens), 0) AS tokens
+              COALESCE(SUM(total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens), 0) AS tokens,
+              COUNT(*) AS sessionCount
        FROM sessions
        WHERE started_at >= ?
        GROUP BY date
@@ -123,6 +129,7 @@ export function getDailySpend(db: DB, days: number): DailyPoint[] {
       date: row.date,
       spend: row.spend ?? 0,
       tokens: row.tokens ?? 0,
+      sessionCount: row.sessionCount ?? 0,
     });
   }
 
@@ -132,7 +139,9 @@ export function getDailySpend(db: DB, days: number): DailyPoint[] {
   for (let i = days - 1; i >= 0; i--) {
     const dayMs = todayStart - i * DAY_MS;
     const key = formatLocalDate(dayMs);
-    result.push(byDate.get(key) ?? { date: key, spend: 0, tokens: 0 });
+    result.push(
+      byDate.get(key) ?? { date: key, spend: 0, tokens: 0, sessionCount: 0 }
+    );
   }
   return result;
 }

@@ -133,6 +133,25 @@ const FIXED_SESSIONS: readonly SeedSession[] = [
       },
     ],
   },
+  {
+    id: 'e2e-today',
+    project: 'e2e-project-today',
+    cwd: '/Users/e2e/today',
+    daysAgo: 0,
+    turns: [
+      {
+        seq: 1,
+        model: 'claude-sonnet-4-6',
+        input: 500,
+        output: 150,
+        cacheRead: 800,
+        cacheCreation: 30,
+        userPrompt: 'User prompt for today session',
+        assistantText: 'Assistant response for today session',
+        toolCalls: [],
+      },
+    ],
+  },
 ];
 
 const DAY_MS = 86_400_000;

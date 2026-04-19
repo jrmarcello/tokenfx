@@ -7,6 +7,7 @@ import {
   getTurns,
   upsertRating,
   listSessions,
+  listSessionsByDate,
 } from '@/lib/queries/session';
 
 function freshDb(): DB {
@@ -198,6 +199,59 @@ describe('session queries', () => {
 
     it('getSessionIdForTurn returns null for an unknown turn', () => {
       expect(getSessionIdForTurn(db, 'nope')).toBeNull();
+    });
+  });
+
+  describe('listSessionsByDate', () => {
+    // TZ-safe: compute boundary ms via the same Date constructor the query uses.
+    // `dayLastMs` is the exact last millisecond the query's [start, end) window
+    // includes (end-1), so the boundary test matches the actual query contract.
+    const dayStart = new Date(2026, 3, 18, 0, 0, 0, 0).getTime();
+    const nextDayStart = new Date(2026, 3, 19, 0, 0, 0, 0).getTime();
+    const dayLastMs = nextDayStart - 1;
+    const prevDay = new Date(2026, 3, 17, 12, 0, 0, 0).getTime();
+
+    it('TC-I-03: returns sessions for the given date sorted DESC, excludes other days', () => {
+      seedSession(db, 'a', { startedAt: dayStart + 3_600_000 }); // 01:00
+      seedSession(db, 'b', { startedAt: dayStart + 7_200_000 }); // 02:00
+      seedSession(db, 'c', { startedAt: dayStart + 10_800_000 }); // 03:00
+      seedSession(db, 'prev', { startedAt: prevDay });
+
+      const items = listSessionsByDate(db, '2026-04-18');
+      expect(items.map((x) => x.id)).toEqual(['c', 'b', 'a']);
+    });
+
+    it('TC-I-04: includes sessions at 00:00:00 local and 23:59:59 local same day', () => {
+      seedSession(db, 'midnight', { startedAt: dayStart });
+      seedSession(db, 'endofday', { startedAt: dayLastMs });
+
+      const items = listSessionsByDate(db, '2026-04-18');
+      const ids = items.map((x) => x.id).sort();
+      expect(ids).toEqual(['endofday', 'midnight']);
+    });
+
+    it('TC-I-05: excludes session at 00:00:00 local of the next day', () => {
+      seedSession(db, 'next', { startedAt: nextDayStart });
+
+      const items = listSessionsByDate(db, '2026-04-18');
+      expect(items).toEqual([]);
+    });
+
+    it('TC-I-06: returns [] when no sessions fall on the day', () => {
+      seedSession(db, 'far', { startedAt: prevDay });
+      expect(listSessionsByDate(db, '2026-04-18')).toEqual([]);
+    });
+
+    it('TC-I-07: returns [] for invalid date format like "2026-13-99" without throwing', () => {
+      seedSession(db, 'a', { startedAt: dayStart + 3_600_000 });
+      expect(() => listSessionsByDate(db, '2026-13-99')).not.toThrow();
+      expect(listSessionsByDate(db, '2026-13-99')).toEqual([]);
+    });
+
+    it('TC-I-08: returns [] for empty string without throwing', () => {
+      seedSession(db, 'a', { startedAt: dayStart + 3_600_000 });
+      expect(() => listSessionsByDate(db, '')).not.toThrow();
+      expect(listSessionsByDate(db, '')).toEqual([]);
     });
   });
 

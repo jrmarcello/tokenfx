@@ -1,7 +1,9 @@
 import Link from 'next/link';
 import { getDb } from '@/lib/db/client';
 import { ensureFreshIngest } from '@/lib/ingest/auto';
-import { listSessions } from '@/lib/queries/session';
+import { listSessions, listSessionsByDate } from '@/lib/queries/session';
+import type { SessionListItem } from '@/lib/queries/session';
+import { parseDateParam } from '@/lib/analytics/heatmap';
 import { Card, CardContent } from '@/components/ui/card';
 import { ChevronRightIcon } from '@/components/icons';
 import { fmtUsd, fmtDateTime } from '@/lib/fmt';
@@ -9,30 +11,86 @@ import { fmtUsd, fmtDateTime } from '@/lib/fmt';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-export default async function SessionsPage() {
+type SessionsPageProps = {
+  searchParams: Promise<{ date?: string }>;
+};
+
+type Branch =
+  | { kind: 'all'; items: SessionListItem[]; invalid: boolean }
+  | { kind: 'filtered'; items: SessionListItem[]; date: string };
+
+export default async function SessionsPage({ searchParams }: SessionsPageProps) {
   await ensureFreshIngest();
   const db = getDb();
-  const items = listSessions(db, 100);
+  const params = await searchParams;
+  const rawDate = params.date;
+  const parsed = parseDateParam(rawDate);
+
+  let branch: Branch;
+  if (rawDate === undefined) {
+    branch = { kind: 'all', items: listSessions(db, 100), invalid: false };
+  } else if (parsed.valid) {
+    branch = {
+      kind: 'filtered',
+      items: listSessionsByDate(db, parsed.date),
+      date: parsed.date,
+    };
+  } else {
+    branch = { kind: 'all', items: listSessions(db, 100), invalid: true };
+  }
+
+  const subtitle =
+    branch.kind === 'filtered'
+      ? `Sessões de ${branch.date} — ${branch.items.length} ${branch.items.length === 1 ? 'encontrada' : 'encontradas'}`
+      : `${branch.items.length} recentes`;
 
   return (
     <section className="space-y-8">
       <header className="space-y-1">
         <h1 className="text-3xl font-semibold tracking-tight">Sessões</h1>
-        <p className="text-sm text-neutral-500">{items.length} recentes</p>
+        <p className="text-sm text-neutral-500">
+          {subtitle}
+          {branch.kind === 'filtered' && branch.items.length > 0 && (
+            <>
+              {' '}
+              <Link
+                href="/sessions"
+                className="text-neutral-400 underline-offset-2 hover:underline"
+              >
+                ver todas
+              </Link>
+            </>
+          )}
+        </p>
       </header>
-      {items.length === 0 ? (
-        <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-neutral-400 text-sm">
+      {branch.kind === 'all' && branch.invalid && (
+        <div className="rounded border border-yellow-700/50 bg-yellow-900/20 px-3 py-2 text-xs text-yellow-200">
+          Parâmetro date inválido — mostrando todas.
+        </div>
+      )}
+      {branch.kind === 'filtered' && branch.items.length === 0 ? (
+        <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-sm text-neutral-400">
+          Sem sessões em {branch.date}.{' '}
+          <Link
+            href="/sessions"
+            className="text-neutral-300 underline-offset-2 hover:underline"
+          >
+            ver todas
+          </Link>
+        </div>
+      ) : branch.items.length === 0 ? (
+        <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-sm text-neutral-400">
           Sem sessões ainda. Rode{' '}
-          <code className="bg-neutral-800 px-1.5 py-0.5 rounded">
+          <code className="rounded bg-neutral-800 px-1.5 py-0.5">
             pnpm ingest
           </code>
           .
         </div>
       ) : (
-        <Card className="bg-neutral-900 border-neutral-800">
+        <Card className="border-neutral-800 bg-neutral-900">
           <CardContent className="p-0">
             <ul className="divide-y divide-neutral-800">
-              {items.map((s) => (
+              {branch.items.map((s) => (
                 <li key={s.id}>
                   <Link
                     href={`/sessions/${s.id}`}
@@ -49,7 +107,7 @@ export default async function SessionsPage() {
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-6 text-sm">
-                      <span className="tabular-nums font-medium text-neutral-100">
+                      <span className="font-medium tabular-nums text-neutral-100">
                         {fmtUsd(s.totalCostUsd)}
                       </span>
                       <span className="tabular-nums text-neutral-500">
