@@ -8,9 +8,15 @@ import {
   groupByFamily,
   type ModelBreakdownItem,
 } from '@/lib/analytics/model';
+import {
+  buildTrend,
+  type RawTrendRow,
+  type ToolTrendResult,
+} from '@/lib/analytics/tool-trend';
 import { getAcceptRatesBySession } from '@/lib/queries/otel';
 
 export type { ModelBreakdownItem } from '@/lib/analytics/model';
+export type { ToolTrendResult } from '@/lib/analytics/tool-trend';
 
 export type EffectivenessKpis = {
   avgScore: number | null;
@@ -83,6 +89,7 @@ type PreparedSet = {
   topSessions: import('better-sqlite3').Statement<[number, number]>;
   turnsForSessions: import('better-sqlite3').Statement<[string]>;
   modelBreakdown: import('better-sqlite3').Statement<[number]>;
+  toolErrorTrend: import('better-sqlite3').Statement<[number]>;
 };
 
 const cache = new WeakMap<DB, PreparedSet>();
@@ -184,9 +191,49 @@ function getPrepared(db: DB): PreparedSet {
        WHERE s.started_at >= ? AND t.cost_usd > 0
        GROUP BY t.model`,
     ),
+    toolErrorTrend: db.prepare(
+      // All (week, tool_name, calls, errors) buckets in the window. Top-N
+      // filter + threshold + null-gap logic live in JS via `buildTrend` —
+      // keeps SQL simple (single bind) and avoids an extra CTE for ≤26
+      // tools × 12 weeks = ~300 rows worst case. localtime week key is
+      // consistent with getWeeklyRatio and getWeeklyAcceptRate.
+      `SELECT strftime('%Y-%W', s.started_at/1000, 'unixepoch', 'localtime') AS week,
+              tc.tool_name                                                   AS toolName,
+              COUNT(*)                                                       AS calls,
+              COALESCE(SUM(tc.result_is_error), 0)                           AS errors
+       FROM tool_calls tc
+       JOIN turns t     ON t.id = tc.turn_id
+       JOIN sessions s  ON s.id = t.session_id
+       WHERE s.started_at >= ?
+       GROUP BY week, tc.tool_name
+       ORDER BY week ASC, tc.tool_name ASC`,
+    ),
   };
   cache.set(db, prepared);
   return prepared;
+}
+
+/**
+ * Weekly error-rate trend for the top-N most-called tools in the window.
+ *
+ * Defaults: `days = 30`, `topN = 5` (clamped to [1, 10]).
+ *
+ * See `lib/analytics/tool-trend.ts` for the threshold and shape rules —
+ * the SQL here only returns raw buckets; `buildTrend` ranks, clamps, and
+ * suppresses low-volume weeks. Sessions filtered by `started_at` (same
+ * window semantics as other weekly queries).
+ */
+export function getToolErrorTrend(
+  db: DB,
+  opts?: { days?: number; topN?: number },
+): ToolTrendResult {
+  const days = opts?.days ?? 30;
+  const rawTopN = opts?.topN ?? 5;
+  const topN = Math.max(1, Math.min(10, Math.floor(rawTopN)));
+  const p = getPrepared(db);
+  const cutoff = Date.now() - days * DAY_MS;
+  const rows = p.toolErrorTrend.all(cutoff) as RawTrendRow[];
+  return buildTrend(rows, topN);
 }
 
 export function getModelBreakdown(

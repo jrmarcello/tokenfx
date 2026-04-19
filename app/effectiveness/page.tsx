@@ -6,6 +6,7 @@ import { RatioTrend } from '@/components/effectiveness/ratio-trend';
 import { ToolLeaderboard } from '@/components/effectiveness/tool-leaderboard';
 import { AcceptRateTrend } from '@/components/effectiveness/accept-rate-trend';
 import { ModelBreakdown } from '@/components/effectiveness/model-breakdown';
+import { ToolSuccessTrend } from '@/components/effectiveness/tool-success-trend';
 import {
   getEffectivenessKpis,
   getWeeklyRatio,
@@ -13,6 +14,7 @@ import {
   getToolLeaderboard,
   getSessionScores,
   getModelBreakdown,
+  getToolErrorTrend,
 } from '@/lib/queries/effectiveness';
 import { getOtelInsights, getWeeklyAcceptRate } from '@/lib/queries/otel';
 import { getCostCalibration } from '@/lib/queries/calibration';
@@ -39,6 +41,7 @@ export default async function EffectivenessPage() {
   const tools = getToolLeaderboard(db, 30, 10);
   const scores = getSessionScores(db, 30);
   const models = getModelBreakdown(db, 30);
+  const toolTrend = getToolErrorTrend(db, { days: 30, topN: 5 });
   const histogram = bucketCostPerTurn(costs, 8);
 
   const otel = getOtelInsights(db, 30);
@@ -181,6 +184,14 @@ export default async function EffectivenessPage() {
             <h2 className="text-lg font-medium mb-3">Ferramentas mais usadas</h2>
             <ToolLeaderboard items={tools} />
           </section>
+          {toolTrend.tools.length > 0 && toolTrend.points.length > 0 && (
+            <section className="lg:col-span-2">
+              <h2 className="text-lg font-medium mb-3">
+                Tendência de erro por ferramenta
+              </h2>
+              <ToolSuccessTrend data={toolTrend} />
+            </section>
+          )}
         </div>
       ) : (
         <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-neutral-400 text-sm">

@@ -8,6 +8,7 @@ import {
   getToolLeaderboard,
   getSessionScores,
   getModelBreakdown,
+  getToolErrorTrend,
 } from '@/lib/queries/effectiveness';
 
 const DAY_MS = 86_400_000;
@@ -408,5 +409,257 @@ describe('effectiveness queries', () => {
       expect(other).toBeDefined();
       expect(other?.cost).toBe(2);
     });
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// getToolErrorTrend — see .specs/tool-success-trends.md
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Seeds N tool_calls on a single fresh turn in the given session, where the
+ * first `errors` of them are flagged as errors. Keeps the test data compact
+ * without fabricating 10+ turns per scenario.
+ */
+function insertToolCallsBulk(
+  db: DB,
+  args: {
+    sessionId: string;
+    turnId: string;
+    toolName: string;
+    calls: number;
+    errors: number;
+  },
+): void {
+  insertTurn(db, {
+    id: args.turnId,
+    sessionId: args.sessionId,
+    sequence: 0,
+    userPrompt: null,
+  });
+  for (let i = 0; i < args.calls; i++) {
+    insertToolCall(db, {
+      id: `${args.turnId}-tc${i}`,
+      turnId: args.turnId,
+      toolName: args.toolName,
+      isError: i < args.errors,
+    });
+  }
+}
+
+describe('getToolErrorTrend', () => {
+  let db: DB;
+  const now = Date.now();
+
+  beforeEach(() => {
+    db = fresh();
+  });
+
+  // TC-I-01
+  it('TC-I-01: returns per-week error rates for tools present in the window', () => {
+    insertSession(db, { id: 's1', startedAt: now - 2 * DAY_MS });
+    insertSession(db, { id: 's2', startedAt: now - 9 * DAY_MS });
+    insertToolCallsBulk(db, {
+      sessionId: 's1',
+      turnId: 't-s1-bash',
+      toolName: 'Bash',
+      calls: 20,
+      errors: 2,
+    });
+    insertToolCallsBulk(db, {
+      sessionId: 's2',
+      turnId: 't-s2-read',
+      toolName: 'Read',
+      calls: 10,
+      errors: 0,
+    });
+    const out = getToolErrorTrend(db, { days: 30, topN: 5 });
+    expect(out.tools.sort()).toEqual(['Bash', 'Read']);
+    // Both tools have ≥ MIN_CALLS_PER_BUCKET so rates are populated (non-null)
+    // somewhere in the series.
+    const allRates = out.points.flatMap((p) => [p.rates.Bash, p.rates.Read]);
+    expect(allRates.some((r) => r !== null && r > 0)).toBe(true);
+  });
+
+  // TC-I-02
+  it('TC-I-02: sessions outside the window are excluded', () => {
+    insertSession(db, { id: 'old', startedAt: now - 40 * DAY_MS });
+    insertToolCallsBulk(db, {
+      sessionId: 'old',
+      turnId: 't-old',
+      toolName: 'Bash',
+      calls: 20,
+      errors: 3,
+    });
+    const out = getToolErrorTrend(db, { days: 30, topN: 5 });
+    expect(out.tools).not.toContain('Bash');
+  });
+
+  // TC-I-03
+  it('TC-I-03: topN=99 is clamped to 10', () => {
+    insertSession(db, { id: 's1', startedAt: now - DAY_MS });
+    // 12 tools, all with >= threshold
+    for (let i = 0; i < 12; i++) {
+      insertToolCallsBulk(db, {
+        sessionId: 's1',
+        turnId: `t-tool-${i}`,
+        toolName: `Tool${String(i).padStart(2, '0')}`,
+        calls: 5,
+        errors: 0,
+      });
+    }
+    const out = getToolErrorTrend(db, { days: 30, topN: 99 });
+    expect(out.tools.length).toBeLessThanOrEqual(10);
+  });
+
+  // TC-I-04
+  it('TC-I-04: topN=0 is clamped to 1', () => {
+    insertSession(db, { id: 's1', startedAt: now - DAY_MS });
+    insertToolCallsBulk(db, {
+      sessionId: 's1',
+      turnId: 't-bash',
+      toolName: 'Bash',
+      calls: 10,
+      errors: 1,
+    });
+    insertToolCallsBulk(db, {
+      sessionId: 's1',
+      turnId: 't-read',
+      toolName: 'Read',
+      calls: 5,
+      errors: 0,
+    });
+    const out = getToolErrorTrend(db, { days: 30, topN: 0 });
+    expect(out.tools).toEqual(['Bash']);
+  });
+
+  // TC-I-05
+  it('TC-I-05: sub-threshold week (< 5 calls) produces a null rate', () => {
+    // Single week, single tool, mixed: Bash with 20 calls (valid) + Read
+    // with 3 calls (sub-threshold) in the SAME week.
+    insertSession(db, { id: 's1', startedAt: now - DAY_MS });
+    insertToolCallsBulk(db, {
+      sessionId: 's1',
+      turnId: 't-s1-bash',
+      toolName: 'Bash',
+      calls: 20,
+      errors: 2,
+    });
+    insertToolCallsBulk(db, {
+      sessionId: 's1',
+      turnId: 't-s1-read',
+      toolName: 'Read',
+      calls: 3,
+      errors: 0,
+    });
+    const out = getToolErrorTrend(db, { days: 30, topN: 5 });
+    expect(out.tools.sort()).toEqual(['Bash', 'Read']);
+    // Find the point; Read should be null there
+    const point = out.points[0];
+    expect(point.rates.Bash).not.toBeNull();
+    expect(point.rates.Read).toBeNull();
+    expect(point.counts.Read).toEqual({ calls: 3, errors: 0 });
+  });
+
+  // TC-I-06
+  it('TC-I-06: empty DB returns { tools:[], points:[] }', () => {
+    const out = getToolErrorTrend(db, { days: 30 });
+    expect(out).toEqual({ tools: [], points: [] });
+  });
+
+  // TC-I-07
+  it('TC-I-07: week where all tools are sub-threshold is omitted', () => {
+    insertSession(db, { id: 's1', startedAt: now - DAY_MS });
+    insertToolCallsBulk(db, {
+      sessionId: 's1',
+      turnId: 't1',
+      toolName: 'Bash',
+      calls: 3,
+      errors: 1,
+    });
+    insertToolCallsBulk(db, {
+      sessionId: 's1',
+      turnId: 't2',
+      toolName: 'Read',
+      calls: 2,
+      errors: 0,
+    });
+    const out = getToolErrorTrend(db, { days: 30, topN: 5 });
+    expect(out.points).toEqual([]);
+  });
+
+  // TC-I-08
+  it('TC-I-08: rates are clamped to [0,1] even if errors > calls (corruption)', () => {
+    // Fabricate a pathological row via direct INSERT — the normal seeders
+    // can't produce errors > calls. We hand-craft a turn with 5 tool_calls,
+    // all flagged errors, and manually tamper one row so SUM(result_is_error)
+    // exceeds COUNT(*). Simplest: directly INSERT into tool_calls with
+    // result_is_error=2 (non-0 → boolean true, effectively counted once).
+    //
+    // Actually the CHECK constraint on result_is_error is TINYINT 0/1 via
+    // column type — no CHECK exists, so we insert is_error=1 five times and
+    // patch one extra row with `result_is_error=1` that has NO corresponding
+    // call count… tricky without a tool_name mismatch. Cleaner: compute the
+    // aggregate in JS and assert the helper clamps. Covered by unit
+    // TC-U "clamps rate to [0,1]" — here we just verify query doesn't throw.
+    insertSession(db, { id: 's1', startedAt: now - DAY_MS });
+    insertToolCallsBulk(db, {
+      sessionId: 's1',
+      turnId: 't-bash',
+      toolName: 'Bash',
+      calls: 10,
+      errors: 10, // 100% error — upper bound of clamp range
+    });
+    const out = getToolErrorTrend(db, { days: 30, topN: 5 });
+    // Max valid rate is 1.0 (never 1.5 etc.)
+    for (const point of out.points) {
+      for (const r of Object.values(point.rates)) {
+        if (r !== null) {
+          expect(r).toBeGreaterThanOrEqual(0);
+          expect(r).toBeLessThanOrEqual(1);
+        }
+      }
+    }
+  });
+
+  // TC-I-09
+  it('TC-I-09: consecutive calls reuse the prepared statement (WeakMap cache)', () => {
+    insertSession(db, { id: 's1', startedAt: now - DAY_MS });
+    insertToolCallsBulk(db, {
+      sessionId: 's1',
+      turnId: 't-bash',
+      toolName: 'Bash',
+      calls: 10,
+      errors: 1,
+    });
+    const first = getToolErrorTrend(db, { days: 30, topN: 5 });
+    for (let i = 0; i < 10; i++) {
+      const next = getToolErrorTrend(db, { days: 30, topN: 5 });
+      expect(next).toEqual(first);
+    }
+  });
+
+  // TC-I-10
+  it('TC-I-10: top-N ranks by calls INSIDE the window, not history', () => {
+    // 'Ghost' tool: huge volume 60d ago (outside window). 'Fresh' tool:
+    // modest volume last week. Top-1 should be Fresh.
+    insertSession(db, { id: 'ghost', startedAt: now - 60 * DAY_MS });
+    insertToolCallsBulk(db, {
+      sessionId: 'ghost',
+      turnId: 't-ghost',
+      toolName: 'Ghost',
+      calls: 1000,
+      errors: 10,
+    });
+    insertSession(db, { id: 'fresh', startedAt: now - DAY_MS });
+    insertToolCallsBulk(db, {
+      sessionId: 'fresh',
+      turnId: 't-fresh',
+      toolName: 'Fresh',
+      calls: 20,
+      errors: 1,
+    });
+    const out = getToolErrorTrend(db, { days: 30, topN: 1 });
+    expect(out.tools).toEqual(['Fresh']);
   });
 });

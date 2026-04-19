@@ -197,6 +197,48 @@ const FIXED_SESSIONS: readonly SeedSession[] = [
       },
     ],
   },
+  {
+    // Populates /effectiveness → "Tendência de erro por ferramenta".
+    // Needs ≥2 tools with ≥5 calls each in the 30-day window so buildTrend
+    // (MIN_CALLS_PER_BUCKET=5) emits non-null rates for each and the chart
+    // actually renders. 15 Bash calls (2 errors) + 8 Read calls (0 errors).
+    id: 'e2e-tool-trend',
+    project: 'e2e-project-tool-trend',
+    cwd: '/Users/e2e/tool-trend',
+    daysAgo: 3,
+    turns: [
+      {
+        seq: 1,
+        model: 'claude-sonnet-4-6',
+        input: 1500,
+        output: 400,
+        cacheRead: 2500,
+        cacheCreation: 80,
+        userPrompt: 'Many Bash calls',
+        assistantText: 'Running a bunch of Bash',
+        toolCalls: Array.from({ length: 15 }, (_, i) => ({
+          name: 'Bash',
+          isError: i < 2,
+        })),
+        subagentType: null,
+      },
+      {
+        seq: 2,
+        model: 'claude-sonnet-4-6',
+        input: 600,
+        output: 200,
+        cacheRead: 1000,
+        cacheCreation: 40,
+        userPrompt: 'Some Read calls',
+        assistantText: 'Reading files',
+        toolCalls: Array.from({ length: 8 }, () => ({
+          name: 'Read',
+          isError: false,
+        })),
+        subagentType: null,
+      },
+    ],
+  },
 ];
 
 const DAY_MS = 86_400_000;
