@@ -239,6 +239,54 @@ const FIXED_SESSIONS: readonly SeedSession[] = [
       },
     ],
   },
+  // Pagination fillers — TASK-6 of sessions-pagination spec.
+  // Forces total sessions >= 26 so /sessions surfaces Prev/Next controls
+  // (TC-E2E-01, TC-E2E-02, TC-E2E-04, TC-E2E-05). Spread across 7 days in
+  // weeks 2-3 ago to avoid saturating any single calendar day (prevents
+  // collisions with date-filter heatmap cells).
+  ...Array.from({ length: 30 }, (_, i) => ({
+    id: `e2e-page-${String(i + 1).padStart(2, '0')}`,
+    project: 'e2e-project-pagination',
+    cwd: '/Users/e2e/pagination',
+    daysAgo: 14 + (i % 7),
+    turns: [
+      {
+        seq: 1,
+        model: 'claude-sonnet-4-6',
+        input: 100,
+        output: 50,
+        cacheRead: 0,
+        cacheCreation: 0,
+        userPrompt: `Pagination filler prompt ${i + 1}`,
+        assistantText: `Pagination filler response ${i + 1}`,
+        toolCalls: [],
+        subagentType: null,
+      },
+    ],
+  })),
+  // Dayfull fillers — supports TC-E2E-06 (date filter + offset preservation).
+  // All 30 sessions share daysAgo=10 so a single calendar day carries >=26
+  // sessions, forcing pagination inside a date-filtered view.
+  ...Array.from({ length: 30 }, (_, i) => ({
+    id: `e2e-dayfull-${String(i + 1).padStart(2, '0')}`,
+    project: 'e2e-project-dayfull',
+    cwd: '/Users/e2e/dayfull',
+    daysAgo: 10,
+    turns: [
+      {
+        seq: 1,
+        model: 'claude-sonnet-4-6',
+        input: 100,
+        output: 50,
+        cacheRead: 0,
+        cacheCreation: 0,
+        userPrompt: `Dayfull filler prompt ${i + 1}`,
+        assistantText: `Dayfull filler response ${i + 1}`,
+        toolCalls: [],
+        subagentType: null,
+      },
+    ],
+  })),
 ];
 
 const DAY_MS = 86_400_000;

@@ -1,9 +1,19 @@
 import Link from 'next/link';
 import { getDb } from '@/lib/db/client';
 import { ensureFreshIngest } from '@/lib/ingest/auto';
-import { listSessions, listSessionsByDate } from '@/lib/queries/session';
+import {
+  listSessions,
+  listSessionsByDate,
+  countSessions,
+  countSessionsByDate,
+} from '@/lib/queries/session';
 import type { SessionListItem } from '@/lib/queries/session';
 import { parseDateParam } from '@/lib/analytics/heatmap';
+import {
+  computePagination,
+  type PaginationState,
+} from '@/lib/analytics/pagination';
+import { PaginationNav } from '@/components/pagination-nav';
 import { Card, CardContent } from '@/components/ui/card';
 import { ChevronRightIcon } from '@/components/icons';
 import { fmtUsd, fmtDateTime, fmtRating } from '@/lib/fmt';
@@ -13,37 +23,80 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 type SessionsPageProps = {
-  searchParams: Promise<{ date?: string }>;
+  searchParams: Promise<{ date?: string; offset?: string }>;
 };
 
 type Branch =
-  | { kind: 'all'; items: SessionListItem[]; invalid: boolean }
-  | { kind: 'filtered'; items: SessionListItem[]; date: string };
+  | {
+      kind: 'all';
+      items: SessionListItem[];
+      total: number;
+      pagination: PaginationState;
+      invalid: boolean;
+    }
+  | {
+      kind: 'filtered';
+      items: SessionListItem[];
+      total: number;
+      pagination: PaginationState;
+      date: string;
+    };
+
+function buildSubtitle(branch: Branch): string {
+  const { pagination, total } = branch;
+  const { rangeStart, rangeEnd, pageSize } = pagination;
+  const showsRange = total > pageSize && !pagination.overflow;
+
+  if (branch.kind === 'filtered') {
+    const base = `${total} ${total === 1 ? 'encontrada' : 'encontradas'} em ${branch.date}`;
+    return showsRange ? `${base} · exibindo ${rangeStart}–${rangeEnd}` : base;
+  }
+  // kind === 'all'
+  if (total === 0) return '0 recentes';
+  const base = `${total} ${total === 1 ? 'sessão' : 'sessões'}`;
+  return showsRange ? `${base} · exibindo ${rangeStart}–${rangeEnd}` : base;
+}
 
 export default async function SessionsPage({ searchParams }: SessionsPageProps) {
   await ensureFreshIngest();
   const db = getDb();
   const params = await searchParams;
   const rawDate = params.date;
+  const rawOffset = params.offset;
   const parsed = parseDateParam(rawDate);
 
   let branch: Branch;
   if (rawDate === undefined) {
-    branch = { kind: 'all', items: listSessions(db, 100), invalid: false };
+    const total = countSessions(db);
+    const pagination = computePagination({ rawOffset, total });
+    const items = pagination.overflow
+      ? []
+      : listSessions(db, { limit: pagination.pageSize, offset: pagination.offset });
+    branch = { kind: 'all', items, total, pagination, invalid: false };
   } else if (parsed.valid) {
-    branch = {
-      kind: 'filtered',
-      items: listSessionsByDate(db, parsed.date),
-      date: parsed.date,
-    };
+    const total = countSessionsByDate(db, { start: parsed.start, end: parsed.end });
+    const pagination = computePagination({ rawOffset, total });
+    const items = pagination.overflow
+      ? []
+      : listSessionsByDate(db, parsed.date, {
+          limit: pagination.pageSize,
+          offset: pagination.offset,
+        });
+    branch = { kind: 'filtered', items, total, pagination, date: parsed.date };
   } else {
-    branch = { kind: 'all', items: listSessions(db, 100), invalid: true };
+    // Invalid date: fall back to all-branch, paginate the full set.
+    const total = countSessions(db);
+    const pagination = computePagination({ rawOffset, total });
+    const items = pagination.overflow
+      ? []
+      : listSessions(db, { limit: pagination.pageSize, offset: pagination.offset });
+    branch = { kind: 'all', items, total, pagination, invalid: true };
   }
 
-  const subtitle =
-    branch.kind === 'filtered'
-      ? `Sessões de ${branch.date} — ${branch.items.length} ${branch.items.length === 1 ? 'encontrada' : 'encontradas'}`
-      : `${branch.items.length} recentes`;
+  const subtitle = buildSubtitle(branch);
+
+  const firstPageHref =
+    branch.kind === 'filtered' ? `/sessions?date=${branch.date}` : '/sessions';
 
   return (
     <section className="space-y-8">
@@ -69,7 +122,19 @@ export default async function SessionsPage({ searchParams }: SessionsPageProps) 
           Parâmetro date inválido — mostrando todas.
         </div>
       )}
-      {branch.kind === 'filtered' && branch.items.length === 0 ? (
+      {branch.pagination.overflow && branch.total > 0 ? (
+        <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-sm text-neutral-400">
+          Sem sessões nesta página.{' '}
+          <Link
+            href={firstPageHref}
+            className="text-neutral-300 underline-offset-2 hover:underline"
+          >
+            Voltar pra primeira página
+          </Link>
+        </div>
+      ) : branch.kind === 'filtered' &&
+        branch.items.length === 0 &&
+        !branch.pagination.overflow ? (
         <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-sm text-neutral-400">
           Sem sessões em {branch.date}.{' '}
           <Link
@@ -79,7 +144,7 @@ export default async function SessionsPage({ searchParams }: SessionsPageProps) 
             ver todas
           </Link>
         </div>
-      ) : branch.items.length === 0 ? (
+      ) : branch.items.length === 0 && !branch.pagination.overflow ? (
         <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-sm text-neutral-400">
           Sem sessões ainda. Rode{' '}
           <code className="rounded bg-neutral-800 px-1.5 py-0.5">
@@ -131,6 +196,17 @@ export default async function SessionsPage({ searchParams }: SessionsPageProps) 
             </ul>
           </CardContent>
         </Card>
+      )}
+      {!branch.pagination.overflow && (
+        <PaginationNav
+          basePath="/sessions"
+          currentOffset={branch.pagination.offset}
+          pageSize={branch.pagination.pageSize}
+          total={branch.total}
+          preserveParams={
+            branch.kind === 'filtered' ? { date: branch.date } : undefined
+          }
+        />
       )}
     </section>
   );

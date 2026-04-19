@@ -7,11 +7,24 @@
  * dashboard DB fresh in real time (e.g. ingesting while the UI is
  * offline). Ctrl+C / SIGTERM → graceful `watcher.stop()`.
  */
+import type { WatcherOptions } from '@/lib/ingest/watcher';
 import { startWatcher } from '@/lib/ingest/watcher';
 import { log } from '@/lib/logger';
 
 async function main(): Promise<void> {
-  const handle = await startWatcher();
+  // Envs for integration testing — both are no-ops for normal CLI use.
+  // `TOKENFX_WATCH_ROOT` overrides the watched directory (default
+  // `~/.claude/projects`); `TOKENFX_WATCH_BACKFILL=0` skips the initial
+  // `ingestAll()` pass so tests that spin up the CLI against a scratch
+  // DB don't trigger a 400-file ingest on boot.
+  const opts: WatcherOptions = {};
+  if (process.env.TOKENFX_WATCH_ROOT) {
+    opts.root = process.env.TOKENFX_WATCH_ROOT;
+  }
+  if (process.env.TOKENFX_WATCH_BACKFILL === '0') {
+    opts.backfill = false;
+  }
+  const handle = await startWatcher(opts);
 
   const shutdown = async (signal: string): Promise<void> => {
     log.info(`[watch] ${signal} received — stopping`);

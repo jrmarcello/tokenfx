@@ -84,8 +84,12 @@ type PreparedSet = {
   getRatingsBySession: import('better-sqlite3').Statement<[string]>;
   getSessionIdForTurn: import('better-sqlite3').Statement<[string]>;
   upsertRating: import('better-sqlite3').Statement<[string, number, string | null, number]>;
-  listSessions: import('better-sqlite3').Statement<[number]>;
-  listSessionsByDate: import('better-sqlite3').Statement<[number, number]>;
+  listSessions: import('better-sqlite3').Statement<[number, number]>;
+  listSessionsByDate: import('better-sqlite3').Statement<
+    [number, number, number, number]
+  >;
+  countSessions: import('better-sqlite3').Statement<[]>;
+  countSessionsByDate: import('better-sqlite3').Statement<[number, number]>;
 };
 
 const cache = new WeakMap<DB, PreparedSet>();
@@ -155,7 +159,7 @@ function getPrepared(db: DB): PreparedSet {
        FROM sessions s
        LEFT JOIN session_effectiveness v ON v.id = s.id
        ORDER BY s.started_at DESC
-       LIMIT ?`
+       LIMIT ? OFFSET ?`
     ),
     listSessionsByDate: db.prepare(
       `SELECT s.id AS id,
@@ -176,7 +180,13 @@ function getPrepared(db: DB): PreparedSet {
        FROM sessions s
        LEFT JOIN session_effectiveness v ON v.id = s.id
        WHERE s.started_at >= ? AND s.started_at < ?
-       ORDER BY s.started_at DESC`
+       ORDER BY s.started_at DESC
+       LIMIT ? OFFSET ?`
+    ),
+    countSessions: db.prepare(`SELECT COUNT(*) AS c FROM sessions`),
+    countSessionsByDate: db.prepare(
+      `SELECT COUNT(*) AS c FROM sessions
+       WHERE started_at >= ? AND started_at < ?`,
     ),
   };
   cache.set(db, prepared);
@@ -365,17 +375,33 @@ const mapSessionListRow = (r: SessionListRow): SessionListItem => ({
   costSource: r.cost_source as CostSource,
 });
 
-export function listSessions(db: DB, limit: number): SessionListItem[] {
+export type ListSessionsOptions = {
+  limit?: number;
+  offset?: number;
+};
+
+export function listSessions(
+  db: DB,
+  opts: ListSessionsOptions = {},
+): SessionListItem[] {
+  const limit = opts.limit ?? 25;
+  const offset = opts.offset ?? 0;
   const p = getPrepared(db);
-  const rows = p.listSessions.all(limit) as SessionListRow[];
+  const rows = p.listSessions.all(limit, offset) as SessionListRow[];
   return rows.map(mapSessionListRow);
 }
 
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
+export type ListSessionsByDateOptions = {
+  limit?: number;
+  offset?: number;
+};
+
 export function listSessionsByDate(
   db: DB,
-  date: string
+  date: string,
+  opts: ListSessionsByDateOptions = {},
 ): SessionListItem[] {
   const match = DATE_RE.exec(date);
   if (!match) return [];
@@ -395,7 +421,31 @@ export function listSessionsByDate(
   // Use next-day local-midnight to respect DST transitions (a local day can
   // be 23 or 25 hours long, not always exactly 86_400_000 ms).
   const end = new Date(year, month - 1, day + 1, 0, 0, 0, 0).getTime();
+  const limit = opts.limit ?? 25;
+  const offset = opts.offset ?? 0;
   const p = getPrepared(db);
-  const rows = p.listSessionsByDate.all(start, end) as SessionListRow[];
+  const rows = p.listSessionsByDate.all(
+    start,
+    end,
+    limit,
+    offset,
+  ) as SessionListRow[];
   return rows.map(mapSessionListRow);
+}
+
+export function countSessions(db: DB): number {
+  const p = getPrepared(db);
+  const row = p.countSessions.get() as { c: number };
+  return row.c;
+}
+
+export type CountSessionsByDateArgs = { start: number; end: number };
+
+export function countSessionsByDate(
+  db: DB,
+  args: CountSessionsByDateArgs,
+): number {
+  const p = getPrepared(db);
+  const row = p.countSessionsByDate.get(args.start, args.end) as { c: number };
+  return row.c;
 }

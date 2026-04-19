@@ -8,6 +8,8 @@ import {
   upsertRating,
   listSessions,
   listSessionsByDate,
+  countSessions,
+  countSessionsByDate,
 } from '@/lib/queries/session';
 
 function freshDb(): DB {
@@ -192,7 +194,7 @@ describe('session queries', () => {
     it('listSessions returns sessions sorted by startedAt DESC', () => {
       seedSession(db, 'sess-0', { startedAt: Date.now() - 10 * 86_400_000 });
       seedSession(db, 'sess-2', { startedAt: Date.now() + 1000 });
-      const items = listSessions(db, 10);
+      const items = listSessions(db, { limit: 10, offset: 0 });
       expect(items.map((x) => x.id)).toEqual(['sess-2', 'sess-1', 'sess-0']);
       for (const row of items) {
         expect(row.costSource).toBe('list');
@@ -226,7 +228,7 @@ describe('session queries', () => {
         costUsd: 2.0,
         costUsdOtel: null,
       });
-      const items = listSessions(db, 10);
+      const items = listSessions(db, { limit: 10, offset: 0 });
       const otelRow = items.find((x) => x.id === 'with-otel');
       const localRow = items.find((x) => x.id === 'no-otel');
       expect(otelRow?.totalCostUsd).toBeCloseTo(9.99, 5);
@@ -251,7 +253,7 @@ describe('session queries', () => {
 
   describe('with empty database', () => {
     it('listSessions returns []', () => {
-      expect(listSessions(db, 10)).toEqual([]);
+      expect(listSessions(db, { limit: 10, offset: 0 })).toEqual([]);
     });
 
     it('getSession returns null', () => {
@@ -313,6 +315,118 @@ describe('session queries', () => {
       seedSession(db, 'a', { startedAt: dayStart + 3_600_000 });
       expect(() => listSessionsByDate(db, '')).not.toThrow();
       expect(listSessionsByDate(db, '')).toEqual([]);
+    });
+  });
+
+  describe('pagination (listSessions + countSessions)', () => {
+    // Seed N sessions at deterministic descending startedAt so ordering is
+    // predictable and the offset math is unambiguous.
+    const seedN = (n: number): void => {
+      for (let i = 0; i < n; i++) {
+        seedSession(db, `p-${String(i).padStart(3, '0')}`, {
+          startedAt: 1_700_000_000_000 + i * 1000,
+        });
+      }
+    };
+
+    it('TC-I-01: listSessions with limit=10, offset=0 returns the 10 most-recent rows', () => {
+      seedN(15);
+      const items = listSessions(db, { limit: 10, offset: 0 });
+      expect(items).toHaveLength(10);
+      // Descending by startedAt: newest (i=14) first.
+      expect(items[0].id).toBe('p-014');
+      expect(items[9].id).toBe('p-005');
+    });
+
+    it('TC-I-02: listSessions with limit=10, offset=10 returns the oldest 5', () => {
+      seedN(15);
+      const items = listSessions(db, { limit: 10, offset: 10 });
+      expect(items).toHaveLength(5);
+      expect(items[0].id).toBe('p-004');
+      expect(items[4].id).toBe('p-000');
+    });
+
+    it('TC-I-03: listSessions with offset past the end returns []', () => {
+      seedN(15);
+      expect(listSessions(db, { limit: 10, offset: 100 })).toEqual([]);
+    });
+
+    it('TC-I-04: listSessions() with no opts defaults to up to 25 rows', () => {
+      seedN(30);
+      const items = listSessions(db);
+      expect(items).toHaveLength(25);
+    });
+
+    it('TC-I-05: countSessions returns total row count', () => {
+      seedN(15);
+      expect(countSessions(db)).toBe(15);
+    });
+
+    it('TC-I-06: countSessions returns 0 on empty DB', () => {
+      expect(countSessions(db)).toBe(0);
+    });
+
+    it('TC-I-09: paginated rows all have a populated costSource', () => {
+      seedN(15);
+      const items = listSessions(db, { limit: 5, offset: 5 });
+      expect(items).toHaveLength(5);
+      for (const row of items) {
+        expect(['otel', 'calibrated', 'list']).toContain(row.costSource);
+      }
+    });
+  });
+
+  describe('pagination (listSessionsByDate + countSessionsByDate)', () => {
+    const dayStart = new Date(2026, 3, 10, 0, 0, 0, 0).getTime();
+    const nextDayStart = new Date(2026, 3, 11, 0, 0, 0, 0).getTime();
+    const otherDayStart = new Date(2026, 3, 9, 0, 0, 0, 0).getTime();
+
+    it('TC-I-07: countSessionsByDate counts only sessions in the window', () => {
+      // 3 sessions on day X, 2 on day Y.
+      seedSession(db, 'x-1', { startedAt: dayStart + 1_000 });
+      seedSession(db, 'x-2', { startedAt: dayStart + 2_000 });
+      seedSession(db, 'x-3', { startedAt: dayStart + 3_000 });
+      seedSession(db, 'y-1', { startedAt: otherDayStart + 1_000 });
+      seedSession(db, 'y-2', { startedAt: otherDayStart + 2_000 });
+      expect(
+        countSessionsByDate(db, { start: dayStart, end: nextDayStart }),
+      ).toBe(3);
+    });
+
+    it('TC-I-08: countSessionsByDate returns 0 for a day with no sessions', () => {
+      seedSession(db, 'y-1', { startedAt: otherDayStart + 1_000 });
+      expect(
+        countSessionsByDate(db, { start: dayStart, end: nextDayStart }),
+      ).toBe(0);
+    });
+
+    it('TC-I-10: listSessionsByDate with limit=10, offset=10 returns 10 rows on a 25-session day', () => {
+      for (let i = 0; i < 25; i++) {
+        seedSession(db, `d-${String(i).padStart(2, '0')}`, {
+          startedAt: dayStart + i * 1000,
+        });
+      }
+      const items = listSessionsByDate(db, '2026-04-10', {
+        limit: 10,
+        offset: 10,
+      });
+      expect(items).toHaveLength(10);
+      // DESC order: newest is d-24 at offset 0; offset 10 → d-14 first.
+      expect(items[0].id).toBe('d-14');
+      expect(items[9].id).toBe('d-05');
+    });
+
+    it('TC-I-11: listSessionsByDate with offset past the end returns []', () => {
+      for (let i = 0; i < 25; i++) {
+        seedSession(db, `d-${String(i).padStart(2, '0')}`, {
+          startedAt: dayStart + i * 1000,
+        });
+      }
+      const items = listSessionsByDate(db, '2026-04-10', {
+        limit: 10,
+        offset: 30,
+      });
+      expect(items).toEqual([]);
     });
   });
 
