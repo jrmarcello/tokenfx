@@ -1,4 +1,5 @@
 import type { DB } from '@/lib/db/client';
+import type { CostSource } from '@/lib/queries/overview';
 
 export type SessionDetail = {
   id: string;
@@ -13,12 +14,24 @@ export type SessionDetail = {
   totalOutputTokens: number;
   totalCacheReadTokens: number;
   totalCacheCreationTokens: number;
+  /**
+   * Authoritative cost: OTEL (`sessions.total_cost_usd_otel`) when present,
+   * falls back to local (`sessions.total_cost_usd`). This is the value the
+   * UI should display by default.
+   */
   totalCostUsd: number;
+  /**
+   * The locally-computed cost (sum of `turns.cost_usd` via the hardcoded
+   * pricing table). Exposed alongside `totalCostUsd` so the session detail
+   * page can show both sides when they diverge >1% (REQ-12).
+   */
+  totalCostUsdLocal: number;
   turnCount: number;
   toolCallCount: number;
   avgRating: number | null;
   cacheHitRatio: number | null;
   outputInputRatio: number | null;
+  costSource: CostSource;
 };
 
 export type TurnDetail = {
@@ -51,6 +64,17 @@ export type SessionListItem = {
   totalCostUsd: number;
   turnCount: number;
   avgRating: number | null;
+  costSource: CostSource;
+};
+
+type SessionListRow = {
+  id: string;
+  project: string;
+  startedAt: number;
+  totalCostUsd: number;
+  turnCount: number;
+  avgRating: number | null;
+  cost_from_otel: number;
 };
 
 type PreparedSet = {
@@ -111,12 +135,15 @@ function getPrepared(db: DB): PreparedSet {
          rated_at = excluded.rated_at`
     ),
     listSessions: db.prepare(
+      // COALESCE prefers OTEL authoritative cost; `cost_from_otel` surfaces
+      // provenance so the UI can render per-row badges (REQ-4).
       `SELECT s.id AS id,
               s.project AS project,
               s.started_at AS startedAt,
-              s.total_cost_usd AS totalCostUsd,
+              COALESCE(s.total_cost_usd_otel, s.total_cost_usd) AS totalCostUsd,
               s.turn_count AS turnCount,
-              v.avg_rating AS avgRating
+              v.avg_rating AS avgRating,
+              (s.total_cost_usd_otel IS NOT NULL) AS cost_from_otel
        FROM sessions s
        LEFT JOIN session_effectiveness v ON v.id = s.id
        ORDER BY s.started_at DESC
@@ -126,9 +153,10 @@ function getPrepared(db: DB): PreparedSet {
       `SELECT s.id AS id,
               s.project AS project,
               s.started_at AS startedAt,
-              s.total_cost_usd AS totalCostUsd,
+              COALESCE(s.total_cost_usd_otel, s.total_cost_usd) AS totalCostUsd,
               s.turn_count AS turnCount,
-              v.avg_rating AS avgRating
+              v.avg_rating AS avgRating,
+              (s.total_cost_usd_otel IS NOT NULL) AS cost_from_otel
        FROM sessions s
        LEFT JOIN session_effectiveness v ON v.id = s.id
        WHERE s.started_at >= ? AND s.started_at < ?
@@ -153,6 +181,7 @@ type SessionRow = {
   total_cache_read_tokens: number;
   total_cache_creation_tokens: number;
   total_cost_usd: number;
+  total_cost_usd_otel: number | null;
   turn_count: number;
   tool_call_count: number;
   cache_hit_ratio: number | null;
@@ -164,6 +193,11 @@ export function getSession(db: DB, id: string): SessionDetail | null {
   const p = getPrepared(db);
   const row = p.getSession.get(id) as SessionRow | undefined;
   if (!row) return null;
+  // Inline COALESCE: pick OTEL when present, else fall back to the local sum.
+  // `totalCostUsdLocal` preserves the raw local value so the session detail
+  // page can surface both when they diverge >1% (REQ-12).
+  const totalCostUsd =
+    row.total_cost_usd_otel !== null ? row.total_cost_usd_otel : row.total_cost_usd;
   return {
     id: row.id,
     slug: row.slug,
@@ -177,12 +211,14 @@ export function getSession(db: DB, id: string): SessionDetail | null {
     totalOutputTokens: row.total_output_tokens,
     totalCacheReadTokens: row.total_cache_read_tokens,
     totalCacheCreationTokens: row.total_cache_creation_tokens,
-    totalCostUsd: row.total_cost_usd,
+    totalCostUsd,
+    totalCostUsdLocal: row.total_cost_usd,
     turnCount: row.turn_count,
     toolCallCount: row.tool_call_count,
     avgRating: row.avg_rating,
     cacheHitRatio: row.cache_hit_ratio,
     outputInputRatio: row.output_input_ratio,
+    costSource: row.total_cost_usd_otel !== null ? 'otel' : 'local',
   };
 }
 
@@ -285,9 +321,20 @@ export function getSessionIdForTurn(db: DB, turnId: string): string | null {
   return row?.session_id ?? null;
 }
 
+const mapSessionListRow = (r: SessionListRow): SessionListItem => ({
+  id: r.id,
+  project: r.project,
+  startedAt: r.startedAt,
+  totalCostUsd: r.totalCostUsd,
+  turnCount: r.turnCount,
+  avgRating: r.avgRating,
+  costSource: r.cost_from_otel ? 'otel' : 'local',
+});
+
 export function listSessions(db: DB, limit: number): SessionListItem[] {
   const p = getPrepared(db);
-  return p.listSessions.all(limit) as SessionListItem[];
+  const rows = p.listSessions.all(limit) as SessionListRow[];
+  return rows.map(mapSessionListRow);
 }
 
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -315,5 +362,6 @@ export function listSessionsByDate(
   // be 23 or 25 hours long, not always exactly 86_400_000 ms).
   const end = new Date(year, month - 1, day + 1, 0, 0, 0, 0).getTime();
   const p = getPrepared(db);
-  return p.listSessionsByDate.all(start, end) as SessionListItem[];
+  const rows = p.listSessionsByDate.all(start, end) as SessionListRow[];
+  return rows.map(mapSessionListRow);
 }

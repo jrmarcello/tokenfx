@@ -33,6 +33,7 @@ export function migrate(db: DB): void {
     // pre-existing tables created under older schema revisions.
     backfillOtelScrapesUnique(db);
     backfillTurnsSubagentType(db);
+    backfillSessionsOtelCost(db);
     const hasData = db
       .prepare('SELECT 1 FROM sessions LIMIT 1')
       .get() !== undefined;
@@ -105,6 +106,27 @@ function backfillTurnsSubagentType(db: DB): void {
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_turns_subagent ON turns(session_id, subagent_type)',
   );
+}
+
+/**
+ * Older DB files predate the `total_cost_usd_otel` column on `sessions`.
+ * Running `CREATE TABLE IF NOT EXISTS sessions (...)` on an existing DB is a
+ * no-op and does NOT add the column. We detect it via
+ * `PRAGMA table_info(sessions)` and ALTER TABLE on first encounter.
+ * Idempotent — subsequent runs see the column and skip the ALTER.
+ *
+ * The column is REAL NULL (no default): NULL means "no OTEL signal for this
+ * session"; populated means "Claude Code OTEL exporter reported this cost".
+ * Read paths use `COALESCE(total_cost_usd_otel, total_cost_usd)`.
+ */
+function backfillSessionsOtelCost(db: DB): void {
+  const cols = db
+    .prepare('PRAGMA table_info(sessions)')
+    .all() as Array<{ name: string }>;
+  const hasCol = cols.some((c) => c.name === 'total_cost_usd_otel');
+  if (!hasCol) {
+    db.exec('ALTER TABLE sessions ADD COLUMN total_cost_usd_otel REAL');
+  }
 }
 
 export function ensureMigrated(db: DB): void {

@@ -60,13 +60,15 @@ describe('fmt', () => {
     expect(fmtScore(null)).toBe('—');
   });
 
-  it('fmtDate / fmtDateTime / fmtTime format epoch ms', () => {
-    const ms = Date.UTC(2026, 0, 2, 12, 0, 0);
-    // fmtDate uses pt-BR short: "2 de jan. de 2026"
-    expect(fmtDate(ms)).toMatch(/jan/i);
-    expect(fmtDate(ms)).toMatch(/2026/);
-    expect(fmtDateTime(ms)).toMatch(/2026/);
-    expect(typeof fmtTime(ms)).toBe('string');
-    expect(fmtTime(ms).length).toBeGreaterThan(0);
+  it('fmtDate / fmtDateTime / fmtTime use numeric pt-BR + 24h (DD/MM/YYYY HH:MM)', () => {
+    const ms = Date.UTC(2026, 0, 2, 15, 30, 0);
+    // fmtDate → DD/MM/YYYY
+    expect(fmtDate(ms)).toMatch(/^\d{2}\/\d{2}\/2026$/);
+    // fmtDateTime → DD/MM/YYYY HH:MM (24h, no AM/PM, no seconds)
+    expect(fmtDateTime(ms)).toMatch(/^\d{2}\/\d{2}\/2026,? \d{2}:\d{2}$/);
+    expect(fmtDateTime(ms)).not.toMatch(/AM|PM/i);
+    // fmtTime → HH:MM (24h)
+    expect(fmtTime(ms)).toMatch(/^\d{2}:\d{2}$/);
+    expect(fmtTime(ms)).not.toMatch(/AM|PM/i);
   });
 });

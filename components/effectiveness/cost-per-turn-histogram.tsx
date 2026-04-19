@@ -36,7 +36,7 @@ export function CostPerTurnHistogram({ data }: { data: HistogramDatum[] }) {
               borderRadius: 6,
               color: '#e5e5e5',
             }}
-            formatter={(v) => [String(v), 'Sessions']}
+            formatter={(v) => [String(v), 'Sessões']}
           />
           <Bar dataKey="count" fill="#a78bfa" />
         </BarChart>

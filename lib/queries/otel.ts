@@ -24,11 +24,27 @@ import type { DB } from '@/lib/db/client';
 const DAY_MS = 86_400_000;
 const WEEK_MS = 7 * DAY_MS;
 
-const METRIC_DECISION = 'claude_code_code_edit_tool_decision_count_total';
+// Validated 2026-04-18 against `SELECT DISTINCT metric_name FROM otel_scrapes`
+// on a real DB populated by Claude Code (non-interactive telemetry). Previous
+// constants had wrong suffixes:
+//   `_decision_count_total` → actual is `_decision_total` (no `_count`)
+//   `_active_time_total_seconds_total` → actual is `_active_time_total`
+// Both silently returned 0 because the name never matched. `METRIC_PRS` and
+// `METRIC_ACTIVE` were not observed in the validation dump (non-interactive
+// session) so their exact names are inferred from the pattern of the other
+// counters + Anthropic's published telemetry docs.
+const METRIC_DECISION = 'claude_code_code_edit_tool_decision_total';
 const METRIC_LINES = 'claude_code_lines_of_code_count_total';
 const METRIC_COMMITS = 'claude_code_commit_count_total';
 const METRIC_PRS = 'claude_code_pull_request_count_total';
-const METRIC_ACTIVE = 'claude_code_active_time_total_seconds_total';
+const METRIC_ACTIVE = 'claude_code_active_time_total';
+// Cost usage counter emitted by Claude Code. Real name is
+// `claude_code_cost_usage_total` (validated); the `_usd_total` alias is a
+// defensive fallback in case the OTel exporter ever appends the unit suffix.
+const METRIC_COST_ALIASES = [
+  'claude_code_cost_usage_total',
+  'claude_code_cost_usage_usd_total',
+] as const;
 
 export type OtelInsights = {
   hasOtelData: boolean;
@@ -100,6 +116,7 @@ type PreparedSet = {
   sessionLines: Statement<[string, string]>;
   sessionScalar: Statement<[string, string]>;
   acceptRatesBySession: Statement<[string, number]>;
+  costBySession: Statement<[string, string]>;
 };
 
 const cache = new WeakMap<DB, PreparedSet>();
@@ -193,6 +210,23 @@ function getPrepared(db: DB): PreparedSet {
        JOIN sessions s ON s.id = d.session_id
        WHERE s.started_at >= ?
        GROUP BY d.session_id`,
+    ),
+    costBySession: db.prepare(
+      // MAX per (session_id, model) series → SUM across models per session.
+      // Case-insensitive matching via LOWER() + 2 aliases covers the known
+      // exporter name variants.
+      `WITH c AS (
+         SELECT json_extract(labels_json, '$.session_id') AS session_id,
+                json_extract(labels_json, '$.model')      AS model,
+                MAX(value)                                AS final_value
+         FROM otel_scrapes
+         WHERE LOWER(metric_name) IN (?, ?)
+           AND json_extract(labels_json, '$.session_id') IS NOT NULL
+         GROUP BY session_id, model
+       )
+       SELECT session_id AS sessionId, COALESCE(SUM(final_value), 0) AS cost
+       FROM c
+       GROUP BY session_id`,
     ),
   };
   cache.set(db, prepared);
@@ -400,4 +434,45 @@ export function getAcceptRatesBySession(
     }
   }
   return out;
+}
+
+/**
+ * Authoritative cost (USD) per session, derived from
+ * `claude_code_cost_usage_total` scrapes. For each distinct
+ * (session_id, model) series we take MAX(value) — the last observed
+ * cumulative counter value — and SUM across models per session.
+ *
+ * Matching is case-insensitive and accepts the `_usd_total` alias in
+ * case the OTel exporter starts appending the unit suffix. Sessions
+ * without any scrape don't appear in the returned Map — callers fall
+ * back to `sessions.total_cost_usd` (computeCost-based) for those.
+ *
+ * Counter reset caveat (shared with other OTEL aggregations here): a
+ * Claude Code process restart resets the counter to 0; MAX then shows
+ * only the post-restart segment for that run. Undercount is bounded
+ * by the lost delta between the last pre-restart scrape and restart.
+ */
+export function getOtelCostBySession(db: DB): Map<string, number> {
+  const out = new Map<string, number>();
+  const p = getPrepared(db);
+  if (!hasAnyOtelScrapes(p)) return out;
+  const rows = p.costBySession.all(...METRIC_COST_ALIASES) as Array<{
+    sessionId: string;
+    cost: number;
+  }>;
+  for (const r of rows) {
+    if (Number.isFinite(r.cost) && r.cost > 0) {
+      out.set(r.sessionId, r.cost);
+    }
+  }
+  return out;
+}
+
+/** Convenience wrapper for the single-session lookup used by the writer. */
+export function getOtelCostForSession(
+  db: DB,
+  sessionId: string,
+): number | null {
+  const map = getOtelCostBySession(db);
+  return map.get(sessionId) ?? null;
 }

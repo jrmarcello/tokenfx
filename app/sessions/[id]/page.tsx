@@ -7,6 +7,7 @@ import { getSubagentBreakdown } from '@/lib/queries/subagent';
 import { TranscriptViewer } from '@/components/transcript-viewer';
 import { SubagentBreakdown } from '@/components/subagent-breakdown';
 import { KpiCard } from '@/components/kpi-card';
+import { CostSourceBadge } from '@/components/cost-source-badge';
 import { BranchIcon } from '@/components/icons';
 import {
   fmtUsd,
@@ -73,8 +74,25 @@ export default async function SessionPage({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <KpiCard
           title="Custo"
-          value={fmtUsd(session.totalCostUsd)}
-          info="Soma dos custos de cada turno desta sessão, calculado via tabela de preços por modelo."
+          value={
+            <span className="inline-flex items-center gap-2">
+              {fmtUsd(session.totalCostUsd)}
+              <CostSourceBadge source={session.costSource} />
+            </span>
+          }
+          hint={
+            session.costSource === 'otel' &&
+            Math.abs(session.totalCostUsd - session.totalCostUsdLocal) /
+              Math.max(session.totalCostUsd, session.totalCostUsdLocal, 1e-9) >
+              0.01
+              ? `estimado local: ${fmtUsd(session.totalCostUsdLocal)}`
+              : undefined
+          }
+          info={
+            session.costSource === 'otel'
+              ? 'Custo autoritativo via OTEL (claude_code_cost_usage_total). O valor local (soma de turns via tabela de preços) aparece no hint quando diverge >1%.'
+              : 'Custo estimado via tabela de preços local (lib/analytics/pricing.ts). Ative OTEL no Claude Code pra custos autoritativos.'
+          }
         />
         <KpiCard
           title="Turnos"
@@ -111,12 +129,17 @@ export default async function SessionPage({
             value={fmtCompact(otel.linesRemoved)}
             info="Linhas de código removidas pelo Claude Code nesta sessão."
           />
-          <KpiCard
-            title="Active time"
-            value={fmtDurationShort(otel.activeSeconds)}
-            hint={otel.commits > 0 ? `${otel.commits} commits` : undefined}
-            info="Tempo real de uso ativo nesta sessão (não calendar time). Útil pra ver se a sessão foi densa ou teve muitas pausas."
-          />
+          {/* Active time só aparece quando Claude Code emitir o counter.
+              v2.1.114 não emite — card fica oculto até a telemetria
+              reaparecer. */}
+          {otel.activeSeconds > 0 && (
+            <KpiCard
+              title="Active time"
+              value={fmtDurationShort(otel.activeSeconds)}
+              hint={otel.commits > 0 ? `${otel.commits} commits` : undefined}
+              info="Tempo real de uso ativo nesta sessão (não calendar time). Útil pra ver se a sessão foi densa ou teve muitas pausas."
+            />
+          )}
         </div>
       )}
 

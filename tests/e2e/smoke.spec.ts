@@ -23,6 +23,24 @@ test.describe('smoke', () => {
     await expect(page.getByText(/First user prompt for e2e-1/)).toBeVisible();
   });
 
+  test('TC-E2E-08: home page shows mixed cost-source badge on Custo total KPI', async ({ page }) => {
+    await page.goto('/');
+    // Seed has e2e-today with OTEL cost + others with local only → mixed.
+    const badge = page
+      .locator('[role="img"][aria-label*="sessões"]')
+      .first();
+    await expect(badge).toBeVisible();
+  });
+
+  test('TC-E2E-09: session detail page shows OTEL badge for e2e-today', async ({ page }) => {
+    await page.goto('/sessions/e2e-today');
+    await expect(
+      page.getByRole('img', { name: 'Custo via OTEL' }),
+    ).toBeVisible();
+    // Divergence hint — local cost line appears since OTEL differs from local.
+    await expect(page.getByText(/estimado local/)).toBeVisible();
+  });
+
   test('TC-E2E-05: home page renders activity heatmap with at least one non-empty cell', async ({ page }) => {
     await page.goto('/');
     await expect(

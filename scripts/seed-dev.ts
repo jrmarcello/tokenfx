@@ -41,11 +41,17 @@ function main(): number {
     const db = openDatabase(dbPath);
     migrate(db);
 
-    // Idempotent cleanup. ratings/tool_calls/turns cascade via FK, but clear
-    // explicitly to be safe against older DBs that may predate FK enforcement.
-    db.prepare('DELETE FROM ratings').run();
-    db.prepare('DELETE FROM tool_calls').run();
-    db.prepare('DELETE FROM turns').run();
+    // Idempotent cleanup — **scoped strictly to `seed-*` rows** so this
+    // script is safe to run on a DB that already holds real data. Older
+    // versions of this script did blanket DELETEs, which wiped all real
+    // turns and ratings. Never again.
+    db.prepare(
+      "DELETE FROM ratings WHERE turn_id IN (SELECT id FROM turns WHERE session_id LIKE 'seed-%')",
+    ).run();
+    db.prepare(
+      "DELETE FROM tool_calls WHERE turn_id IN (SELECT id FROM turns WHERE session_id LIKE 'seed-%')",
+    ).run();
+    db.prepare("DELETE FROM turns WHERE session_id LIKE 'seed-%'").run();
     db.prepare("DELETE FROM sessions WHERE id LIKE 'seed-%'").run();
     db.prepare(
       "DELETE FROM otel_scrapes WHERE json_extract(labels_json, '$.session_id') LIKE 'seed-%'",
@@ -259,13 +265,13 @@ function main(): number {
           const scrapedAt = endedAt;
           insertOtel.run({
             scraped_at: scrapedAt,
-            metric_name: 'claude_code_code_edit_tool_decision_count_total',
+            metric_name: 'claude_code_code_edit_tool_decision_total',
             labels_json: JSON.stringify({ session_id: sessionId, decision: 'accept' }),
             value: accepts,
           });
           insertOtel.run({
             scraped_at: scrapedAt,
-            metric_name: 'claude_code_code_edit_tool_decision_count_total',
+            metric_name: 'claude_code_code_edit_tool_decision_total',
             labels_json: JSON.stringify({ session_id: sessionId, decision: 'reject' }),
             value: rejects,
           });
@@ -283,7 +289,7 @@ function main(): number {
           });
           insertOtel.run({
             scraped_at: scrapedAt,
-            metric_name: 'claude_code_active_time_total_seconds_total',
+            metric_name: 'claude_code_active_time_total',
             labels_json: JSON.stringify({ session_id: sessionId }),
             value: activeSeconds,
           });

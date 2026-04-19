@@ -92,9 +92,9 @@ function getPrepared(db: DB): PreparedSet {
   if (existing) return existing;
   const prepared: PreparedSet = {
     kpis: db.prepare(
-      // Weighted ratio uses the mathematically-correct SUM(output)/SUM(input)
-      // form — the previous SUM(ratio × (input+output))/SUM(input+output)
-      // was double-weighted and produced ~10× inflated values on real data.
+      // Weighted ratio is the mathematically-correct SUM(output)/SUM(input).
+      // Previous formula `SUM(ratio × (input+output))/SUM(input+output)` was
+      // double-weighted and produced ~10× inflated values on real data.
       `SELECT
          AVG(v.cache_hit_ratio) AS avgCacheHitRatio,
          SUM(s.total_output_tokens) AS sumOutput,
@@ -118,7 +118,10 @@ function getPrepared(db: DB): PreparedSet {
        ORDER BY week ASC`,
     ),
     costPerTurn: db.prepare(
-      `SELECT total_cost_usd / NULLIF(turn_count, 0) AS cost
+      // Inline COALESCE prefers OTEL authoritative cost; falls back to the
+      // local sum. Bypasses the `session_effectiveness` view (Design §4) so
+      // every read of "cost" in this module goes through the same funnel.
+      `SELECT COALESCE(total_cost_usd_otel, total_cost_usd) / NULLIF(turn_count, 0) AS cost
        FROM sessions
        WHERE started_at >= ? AND turn_count > 0`,
     ),
@@ -135,6 +138,9 @@ function getPrepared(db: DB): PreparedSet {
        LIMIT ?`,
     ),
     topSessions: db.prepare(
+      // Orders by authoritative cost (OTEL when present, else local sum) so
+      // sessions with hybrid provenance are ranked on the same axis the UI
+      // eventually renders.
       `SELECT s.id AS id,
               s.project AS project,
               v.cache_hit_ratio AS cacheHitRatio,
@@ -148,7 +154,7 @@ function getPrepared(db: DB): PreparedSet {
        FROM sessions s
        LEFT JOIN session_effectiveness v ON v.id = s.id
        WHERE s.started_at >= ?
-       ORDER BY s.total_cost_usd DESC
+       ORDER BY COALESCE(s.total_cost_usd_otel, s.total_cost_usd) DESC
        LIMIT ?`,
     ),
     turnsForSessions: db.prepare(
@@ -274,7 +280,7 @@ export function getSessionScores(db: DB, days: number): SessionScore[] {
     const turns = turnsBySession.get(s.id) ?? [];
     const penalties = correctionPenalties(turns);
     const correctionDensity =
-      turns.length > 0 ? penalties.size / turns.length : null;
+      turns.length > 0 ? penalties.size / turns.length : 0;
     const score = effectivenessScore({
       outputInputRatio: s.outputInputRatio,
       cacheHitRatio: s.cacheHitRatio,

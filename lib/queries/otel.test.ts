@@ -3,6 +3,8 @@ import { openDatabase, type DB } from '@/lib/db/client';
 import { migrate } from '@/lib/db/migrate';
 import {
   getAcceptRatesBySession,
+  getOtelCostBySession,
+  getOtelCostForSession,
   getOtelInsights,
   getSessionOtelStats,
   getWeeklyAcceptRate,
@@ -55,7 +57,7 @@ function insertDecision(
 ): void {
   db.prepare(
     `INSERT INTO otel_scrapes (scraped_at, metric_name, labels_json, value)
-     VALUES (?, 'claude_code_code_edit_tool_decision_count_total', ?, ?)`,
+     VALUES (?, 'claude_code_code_edit_tool_decision_total', ?, ?)`,
   ).run(scrapedAt, JSON.stringify({ session_id: sessionId, decision }), value);
 }
 
@@ -165,7 +167,7 @@ describe('getOtelInsights', () => {
     seedSession(db, 's1');
     insertScalar(db, 's1', 'claude_code_commit_count_total', 4);
     insertScalar(db, 's1', 'claude_code_pull_request_count_total', 1);
-    insertScalar(db, 's1', 'claude_code_active_time_total_seconds_total', 1800);
+    insertScalar(db, 's1', 'claude_code_active_time_total', 1800);
     const insights = getOtelInsights(db, 30);
     expect(insights.totalCommits).toBe(4);
     expect(insights.totalPullRequests).toBe(1);
@@ -201,7 +203,7 @@ describe('getSessionOtelStats', () => {
     seedSession(db, 's1');
     insertLines(db, 's1', 'added', 50);
     insertLines(db, 's1', 'removed', 15);
-    insertScalar(db, 's1', 'claude_code_active_time_total_seconds_total', 900);
+    insertScalar(db, 's1', 'claude_code_active_time_total', 900);
     insertScalar(db, 's1', 'claude_code_commit_count_total', 2);
 
     const stats = getSessionOtelStats(db, 's1');
@@ -288,5 +290,114 @@ describe('getAcceptRatesBySession', () => {
     seedSession(db, 's1');
     insertLines(db, 's1', 'added', 10);
     expect(getAcceptRatesBySession(db, 30).size).toBe(0);
+  });
+});
+
+describe('TC-I-15: canonical decision metric name is picked up (regression lock)', () => {
+  // Locks in the fix from the audit: METRIC_DECISION used to be
+  // `claude_code_code_edit_tool_decision_count_total` (wrong) so the query
+  // silently returned 0 forever. This test inserts scrapes under the CORRECT
+  // name `claude_code_code_edit_tool_decision_total` and asserts the
+  // aggregator picks them up — a regression to the wrong constant would
+  // break this test.
+  let db: DB;
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it('getOtelInsights reflects non-zero acceptRate under canonical metric name', () => {
+    seedSession(db, 's1');
+    const scrapedAt = Date.now() - 1000;
+    // Raw insert bypassing insertDecision to guarantee the exact metric name.
+    const stmt = db.prepare(
+      `INSERT INTO otel_scrapes (scraped_at, metric_name, labels_json, value)
+       VALUES (?, 'claude_code_code_edit_tool_decision_total', ?, ?)`,
+    );
+    stmt.run(scrapedAt, JSON.stringify({ session_id: 's1', decision: 'accept' }), 7);
+    stmt.run(scrapedAt, JSON.stringify({ session_id: 's1', decision: 'reject' }), 3);
+    const insights = getOtelInsights(db, 30);
+    expect(insights.totalAccepts).toBe(7);
+    expect(insights.totalRejects).toBe(3);
+    expect(insights.acceptRate).toBeCloseTo(0.7, 5);
+    expect(insights.hasOtelData).toBe(true);
+  });
+});
+
+describe('getOtelCostBySession / getOtelCostForSession', () => {
+  let db: DB;
+  let nextScrapedAt = Date.now() - 100_000;
+  const insertCost = (
+    sessionId: string,
+    model: string,
+    value: number,
+    metricName = 'claude_code_cost_usage_total',
+  ): void => {
+    nextScrapedAt += 1;
+    db.prepare(
+      `INSERT INTO otel_scrapes (scraped_at, metric_name, labels_json, value)
+       VALUES (?, ?, ?, ?)`,
+    ).run(
+      nextScrapedAt,
+      metricName,
+      JSON.stringify({ session_id: sessionId, model }),
+      value,
+    );
+  };
+  beforeEach(() => {
+    db = freshDb();
+    nextScrapedAt = Date.now() - 100_000;
+  });
+
+  it('TC-I-01: MAX per series picks the last observed cumulative value', () => {
+    seedSession(db, 's1');
+    insertCost('s1', 'claude-opus-4-7', 0.1);
+    insertCost('s1', 'claude-opus-4-7', 0.5);
+    insertCost('s1', 'claude-opus-4-7', 1.2);
+    const map = getOtelCostBySession(db);
+    expect(map.get('s1')).toBeCloseTo(1.2, 5);
+  });
+
+  it('TC-I-02: SUM across (session_id, model) series for the same session', () => {
+    seedSession(db, 's1');
+    insertCost('s1', 'claude-opus-4-7', 1.0);
+    insertCost('s1', 'claude-sonnet-4-6', 0.5);
+    const map = getOtelCostBySession(db);
+    expect(map.get('s1')).toBeCloseTo(1.5, 5);
+  });
+
+  it('TC-I-03: case-insensitive metric name + _usd_total alias (both variants work)', () => {
+    // Variant A: canonical name, mixed case
+    seedSession(db, 'sA');
+    insertCost('sA', 'claude-opus-4-7', 2.0, 'CLAUDE_CODE_COST_USAGE_TOTAL');
+    // Variant B: _usd_total alias, lower case
+    seedSession(db, 'sB');
+    insertCost('sB', 'claude-opus-4-7', 3.0, 'claude_code_cost_usage_usd_total');
+    const map = getOtelCostBySession(db);
+    expect(map.get('sA')).toBeCloseTo(2.0, 5);
+    expect(map.get('sB')).toBeCloseTo(3.0, 5);
+  });
+
+  it('TC-I-04: scrapes without session_id label are ignored', () => {
+    seedSession(db, 's1');
+    db.prepare(
+      `INSERT INTO otel_scrapes (scraped_at, metric_name, labels_json, value)
+       VALUES (?, 'claude_code_cost_usage_total', ?, ?)`,
+    ).run(Date.now() - 1000, JSON.stringify({ model: 'claude-opus-4-7' }), 99);
+    const map = getOtelCostBySession(db);
+    expect(map.size).toBe(0);
+  });
+
+  it('TC-I-05: returns empty Map when no cost scrapes exist', () => {
+    seedSession(db, 's1');
+    const map = getOtelCostBySession(db);
+    expect(map.size).toBe(0);
+    expect(getOtelCostForSession(db, 's1')).toBeNull();
+  });
+
+  it('getOtelCostForSession returns null for unknown session', () => {
+    seedSession(db, 's1');
+    insertCost('s1', 'claude-opus-4-7', 2.5);
+    expect(getOtelCostForSession(db, 'does-not-exist')).toBeNull();
+    expect(getOtelCostForSession(db, 's1')).toBeCloseTo(2.5, 5);
   });
 });

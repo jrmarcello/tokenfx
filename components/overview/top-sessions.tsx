@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { Card, CardContent } from '@/components/ui/card';
 import { ChevronRightIcon } from '@/components/icons';
+import { CostSourceBadge } from '@/components/cost-source-badge';
 import { fmtDate, fmtUsd } from '@/lib/fmt';
 import type { TopSession } from '@/lib/queries/overview';
 
@@ -27,8 +28,9 @@ export function TopSessions({ items }: { items: TopSession[] }) {
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-6 text-sm">
-                  <span className="tabular-nums font-medium text-neutral-100">
+                  <span className="inline-flex items-center gap-1.5 tabular-nums font-medium text-neutral-100">
                     {fmtUsd(s.totalCostUsd)}
+                    <CostSourceBadge source={s.costSource} />
                   </span>
                   <span className="tabular-nums text-neutral-500">
                     {s.turnCount} turnos

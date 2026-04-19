@@ -22,6 +22,7 @@ type SeedSession = {
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
   costUsd?: number;
+  costUsdOtel?: number | null;
   turnCount?: number;
 };
 
@@ -31,9 +32,9 @@ function insertSession(db: DB, s: SeedSession): void {
       id, slug, cwd, project, git_branch, cc_version,
       started_at, ended_at,
       total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens,
-      total_cost_usd, turn_count, tool_call_count,
+      total_cost_usd, total_cost_usd_otel, turn_count, tool_call_count,
       source_file, ingested_at
-    ) VALUES (?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+    ) VALUES (?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
   ).run(
     s.id,
     '/tmp/cwd',
@@ -45,6 +46,7 @@ function insertSession(db: DB, s: SeedSession): void {
     s.cacheReadTokens ?? 0,
     s.cacheCreationTokens ?? 0,
     s.costUsd ?? 0,
+    s.costUsdOtel ?? null,
     s.turnCount ?? 1,
     `file-${s.id}.jsonl`,
     Date.now(),
@@ -165,8 +167,7 @@ describe('effectiveness queries', () => {
 
     it('getEffectivenessKpis returns weighted ratios and rated session count', () => {
       const kpis = getEffectivenessKpis(db, 30);
-      // cache_hit_ratio per session (view) is non-null for both in-window
-      // sessions and averages to something > 0.
+      // cache_hit_ratio: s1 = 500/1500, s2 = 1000/3000 = 0.333. Both equal => avg ~0.333
       expect(kpis.avgCacheHitRatio).not.toBeNull();
       expect(kpis.avgCacheHitRatio!).toBeGreaterThan(0);
       // Weighted output/input = SUM(output) / SUM(input) across the window.
@@ -217,6 +218,30 @@ describe('effectiveness queries', () => {
       // s1 has a correction on t1 (1 penalty / 3 turns ≈ 0.33), s2 has none.
       // With s1's rating=1 but corrections vs s2 rating=null no corrections,
       // both scores are valid floats. Just assert presence.
+    });
+  });
+
+  // REQ-2: cost reads throughout effectiveness queries must prefer the OTEL
+  // authoritative value. `getCostPerTurnValues` bypasses the view (Design §4)
+  // and goes directly at sessions with inline COALESCE.
+  describe('OTEL cost source on effectiveness queries', () => {
+    it('getCostPerTurnValues prefers total_cost_usd_otel over total_cost_usd', () => {
+      insertSession(db, {
+        id: 'otel-sess',
+        startedAt: now - 1 * DAY_MS,
+        costUsd: 2.0,
+        costUsdOtel: 10.0,
+        turnCount: 2,
+      });
+      insertSession(db, {
+        id: 'local-sess',
+        startedAt: now - 2 * DAY_MS,
+        costUsd: 4.0,
+        turnCount: 2,
+      });
+      const values = getCostPerTurnValues(db, 30);
+      // OTEL preferred: 10/2 = 5; local fallback: 4/2 = 2.
+      expect(values.sort((a, b) => a - b)).toEqual([2, 5]);
     });
   });
 

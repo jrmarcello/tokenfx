@@ -28,6 +28,7 @@ function seedSession(
     cacheReadTokens: number;
     cacheCreationTokens: number;
     costUsd: number;
+    costUsdOtel: number | null;
     turnCount: number;
     toolCallCount: number;
   }> = {}
@@ -37,9 +38,9 @@ function seedSession(
       id, slug, cwd, project, git_branch, cc_version,
       started_at, ended_at,
       total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens,
-      total_cost_usd, turn_count, tool_call_count,
+      total_cost_usd, total_cost_usd_otel, turn_count, tool_call_count,
       source_file, ingested_at
-    ) VALUES (?, NULL, '/tmp/cwd', ?, 'main', '1.0.0', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, NULL, '/tmp/cwd', ?, 'main', '1.0.0', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     overrides.project ?? 'demo',
@@ -50,6 +51,7 @@ function seedSession(
     overrides.cacheReadTokens ?? 2000,
     overrides.cacheCreationTokens ?? 100,
     overrides.costUsd ?? 1.5,
+    overrides.costUsdOtel ?? null,
     overrides.turnCount ?? 3,
     overrides.toolCallCount ?? 2,
     `file-${id}.jsonl`,
@@ -142,6 +144,11 @@ describe('session queries', () => {
       expect(s.cacheHitRatio).toBeCloseTo(3000 / 4100, 8);
       expect(s.outputInputRatio).toBeCloseTo(500 / 1000, 8);
       expect(s.avgRating).toBeCloseTo(1, 8);
+      // Seeded session has no OTEL cost → falls back to local, source 'local',
+      // local mirrors totalCostUsd.
+      expect(s.costSource).toBe('local');
+      expect(s.totalCostUsd).toBeCloseTo(1.5, 5);
+      expect(s.totalCostUsdLocal).toBeCloseTo(1.5, 5);
     });
 
     it('getSession returns null for missing id', () => {
@@ -187,6 +194,58 @@ describe('session queries', () => {
       seedSession(db, 'sess-2', { startedAt: Date.now() + 1000 });
       const items = listSessions(db, 10);
       expect(items.map((x) => x.id)).toEqual(['sess-2', 'sess-1', 'sess-0']);
+      for (const row of items) {
+        expect(row.costSource).toBe('local');
+      }
+    });
+  });
+
+  // Covers REQ-2/REQ-12: OTEL-authoritative cost reads plus the local-cost
+  // side channel exposed via SessionDetail.totalCostUsdLocal.
+  describe('OTEL cost source on session queries', () => {
+    it('getSession returns OTEL cost, preserves totalCostUsdLocal, flags costSource=otel', () => {
+      seedSession(db, 'otel-sess', {
+        costUsd: 1.0,
+        costUsdOtel: 9.99,
+      });
+      const s = getSession(db, 'otel-sess');
+      expect(s).not.toBeNull();
+      if (!s) return;
+      expect(s.totalCostUsd).toBeCloseTo(9.99, 5);
+      expect(s.totalCostUsdLocal).toBeCloseTo(1.0, 5);
+      expect(s.costSource).toBe('otel');
+    });
+
+    it('listSessions surfaces per-row costSource and COALESCE cost', () => {
+      seedSession(db, 'with-otel', {
+        costUsd: 1.0,
+        costUsdOtel: 9.99,
+        startedAt: Date.now() + 10,
+      });
+      seedSession(db, 'no-otel', {
+        costUsd: 2.0,
+        costUsdOtel: null,
+      });
+      const items = listSessions(db, 10);
+      const otelRow = items.find((x) => x.id === 'with-otel');
+      const localRow = items.find((x) => x.id === 'no-otel');
+      expect(otelRow?.totalCostUsd).toBeCloseTo(9.99, 5);
+      expect(otelRow?.costSource).toBe('otel');
+      expect(localRow?.totalCostUsd).toBeCloseTo(2.0, 5);
+      expect(localRow?.costSource).toBe('local');
+    });
+
+    it('listSessionsByDate also surfaces costSource', () => {
+      const dayStart = new Date(2026, 3, 18, 0, 0, 0, 0).getTime();
+      seedSession(db, 'otel-today', {
+        startedAt: dayStart + 3_600_000,
+        costUsd: 1.0,
+        costUsdOtel: 7.25,
+      });
+      const items = listSessionsByDate(db, '2026-04-18');
+      expect(items.length).toBe(1);
+      expect(items[0].totalCostUsd).toBeCloseTo(7.25, 5);
+      expect(items[0].costSource).toBe('otel');
     });
   });
 

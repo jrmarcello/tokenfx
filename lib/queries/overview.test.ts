@@ -19,6 +19,7 @@ type SeedSession = {
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
   costUsd?: number;
+  costUsdOtel?: number | null;
   turnCount?: number;
 };
 
@@ -28,9 +29,9 @@ function insertSession(db: DB, s: SeedSession): void {
       id, slug, cwd, project, git_branch, cc_version,
       started_at, ended_at,
       total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens,
-      total_cost_usd, turn_count, tool_call_count,
+      total_cost_usd, total_cost_usd_otel, turn_count, tool_call_count,
       source_file, ingested_at
-    ) VALUES (?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+    ) VALUES (?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
   );
   stmt.run(
     s.id,
@@ -43,6 +44,7 @@ function insertSession(db: DB, s: SeedSession): void {
     s.cacheReadTokens ?? 0,
     s.cacheCreationTokens ?? 0,
     s.costUsd ?? 0,
+    s.costUsdOtel ?? null,
     s.turnCount ?? 1,
     `file-${s.id}.jsonl`,
     Date.now()
@@ -69,7 +71,10 @@ describe('overview queries', () => {
       insertSession(db, {
         id: 's1',
         project: 'alpha',
-        startedAt: now - 2 * 60 * 60 * 1000, // 2 hours ago
+        // `now` (not a past offset) to stay inside the "today" local day
+        // regardless of when the test runs — avoids the midnight-boundary
+        // flake where `now - 2h` rolls into yesterday.
+        startedAt: now,
         inputTokens: 1000,
         outputTokens: 500,
         cacheReadTokens: 2000,
@@ -130,13 +135,11 @@ describe('overview queries', () => {
       expect(kpis.tokens30d).toBe(expected);
     });
 
-    it('getOverviewKpis: cacheHitRatio30d = cacheRead / (input + cacheRead + cacheCreation)', () => {
+    it('getOverviewKpis: cacheHitRatio30d computed from cacheRead / (input + cacheRead)', () => {
       const kpis = getOverviewKpis(db);
-      const sumCacheRead = 2000 + 1500 + 1000;
-      const sumCacheCreation = 100 + 50 + 200;
+      const sumCache = 2000 + 1500 + 1000;
       const sumInput = 1000 + 500 + 800;
-      const expected =
-        sumCacheRead / (sumInput + sumCacheRead + sumCacheCreation);
+      const expected = sumCache / (sumInput + sumCache);
       expect(kpis.cacheHitRatio30d).toBeCloseTo(expected, 8);
       expect(kpis.cacheHitRatio30d).toBeGreaterThan(0);
       expect(kpis.cacheHitRatio30d).toBeLessThanOrEqual(1);
@@ -156,6 +159,9 @@ describe('overview queries', () => {
       expect(top[0].id).toBe('s3'); // 5.0
       expect(top[1].id).toBe('s2'); // 2.25
       expect(top[0].totalCostUsd).toBeGreaterThanOrEqual(top[1].totalCostUsd);
+      // None of the seeded sessions have OTEL cost → all fall back to local.
+      expect(top[0].costSource).toBe('local');
+      expect(top[1].costSource).toBe('local');
     });
 
     it('getDailySpend: returns exactly `days` zero-filled entries in ascending date order', () => {
@@ -213,6 +219,94 @@ describe('overview queries', () => {
     });
   });
 
+  // OTEL authoritative cost: when sessions.total_cost_usd_otel is populated,
+  // the read-side COALESCE must prefer it over sessions.total_cost_usd and the
+  // costSource provenance must flip to 'otel'. Covers REQ-2, REQ-3, REQ-13.
+  describe('cost source (OTEL vs local)', () => {
+    it('getOverviewKpis: spend30d prefers total_cost_usd_otel when set', () => {
+      insertSession(db, {
+        id: 'otel-only',
+        startedAt: now - 1 * DAY_MS,
+        costUsd: 1.0,
+        costUsdOtel: 9.99,
+      });
+      insertSession(db, {
+        id: 'local-only',
+        startedAt: now - 2 * DAY_MS,
+        costUsd: 2.0,
+        costUsdOtel: null,
+      });
+      const kpis = getOverviewKpis(db);
+      // 9.99 (otel) + 2.0 (local fallback) = 11.99
+      expect(kpis.spend30d).toBeCloseTo(9.99 + 2.0, 5);
+    });
+
+    it('getOverviewKpis: spend30dCostSources counts sessions by provenance', () => {
+      insertSession(db, {
+        id: 'a',
+        startedAt: now - 1 * DAY_MS,
+        costUsd: 1.0,
+        costUsdOtel: 9.99,
+      });
+      insertSession(db, {
+        id: 'b',
+        startedAt: now - 2 * DAY_MS,
+        costUsd: 1.0,
+        costUsdOtel: 7.5,
+      });
+      insertSession(db, {
+        id: 'c',
+        startedAt: now - 3 * DAY_MS,
+        costUsd: 2.0,
+      });
+      const kpis = getOverviewKpis(db);
+      expect(kpis.spend30dCostSources).toEqual({ otel: 2, local: 1 });
+    });
+
+    it('getTopSessions: per-row costSource reflects which column was read', () => {
+      insertSession(db, {
+        id: 'otel-big',
+        startedAt: now - 1 * DAY_MS,
+        costUsd: 1.0,
+        costUsdOtel: 9.99,
+      });
+      insertSession(db, {
+        id: 'local-small',
+        startedAt: now - 2 * DAY_MS,
+        costUsd: 2.0,
+      });
+      const rows = getTopSessions(db, 5, 30);
+      const otelRow = rows.find((r) => r.id === 'otel-big');
+      const localRow = rows.find((r) => r.id === 'local-small');
+      expect(otelRow?.totalCostUsd).toBeCloseTo(9.99, 5);
+      expect(otelRow?.costSource).toBe('otel');
+      expect(localRow?.totalCostUsd).toBeCloseTo(2.0, 5);
+      expect(localRow?.costSource).toBe('local');
+    });
+
+    it('getDailySpend: sums COALESCE(otel, local) per day', () => {
+      const isolatedDb = freshDb();
+      const start = new Date();
+      start.setHours(10, 0, 0, 0);
+      const t = start.getTime();
+      insertSession(isolatedDb, {
+        id: 'a',
+        startedAt: t,
+        costUsd: 1.0,
+        costUsdOtel: 8.0,
+      });
+      insertSession(isolatedDb, {
+        id: 'b',
+        startedAt: t + 60_000,
+        costUsd: 2.0,
+      });
+      const series = getDailySpend(isolatedDb, 30);
+      const key = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+      const point = series.find((p) => p.date === key);
+      expect(point?.spend).toBeCloseTo(8.0 + 2.0, 5);
+    });
+  });
+
   describe('with empty database', () => {
     it('getOverviewKpis returns all zeros', () => {
       const kpis = getOverviewKpis(db);
@@ -222,6 +316,7 @@ describe('overview queries', () => {
       expect(kpis.tokens30d).toBe(0);
       expect(kpis.cacheHitRatio30d).toBe(0);
       expect(kpis.sessionCount30d).toBe(0);
+      expect(kpis.spend30dCostSources).toEqual({ otel: 0, local: 0 });
     });
 
     it('getTopSessions returns []', () => {

@@ -11,6 +11,10 @@ import { reconcileSession } from '@/lib/ingest/reconcile';
 import { computeCost } from '@/lib/analytics/pricing';
 import { deriveProjectName, listTranscriptFiles } from '@/lib/fs-paths';
 import { log } from '@/lib/logger';
+import {
+  getOtelCostBySession,
+  getOtelCostForSession,
+} from '@/lib/queries/otel';
 
 export type IngestSummary = {
   filesProcessed: number;
@@ -19,6 +23,7 @@ export type IngestSummary = {
   turnsUpserted: number;
   toolCallsUpserted: number;
   otelScrapes: number;
+  otelCostsUpgraded: number;
   errors: Array<{ file: string; error: string }>;
 };
 
@@ -29,6 +34,8 @@ type Prepared = {
   insertOtel: Statement;
   lookupIngestedFile: Statement<[string]>;
   upsertIngestedFile: Statement<[string, number, number]>;
+  updateSessionOtelCost: Statement<[number, string]>;
+  readSessionOtelCost: Statement<[string]>;
 };
 
 const preparedCache = new WeakMap<Database, Prepared>();
@@ -137,6 +144,18 @@ function getStatements(db: Database): Prepared {
        ingested_at = excluded.ingested_at`,
   );
 
+  // Write path for the OTEL-derived cost column. Kept separate from the
+  // sessions insert/upsert so that writes triggered by the final sweep
+  // don't need to re-know the full session row.
+  const updateSessionOtelCost = db.prepare(
+    'UPDATE sessions SET total_cost_usd_otel = ? WHERE id = ?',
+  );
+
+  // Used by the final sweep to skip no-op updates (same value already stored).
+  const readSessionOtelCost = db.prepare(
+    'SELECT total_cost_usd_otel FROM sessions WHERE id = ?',
+  );
+
   cached = {
     insertSession,
     insertTurn,
@@ -144,6 +163,8 @@ function getStatements(db: Database): Prepared {
     insertOtel,
     lookupIngestedFile,
     upsertIngestedFile,
+    updateSessionOtelCost,
+    readSessionOtelCost,
   };
   preparedCache.set(db, cached);
   return cached;
@@ -256,6 +277,16 @@ export function writeSession(
   // rollup columns from the actual stored rows so session.turn_count et al
   // reflect reality across all files — not just the last one ingested.
   reconcileSession(db, parsed.id);
+
+  // Per-session OTEL cost upgrade (REQ-1). If the current run (or any prior
+  // run) ingested an OTEL scrape of `claude_code_cost_usage_total` for this
+  // session, prefer it over the locally-computed `total_cost_usd`. The
+  // ingestAll ordering guarantees OTEL scrapes are written before any
+  // writeSession runs, so same-run upgrades work without a second pass.
+  const otelCost = getOtelCostForSession(db, parsed.id);
+  if (otelCost !== null) {
+    stmts.updateSessionOtelCost.run(otelCost, parsed.id);
+  }
 }
 
 export function writeOtelScrapes(db: Database, rows: OtelScrape[]): void {
@@ -292,13 +323,34 @@ export async function ingestAll(options?: {
     turnsUpserted: 0,
     toolCallsUpserted: 0,
     otelScrapes: 0,
+    otelCostsUpgraded: 0,
     errors: [],
   };
+
+  const stmts = getStatements(db);
+
+  // REQ-5: OTEL scrapes are written BEFORE JSONL processing so the
+  // per-session OTEL cost upgrade inside writeSession can consult scrapes
+  // from the SAME run. Previously JSONLs ran first and OTEL second, which
+  // meant cost upgrades lagged by one ingest cycle for brand-new sessions.
+  if (options?.otelUrl) {
+    const otelResult = await fetchAndParse(options.otelUrl, options.fetchFn, {
+      timeoutMs: options.otelTimeoutMs,
+    });
+    if (otelResult.ok) {
+      writeOtelScrapes(db, otelResult.value);
+      summary.otelScrapes = otelResult.value.length;
+    } else if (!options.otelOptional) {
+      summary.errors.push({
+        file: options.otelUrl,
+        error: otelResult.error.message,
+      });
+    }
+  }
 
   const files = await listTranscriptFiles(options?.transcriptsRoot);
   log.info(`[ingest] found ${files.length} transcript file(s)`);
 
-  const stmts = getStatements(db);
   let skippedUnchanged = 0;
 
   for (const file of files) {
@@ -350,23 +402,36 @@ export async function ingestAll(options?: {
     }
   }
 
-  if (options?.otelUrl) {
-    const otelResult = await fetchAndParse(options.otelUrl, options.fetchFn, {
-      timeoutMs: options.otelTimeoutMs,
+  // REQ-14: final sweep. Walk the authoritative OTEL cost map once and
+  // upgrade any session whose stored `total_cost_usd_otel` differs from
+  // the current OTEL-derived value. Covers sessions whose JSONL was
+  // mtime-gated-skipped above but whose OTEL scrape landed this run, plus
+  // counter progressions (later scrape > earlier value) for any session.
+  // A no-op update check avoids bumping rows whose value already matches,
+  // keeping this cheap even on DBs with thousands of sessions.
+  const otelCostMap = getOtelCostBySession(db);
+  if (otelCostMap.size > 0) {
+    const sweep = db.transaction(() => {
+      for (const [sessionId, cost] of otelCostMap) {
+        const existing = stmts.readSessionOtelCost.get(sessionId) as
+          | { total_cost_usd_otel: number | null }
+          | undefined;
+        if (existing === undefined) {
+          // No session row yet (scrape arrived before JSONL was parsed).
+          // We'll pick it up next ingest once the session exists.
+          continue;
+        }
+        if (existing.total_cost_usd_otel !== cost) {
+          stmts.updateSessionOtelCost.run(cost, sessionId);
+          summary.otelCostsUpgraded += 1;
+        }
+      }
     });
-    if (otelResult.ok) {
-      writeOtelScrapes(db, otelResult.value);
-      summary.otelScrapes = otelResult.value.length;
-    } else if (!options.otelOptional) {
-      summary.errors.push({
-        file: options.otelUrl,
-        error: otelResult.error.message,
-      });
-    }
+    sweep();
   }
 
   log.info(
-    `[ingest] done: ${summary.filesProcessed} processed, ${skippedUnchanged} unchanged, ${summary.filesSkipped} skipped, ${summary.otelScrapes} otel rows, ${summary.errors.length} errors`,
+    `[ingest] done: ${summary.filesProcessed} processed, ${skippedUnchanged} unchanged, ${summary.filesSkipped} skipped, ${summary.otelScrapes} otel rows, ${summary.otelCostsUpgraded} otel cost upgrades, ${summary.errors.length} errors`,
   );
 
   return summary;

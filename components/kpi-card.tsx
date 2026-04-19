@@ -4,7 +4,7 @@ import { cn } from '@/lib/cn';
 
 type Props = {
   title: string;
-  value: string | number;
+  value: React.ReactNode;
   hint?: string;
   info?: React.ReactNode;
   trend?: { delta: number; label: string };

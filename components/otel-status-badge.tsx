@@ -27,15 +27,25 @@ export async function OtelStatusBadge() {
             <code className="font-mono text-neutral-300">
               localhost:9464/metrics
             </code>
-            . Ingerimos sinais extras como accept/reject de Edit/Write,
-            linhas alteradas, commits e active_time.
+            . Ingerimos sinais extras (accept/reject, linhas, commits,
+            cost autoritativo).{' '}
+            <strong>Limitação conhecida:</strong> o exporter Prometheus usa
+            porta fixa, então se você tiver mais de um processo Claude
+            ativo ao mesmo tempo, só o primeiro ganha a porta — os outros
+            rodam sem telemetria. Por isso às vezes só uma de N sessões
+            ativas aparece com badge OTEL.
           </>
         ) : (
           <>
-            Claude Code não está exportando Prometheus. Para ativar, no
-            shell onde você roda o Claude Code:{' '}
+            Claude Code não está exportando Prometheus agora. O endpoint
+            só existe enquanto um processo <code>claude</code> está vivo.
+            Para ativar permanentemente, edite{' '}
             <code className="font-mono text-neutral-300">
-              export CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_METRICS_EXPORTER=prometheus
+              ~/.claude/settings.json
+            </code>{' '}
+            e adicione{' '}
+            <code className="font-mono text-neutral-300">
+              {'{ "env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1", "OTEL_METRICS_EXPORTER": "prometheus" } }'}
             </code>
             . Os transcripts JSONL cobrem o essencial — OTEL é um bônus.
           </>

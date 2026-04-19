@@ -94,7 +94,7 @@ export default async function EffectivenessPage() {
               Métricas que só existem com o Claude Code exportando Prometheus.
             </p>
           </header>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <KpiCard
               title="Accept rate (Edit/Write)"
               value={fmtPct(otel.acceptRate)}
@@ -122,11 +122,17 @@ export default async function EffectivenessPage() {
               value={`${otel.totalCommits} / ${otel.totalPullRequests}`}
               info="Commits e PRs criados via Claude Code na janela de 30 dias. Boa proxy de entrega concreta."
             />
-            <KpiCard
-              title="Active time"
-              value={fmtDurationHours(otel.totalActiveSeconds)}
-              info="Tempo real de uso ativo (segundos de interação), não calendar time. Útil pra distinguir sessões de 30min reais vs 30min idle."
-            />
+            {/* Active time card omitido quando zero — Claude Code v2.1.114
+                não emite mais `claude_code_active_time_total` (validado no
+                endpoint Prometheus ao vivo). Se Anthropic re-habilitar,
+                a KPI volta automaticamente. */}
+            {otel.totalActiveSeconds > 0 && (
+              <KpiCard
+                title="Active time"
+                value={fmtDurationHours(otel.totalActiveSeconds)}
+                info="Tempo real de uso ativo (segundos de interação), não calendar time. Útil pra distinguir sessões de 30min reais vs 30min idle."
+              />
+            )}
           </div>
           {weeklyAccept.length > 0 && (
             <section>

@@ -1,6 +1,7 @@
 import { getDb } from '@/lib/db/client';
 import { ensureFreshIngest } from '@/lib/ingest/auto';
 import { KpiCard } from '@/components/kpi-card';
+import { CostSourceBadge } from '@/components/cost-source-badge';
 import { TrendChart } from '@/components/overview/trend-chart';
 import { TopSessions } from '@/components/overview/top-sessions';
 import { ActivityHeatmap } from '@/components/overview/activity-heatmap';
@@ -35,9 +36,23 @@ export default async function Home() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard
           title="Custo total (30d)"
-          value={fmtUsd(kpis.spend30d)}
+          value={
+            <span className="inline-flex items-center gap-2">
+              {fmtUsd(kpis.spend30d)}
+              <CostSourceBadge counts={kpis.spend30dCostSources} />
+            </span>
+          }
           hint={`Hoje: ${fmtUsd(kpis.spendToday)} — 7d: ${fmtUsd(kpis.spend7d)}`}
-          info="Soma dos custos de todas as sessões nos últimos 30 dias. Calculado por turno via tabela de preços por modelo (lib/analytics/pricing.ts)."
+          info={
+            <>
+              Soma dos custos de todas as sessões nos últimos 30 dias. Quando
+              OTEL tá ativo, o custo vem autoritativo do Claude Code
+              (`claude_code_cost_usage_total`). Sem OTEL, cai pra tabela de
+              preços local em `lib/analytics/pricing.ts`. Nesse período:{' '}
+              {kpis.spend30dCostSources.otel} sessões via OTEL,{' '}
+              {kpis.spend30dCostSources.local} via tabela local.
+            </>
+          }
         />
         <KpiCard
           title="Tokens (30d)"

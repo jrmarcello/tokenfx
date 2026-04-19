@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   total_cache_read_tokens INTEGER NOT NULL DEFAULT 0,
   total_cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
   total_cost_usd REAL NOT NULL DEFAULT 0,
+  total_cost_usd_otel REAL,
   turn_count INTEGER NOT NULL DEFAULT 0,
   tool_call_count INTEGER NOT NULL DEFAULT 0,
   source_file TEXT NOT NULL,
@@ -139,5 +140,7 @@ SELECT
   (CAST(s.total_output_tokens AS REAL) /
    NULLIF(s.total_input_tokens, 0)) AS output_input_ratio,
   (SELECT AVG(rating) FROM ratings r JOIN turns t ON t.id=r.turn_id WHERE t.session_id=s.id) AS avg_rating,
-  s.total_cost_usd / NULLIF(s.turn_count, 0) AS cost_per_turn
+  -- cost_per_turn prefers OTEL-authoritative cost when available; falls
+  -- back to local total_cost_usd (computeCost-derived) otherwise.
+  COALESCE(s.total_cost_usd_otel, s.total_cost_usd) / NULLIF(s.turn_count, 0) AS cost_per_turn
 FROM sessions s;

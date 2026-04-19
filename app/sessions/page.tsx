@@ -7,6 +7,7 @@ import { parseDateParam } from '@/lib/analytics/heatmap';
 import { Card, CardContent } from '@/components/ui/card';
 import { ChevronRightIcon } from '@/components/icons';
 import { fmtUsd, fmtDateTime, fmtRating } from '@/lib/fmt';
+import { CostSourceBadge } from '@/components/cost-source-badge';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -107,8 +108,9 @@ export default async function SessionsPage({ searchParams }: SessionsPageProps) 
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-6 text-sm">
-                      <span className="font-medium tabular-nums text-neutral-100">
+                      <span className="inline-flex items-center gap-1.5 font-medium tabular-nums text-neutral-100">
                         {fmtUsd(s.totalCostUsd)}
+                        <CostSourceBadge source={s.costSource} />
                       </span>
                       <span className="tabular-nums text-neutral-500">
                         {s.turnCount} turnos

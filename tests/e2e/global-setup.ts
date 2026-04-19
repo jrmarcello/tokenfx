@@ -220,14 +220,14 @@ export default async function globalSetup(): Promise<void> {
        started_at, ended_at,
        total_input_tokens, total_output_tokens,
        total_cache_read_tokens, total_cache_creation_tokens,
-       total_cost_usd, turn_count, tool_call_count,
+       total_cost_usd, total_cost_usd_otel, turn_count, tool_call_count,
        source_file, ingested_at
      ) VALUES (
        @id, @slug, @cwd, @project, @git_branch, @cc_version,
        @started_at, @ended_at,
        @total_input_tokens, @total_output_tokens,
        @total_cache_read_tokens, @total_cache_creation_tokens,
-       @total_cost_usd, @turn_count, @tool_call_count,
+       @total_cost_usd, @total_cost_usd_otel, @turn_count, @tool_call_count,
        @source_file, @ingested_at
      )`
   );
@@ -278,6 +278,11 @@ export default async function globalSetup(): Promise<void> {
         toolCallCount += t.toolCalls.length;
       }
 
+      // Give e2e-today an OTEL-authoritative cost so the badge shows up in
+      // the E2E assertions. Value deliberately differs from the computed
+      // local cost (~30% higher) so divergence display can be asserted too.
+      const localCost = Math.round(totalCost * 1e6) / 1e6;
+      const otelCost = s.id === 'e2e-today' ? localCost * 1.3 : null;
       insertSession.run({
         id: s.id,
         slug: null,
@@ -291,7 +296,8 @@ export default async function globalSetup(): Promise<void> {
         total_output_tokens: totalOutput,
         total_cache_read_tokens: totalCacheRead,
         total_cache_creation_tokens: totalCacheCreation,
-        total_cost_usd: Math.round(totalCost * 1e6) / 1e6,
+        total_cost_usd: localCost,
+        total_cost_usd_otel: otelCost,
         turn_count: s.turns.length,
         tool_call_count: toolCallCount,
         source_file: `e2e://${s.id}`,
