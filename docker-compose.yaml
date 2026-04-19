@@ -1,0 +1,47 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tokenfx:local
+    container_name: tokenfx
+    ports:
+      - "3131:3131"
+    volumes:
+      # SQLite DB persists on the host across `docker compose down`.
+      - ./data:/app/data
+      # Transcripts live on the host (Claude Code writes there). Bind-mount
+      # read-only so the container can ingest but never mutates them.
+      # CLAUDE_PROJECTS_ROOT on the HOST overrides the default location.
+      - ${CLAUDE_PROJECTS_ROOT:-$HOME/.claude/projects}:/claude-projects:ro
+    environment:
+      NODE_ENV: production
+      PORT: "3131"
+      HOSTNAME: 0.0.0.0
+      DASHBOARD_DB_PATH: /app/data/dashboard.db
+      # Inside the container, transcripts are always at /claude-projects
+      # (see the volume mount above). The app's fs-paths.ts reads this env
+      # to override its `~/.claude/projects` default.
+      CLAUDE_PROJECTS_ROOT: /claude-projects
+    extra_hosts:
+      # Claude Code on the host exports Prometheus on localhost:9464. Docker
+      # Desktop (Mac/Windows) resolves host.docker.internal natively; Linux
+      # needs the explicit host-gateway mapping to reach the host network.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # node is always available on this image; wget/curl are NOT in the
+      # slim base. A 5-line node one-liner hits /api/health and exits 0
+      # on HTTP 200, non-zero otherwise.
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          require('http').get('http://localhost:3131/api/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Cold-start buffer: Next standalone + migrate + first render on a
+      # non-warm process + compiled better-sqlite3 = up to ~20s observed.
+      start_period: 30s
+    restart: unless-stopped

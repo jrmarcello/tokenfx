@@ -1,5 +1,11 @@
 import Link from 'next/link';
 
+// The root layout mounts QuotaNavWidget (reads the SQLite DB). Next tries to
+// statically pre-render the not-found page at build time, which would fail in
+// environments where the DB hasn't been provisioned yet (e.g. `docker build`).
+// Mark it dynamic so it's rendered per-request instead.
+export const dynamic = 'force-dynamic';
+
 export default function NotFound() {
   return (
     <section className="mx-auto max-w-2xl space-y-4 py-16 text-center">

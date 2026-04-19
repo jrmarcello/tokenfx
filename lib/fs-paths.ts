@@ -3,6 +3,13 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 export function claudeProjectsRoot(): string {
+  // Allow overriding the root via env (primary use case: Docker container
+  // with transcripts bind-mounted at `/claude-projects`). Falls back to the
+  // user's home `~/.claude/projects` when the env is unset or empty.
+  const fromEnv = process.env.CLAUDE_PROJECTS_ROOT?.trim();
+  if (fromEnv && fromEnv.length > 0) {
+    return path.resolve(fromEnv);
+  }
   return path.join(os.homedir(), '.claude', 'projects');
 }
 
@@ -11,7 +18,7 @@ export function resolveWithinClaudeProjects(p: string): string {
   // upward is an injection attempt, not a benign relative path.
   const segments = p.split(/[\\/]/);
   if (segments.includes('..')) {
-    throw new Error('path escapes ~/.claude/projects');
+    throw new Error('path escapes the Claude projects root');
   }
   const root = claudeProjectsRoot();
   const resolved = path.resolve(p);
@@ -33,7 +40,7 @@ export function resolveWithinClaudeProjects(p: string): string {
     realResolved !== realRoot &&
     !realResolved.startsWith(realRoot + path.sep)
   ) {
-    throw new Error('path escapes ~/.claude/projects');
+    throw new Error('path escapes the Claude projects root');
   }
   return realResolved;
 }

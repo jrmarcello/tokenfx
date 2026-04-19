@@ -10,9 +10,34 @@ import {
 } from './fs-paths';
 
 describe('claudeProjectsRoot', () => {
-  it('resolves under the user home directory', () => {
-    const root = claudeProjectsRoot();
-    expect(root).toBe(path.join(os.homedir(), '.claude', 'projects'));
+  const prev = process.env.CLAUDE_PROJECTS_ROOT;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.CLAUDE_PROJECTS_ROOT;
+    else process.env.CLAUDE_PROJECTS_ROOT = prev;
+  });
+
+  it('TC-U-02: fallback to ~/.claude/projects when env is unset', () => {
+    delete process.env.CLAUDE_PROJECTS_ROOT;
+    expect(claudeProjectsRoot()).toBe(
+      path.join(os.homedir(), '.claude', 'projects'),
+    );
+  });
+
+  it('TC-U-03: fallback when env is empty string', () => {
+    process.env.CLAUDE_PROJECTS_ROOT = '';
+    expect(claudeProjectsRoot()).toBe(
+      path.join(os.homedir(), '.claude', 'projects'),
+    );
+  });
+
+  it('TC-U-01: honors CLAUDE_PROJECTS_ROOT when set to an absolute path', () => {
+    process.env.CLAUDE_PROJECTS_ROOT = '/tmp/cp';
+    expect(claudeProjectsRoot()).toBe('/tmp/cp');
+  });
+
+  it('TC-U-04: resolves a relative CLAUDE_PROJECTS_ROOT against cwd', () => {
+    process.env.CLAUDE_PROJECTS_ROOT = './relative/path';
+    expect(claudeProjectsRoot()).toBe(path.resolve('./relative/path'));
   });
 });
 
@@ -52,6 +77,46 @@ describe('resolveWithinClaudeProjects', () => {
   it('accepts the root itself', () => {
     const resolved = resolveWithinClaudeProjects(claudeProjectsRoot());
     expect(typeof resolved).toBe('string');
+  });
+
+  describe('with CLAUDE_PROJECTS_ROOT env override', () => {
+    let customRoot: string;
+    const prev = process.env.CLAUDE_PROJECTS_ROOT;
+
+    beforeEach(() => {
+      customRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-root-'));
+      process.env.CLAUDE_PROJECTS_ROOT = customRoot;
+    });
+
+    afterEach(() => {
+      fs.rmSync(customRoot, { recursive: true, force: true });
+      if (prev === undefined) delete process.env.CLAUDE_PROJECTS_ROOT;
+      else process.env.CLAUDE_PROJECTS_ROOT = prev;
+    });
+
+    it('TC-U-05: rejects traversal attempts relative to the custom root', () => {
+      expect(() =>
+        resolveWithinClaudeProjects(
+          path.join(customRoot, '..', '..', 'etc', 'passwd'),
+        ),
+      ).toThrow(/escapes/);
+    });
+
+    it('TC-U-06: accepts a path inside the custom root', () => {
+      const projDir = path.join(customRoot, 'project-a');
+      fs.mkdirSync(projDir, { recursive: true });
+      const file = path.join(projDir, 'file.jsonl');
+      fs.writeFileSync(file, '');
+      const resolved = resolveWithinClaudeProjects(file);
+      expect(typeof resolved).toBe('string');
+      expect(resolved.length).toBeGreaterThan(0);
+    });
+
+    it('TC-U-07: error message references generic "Claude projects root"', () => {
+      expect(() => resolveWithinClaudeProjects('/etc/passwd')).toThrow(
+        /Claude projects root/,
+      );
+    });
   });
 });
 

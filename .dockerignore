@@ -1,0 +1,37 @@
+# Build artifacts
+.next
+node_modules
+dist
+
+# Runtime data (mounted as volume — never baked into image)
+data
+
+# VCS
+.git
+.gitignore
+
+# Dev-only tooling / specs
+.claude
+.specs
+.ralph
+
+# Tests (run on host, not in image)
+tests
+playwright.config.ts
+playwright-report
+test-results
+
+# Editor / OS cruft
+.vscode
+.idea
+.DS_Store
+
+# Env files — must NEVER end up in the image.
+# Keep .env.example if/when it exists so the build can copy it.
+.env
+.env.*
+!.env.example
+
+# Logs / temp
+*.log
+tmp

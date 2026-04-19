@@ -14,13 +14,17 @@ Esse dashboard ingere os transcripts locais do Claude Code (`~/.claude/projects/
 
 ---
 
-## Pra que serve
+## Começo aqui
+
+Tudo que você precisa pra clonar, rodar e ter o dashboard no ar.
+
+### Pra que serve
 
 - **Você paga por token; ninguém te paga por resultado.** `claude /cost` te diz o gasto da sessão aberta. Grafana mostra consumo ao longo do tempo. Nenhum dos dois responde *"essa sessão cara valeu o preço?"*. Aqui você clica na sessão mais cara da semana, lê o transcript, avalia turno a turno — e o score composto te aponta onde o dinheiro virou trabalho entregue.
 - **Efetividade não é opinião.** Quatro sinais alimentam o score (0..100): razão output/input, taxa de cache hit, avaliação manual (Bom/Neutro/Ruim por turno) e densidade de correção — detectada via regex no próximo prompt do usuário. Se você respondeu *"não, isso tá errado"*, o turno anterior perde pontos automaticamente.
-- **Zero infra pra manter.** SQLite em arquivo único, Next.js local, porta 3000. Nada pra subir, nada pra derrubar, nada saindo da sua máquina.
+- **Zero infra pra manter.** SQLite em arquivo único, Next.js local, porta 3131. Nada pra subir, nada pra derrubar, nada saindo da sua máquina.
 
-## 5 minutos pra ver rodando
+### 5 minutos pra ver rodando
 
 ```bash
 pnpm install
@@ -38,17 +42,74 @@ pnpm ingest            # lê ~/.claude/projects/*.jsonl, popula data/dashboard.d
 
 Idempotente — pode rodar quantas vezes quiser. **Mais importante**: você nem precisa. O dashboard auto-ingere a cada page load quando detecta transcripts novos. Ou seja: abriu a página, viu os dados atualizados. Sem cron, sem daemon.
 
+### Running via Docker
+
+Se você prefere não instalar Node/pnpm/better-sqlite3 na máquina, tem um setup containerizado pronto.
+
+**Pré-requisitos:** Docker Desktop (Mac/Windows) ou Docker Engine + compose plugin (Linux).
+
+```bash
+docker compose up --build -d          # Build + boot (primeira vez: ~3–5 min)
+open http://localhost:3131            # Acessar UI
+docker compose exec app pnpm ingest   # Ingerir transcripts agora (on-demand)
+docker compose logs -f app            # Ver logs
+docker compose down                   # Parar (DB persiste em ./data)
+```
+
+**Volumes e persistência:**
+
+- `./data/dashboard.db` (host path) é o SQLite. Sobrevive entre `down`/`up`.
+- `~/.claude/projects/` é montado read-only dentro do container em `/claude-projects` — o ingest lê, nunca escreve. Set `CLAUDE_PROJECTS_ROOT` no host se seus transcripts vivem em outro lugar.
+
+**Caveats:**
+
+- O container roda como UID 1001 (non-root). Se `./data/` já existe com outro owner, precisa de um `chown -R 1001:1001 ./data` antes de subir.
+- **Linux**: `extra_hosts: host.docker.internal:host-gateway` já tá no compose pra resolver OTEL rodando no host. Se o OTEL não aparecer mesmo assim, cheque firewall/iptables bloqueando `localhost:9464`.
+- **Playwright NÃO roda no container.** E2E (`pnpm test:e2e`) exige setup local com Chromium — use host.
+
+### Comandos
+
+| Comando | O que faz |
+| --- | --- |
+| `pnpm dev` | Sobe o Next.js dev em `:3131` |
+| `pnpm build` | Production build |
+| `pnpm start` | Serve o build de produção |
+| `pnpm typecheck` | `tsc --noEmit` |
+| `pnpm lint` | ESLint |
+| `pnpm test` | Vitest watch |
+| `pnpm test --run` | Vitest single pass |
+| `pnpm test:e2e` | Smoke Playwright (sobe Next em `:3123`) |
+| `pnpm ingest` | Ingestão one-shot (transcripts + OTEL se disponível) |
+| `pnpm watch` | Ingestão push-based via chokidar (daemon standalone) |
+| `pnpm seed-dev` | Popula SQLite com dados sintéticos deterministicos |
+| `pnpm setup` | `install && seed-dev` — primeiro run |
+| `pnpm fresh` | Apaga DB e re-ingere do zero |
+| `pnpm validate` | `typecheck && lint && test --run` |
+| `pnpm changelog` | Preview do CHANGELOG.md a partir dos commits (não sobrescreve arquivo) |
+| `pnpm release VERSION=X.Y.Z` | Gera CHANGELOG via `git-cliff`, cria tag anotada e publica GitHub Release |
+
+### Variáveis de ambiente
+
+| Env | Default | Pra quê |
+| --- | --- | --- |
+| `DASHBOARD_DB_PATH` | `./data/dashboard.db` | Local do SQLite |
+| `CLAUDE_PROJECTS_ROOT` | `~/.claude/projects` | Raiz dos transcripts JSONL. Override pra Docker (`/claude-projects`) ou outro path custom |
+| `OTEL_SCRAPE_URL` | `http://localhost:9464/metrics` | URL pro endpoint Prometheus do Claude Code. Set pra custom; deixa em branco pra usar o default |
+| `TOKENFX_WATCH_MODE` | unset | `=1` ativa watcher chokidar junto do `pnpm dev` |
+| `TOKENFX_DISABLE_AUTO_INGEST` | unset | `=1` desativa auto-ingest + watcher (útil em E2E/testes) |
+| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+
 ---
 
-## Como funciona
+## O que vem dentro
 
-### O problema
+O raciocínio por trás das features — o problema que cada uma ataca, como a ingestão se mantém sã, e como avaliar bem.
 
-Você abre `/cost` no meio de uma task, vê `$0.47`, fecha e continua. Terminou o dia com $12, a semana com $60, o mês com $240. **Nenhum desses números diz onde o gasto foi trabalho entregue e onde foi retrabalho.** Sessões de refactor que deram certo têm o mesmo preço de sessões em que você ficou corrigindo o assistente três vezes. Grafana agrega no tempo, não na intenção. Cost-per-PR é bruto demais — uma PR pode ter saído de uma sessão boa e duas ruins.
+### Como funciona
 
-### Como esse dashboard ataca isso
+**O problema.** Você abre `/cost` no meio de uma task, vê `$0.47`, fecha e continua. Terminou o dia com $12, a semana com $60, o mês com $240. **Nenhum desses números diz onde o gasto foi trabalho entregue e onde foi retrabalho.** Sessões de refactor que deram certo têm o mesmo preço de sessões em que você ficou corrigindo o assistente três vezes. Grafana agrega no tempo, não na intenção. Cost-per-PR é bruto demais — uma PR pode ter saído de uma sessão boa e duas ruins.
 
-Três camadas:
+**Como esse dashboard ataca isso.** Três camadas:
 
 1. **Ingestão local**: parser JSONL tolerante + scraper OTEL Prometheus → SQLite idempotente. Sem rede.
 2. **Três views complementares**:
@@ -66,15 +127,11 @@ Três camadas:
 
 Sinais ausentes (nulos) são descartados e os pesos se redistribuem proporcionalmente. Matemática completa em [`lib/analytics/scoring.ts`](lib/analytics/scoring.ts).
 
-### Onde seus dados vivem
+**Onde seus dados vivem.**
 
 - `data/dashboard.db` — SQLite, gitignored. **Back up esse arquivo** se quiser preservar suas avaliações manuais.
 - `~/.claude/projects/` — owned pelo Claude Code, read-only daqui.
 - Nenhuma conexão externa. Nenhum analytics. Nenhum header `User-Agent` curioso saindo da sua máquina.
-
----
-
-## Na prática
 
 ### Ativar OTEL do Claude Code (opcional, mas vale)
 
@@ -185,6 +242,58 @@ Avaliação manual é o sinal mais forte do score composto (30% do peso). Crité
 
 Regra prática: se você se lembra do turno **com frustração**, é Ruim. Se lembra **feliz de ter economizado tempo**, é Bom. Neutro é tudo no meio.
 
+---
+
+## Como é organizado
+
+Camadas do projeto, schema do DB, e rotas expostas.
+
+### Estrutura do repo
+
+```text
+app/             Next.js App Router routes + api handlers + loading states
+components/      UI (Server Components + alguns Client pra interatividade)
+lib/
+  db/            better-sqlite3 client, schema.sql, migrate, types
+  ingest/        JSONL + OTEL parsers, writer idempotente, auto-ingest
+  analytics/     tabela de preços + scoring de efetividade
+  queries/       queries SQLite server-side agrupadas por página
+  fs-paths.ts    guardas de path traversal pra ~/.claude/projects
+  logger.ts      wrapper console com níveis (único lugar onde console.* é permitido)
+  fmt.ts         formatters Intl centralizados
+  result.ts      Result<T,E> discriminated union
+scripts/         CLIs ingest + seed-dev (tsx)
+tests/           Vitest unit/integration + Playwright E2E
+.claude/         hooks, rules, agents, skills pro Claude Code
+.specs/          specs SDD (TEMPLATE.md + specs concluídas)
+data/            SQLite runtime (gitignored)
+Dockerfile       Multi-stage build pra container local
+docker-compose.yaml  Service definition + volumes + healthcheck
+```
+
+### Schema SQLite (resumo)
+
+- `sessions` — uma linha por sessão do Claude Code (chave: UUID). Rollups de tokens/custo/turn_count/tool_call_count. Indexes em `started_at` e `(started_at, total_cost_usd DESC)`.
+- `turns` — uma linha por resposta do assistente, FK pra `sessions`. Guarda user_prompt + assistant_text + tokens + modelo + custo.
+- `tool_calls` — uma linha por tool call, FK pra `turns`.
+- `ratings` — única por turno (check constraint `{-1, 0, 1}`).
+- `otel_scrapes` — append-only, uma linha por (metric, labels) por scrape.
+- `session_effectiveness` — VIEW derivada: cache_hit_ratio / output_input_ratio / avg_rating / cost_per_turn.
+
+### Rotas API
+
+| Método + path | Body | Resposta | Notas |
+| --- | --- | --- | --- |
+| `GET /api/health` | — | `{ ok: true }` (200) | Healthcheck simples; não abre DB. Usado pelo Docker healthcheck. |
+| `POST /api/ratings` | `{ turnId, rating: -1\|0\|1, note? }` | `{ ok: true }` ou `400` | Faz lookup do `session_id` via prepared statement, aí chama `revalidatePath('/sessions/${sessionId}')` + `revalidatePath('/')`. |
+| `POST /api/ingest` | — | `{ ok: true, summary }` ou `403` | Allowlist de Host loopback (`localhost` / `127.0.0.1` / `::1`). Revalida `/` e `/effectiveness`. |
+
+---
+
+## Ferramentas
+
+Como as heurísticas funcionam, como atualizar pricing, como customizar UI/queries, e o que fazer quando algo quebra.
+
 ### A heurística de correção
 
 [`lib/analytics/scoring.ts`](lib/analytics/scoring.ts) roda duas regex bilíngues (pt + en) no *próximo* prompt do usuário. Vocabulário curado pra minimizar falso-positivo:
@@ -233,78 +342,17 @@ Cadência recomendada: conferir `https://www.anthropic.com/pricing` a cada 30–
 | `better-sqlite3` falha no install | `pnpm approve-builds`, depois `pnpm install` — libera o postinstall nativo. |
 | Home mostra zeros | `pnpm seed-dev` (sintético) ou `pnpm ingest` (seu histórico). Auto-ingest só roda quando tem JSONL novo. |
 | Primeira execução do Playwright trava | `pnpm exec playwright install chromium` (~150 MB, uma vez). |
-| Porta 3000 ocupada | `PORT=3001 pnpm dev`. E2E usa `3123`. |
+| Porta 3131 ocupada | `PORT=3001 pnpm dev`. E2E usa `3123`. |
 | Rating não persiste no reload | DevTools → Network: `POST /api/ratings` precisa retornar `200`. Payload validado via Zod; body ruim → `400`. |
 | `/api/ingest` retorna `403` | É a trava de loopback funcionando. Só aceita `localhost` / `127.0.0.1` / `::1`. |
+| Docker: container não escreve em `./data` | Host não tem permissão UID 1001. `sudo chown -R 1001:1001 ./data` ou apaga `./data` e deixa o compose recriar. |
+| Docker: OTEL "off" mesmo com Claude rodando | No Linux, cheque `iptables` / firewall bloqueando `localhost:9464` de dentro do container. `docker compose exec app wget -qO- http://host.docker.internal:9464/metrics` ajuda a diagnosticar. |
 
 ---
 
 ## Referência
 
-### Comandos
-
-| Comando | O que faz |
-| --- | --- |
-| `pnpm dev` | Sobe o Next.js dev em `:3131` |
-| `pnpm build` | Production build |
-| `pnpm start` | Serve o build de produção |
-| `pnpm typecheck` | `tsc --noEmit` |
-| `pnpm lint` | ESLint |
-| `pnpm test` | Vitest watch |
-| `pnpm test --run` | Vitest single pass |
-| `pnpm test:e2e` | Smoke Playwright (sobe Next em `:3123`) |
-| `pnpm ingest` | Ingestão one-shot (transcripts + OTEL se disponível) |
-| `pnpm seed-dev` | Popula SQLite com dados sintéticos deterministicos |
-| `pnpm setup` | `install && seed-dev` — primeiro run |
-| `pnpm fresh` | Apaga DB e re-ingere do zero |
-| `pnpm validate` | `typecheck && lint && test --run` |
-| `pnpm changelog` | Preview do CHANGELOG.md a partir dos commits (não sobrescreve arquivo) |
-| `pnpm release VERSION=X.Y.Z` | Gera CHANGELOG via `git-cliff`, cria tag anotada e publica GitHub Release |
-
-### Variáveis de ambiente
-
-| Env | Default | Pra quê |
-| --- | --- | --- |
-| `DASHBOARD_DB_PATH` | `./data/dashboard.db` | Local do SQLite |
-| `OTEL_SCRAPE_URL` | `http://localhost:9464/metrics` | URL pro endpoint Prometheus do Claude Code. Set pra custom; deixa em branco pra usar o default |
-| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-
-### Estrutura do repo
-
-```text
-app/             Next.js App Router routes + api handlers + loading states
-components/      UI (Server Components + alguns Client pra interatividade)
-lib/
-  db/            better-sqlite3 client, schema.sql, migrate, types
-  ingest/        JSONL + OTEL parsers, writer idempotente, auto-ingest
-  analytics/     tabela de preços + scoring de efetividade
-  queries/       queries SQLite server-side agrupadas por página
-  fs-paths.ts    guardas de path traversal pra ~/.claude/projects
-  logger.ts      wrapper console com níveis (único lugar onde console.* é permitido)
-  fmt.ts         formatters Intl centralizados
-  result.ts      Result<T,E> discriminated union
-scripts/         CLIs ingest + seed-dev (tsx)
-tests/           Vitest unit/integration + Playwright E2E
-.claude/         hooks, rules, agents, skills pro Claude Code
-.specs/          specs SDD (TEMPLATE.md + specs concluídas)
-data/            SQLite runtime (gitignored)
-```
-
-### Schema SQLite (resumo)
-
-- `sessions` — uma linha por sessão do Claude Code (chave: UUID). Rollups de tokens/custo/turn_count/tool_call_count. Indexes em `started_at` e `(started_at, total_cost_usd DESC)`.
-- `turns` — uma linha por resposta do assistente, FK pra `sessions`. Guarda user_prompt + assistant_text + tokens + modelo + custo.
-- `tool_calls` — uma linha por tool call, FK pra `turns`.
-- `ratings` — única por turno (check constraint `{-1, 0, 1}`).
-- `otel_scrapes` — append-only, uma linha por (metric, labels) por scrape.
-- `session_effectiveness` — VIEW derivada: cache_hit_ratio / output_input_ratio / avg_rating / cost_per_turn.
-
-### Rotas API
-
-| Método + path | Body | Resposta | Notas |
-| --- | --- | --- | --- |
-| `POST /api/ratings` | `{ turnId, rating: -1\|0\|1, note? }` | `{ ok: true }` ou `400` | Faz lookup do `session_id` via prepared statement, aí chama `revalidatePath('/sessions/${sessionId}')` + `revalidatePath('/')`. |
-| `POST /api/ingest` | — | `{ ok: true, summary }` ou `403` | Allowlist de Host loopback (`localhost` / `127.0.0.1` / `::1`). Revalida `/` e `/effectiveness`. |
+Matéria-seca pra consulta rápida: testes, convenções de código, e fluxo de contribuição.
 
 ### Matriz de testes
 
@@ -314,7 +362,7 @@ data/            SQLite runtime (gitignored)
 | Integration | Vitest + SQLite real | `tests/integration/**/*.test.ts` | migrate, ingestão contra fixtures em tmpdir, handlers de `/api/*` |
 | E2E | Playwright | `tests/e2e/**/*.spec.ts` | Next dev com seed determinístico: KPIs home, drill-down, persistência de rating |
 
-Contagem atual: **117** unit+integration, **3** E2E. Rode `pnpm validate && pnpm test:e2e` pra exercer tudo.
+Rode `pnpm validate && pnpm test:e2e` pra exercer tudo.
 
 ### Convenções
 
