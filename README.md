@@ -119,6 +119,32 @@ curl -s http://localhost:9464/metrics | head -5
 
 **No dashboard**, o badge no canto superior direito reflete o estado (cache de 60s): **● OTEL on** (verde) = métricas sendo ingeridas; **● OTEL off** (cinza) = só transcripts.
 
+### Modo watch (ingestão push-based)
+
+Por padrão o dashboard roda em modo pull: a cada page load ele confere se há JSONL novo em `~/.claude/projects/` e ingere o que faltar. Funciona bem pra quem abre o dashboard de vez em quando — mas se você quer ver a sessão ativa aparecer em tempo real, tem um watcher opt-in (chokidar) que ingere os arquivos conforme o Claude Code escreve neles, sem depender de refresh manual.
+
+Pra ativar junto do dev server:
+
+```bash
+TOKENFX_WATCH_MODE=1 pnpm dev
+```
+
+O watcher sobe como processo background no boot do Next, observa `~/.claude/projects/**/*.jsonl`, e chama a mesma pipeline de ingestão assim que detecta arquivo novo ou modificado. Enquanto ele tá rodando, a auto-ingestão on-page-load vira no-op (evita `stat()` redundante em cada request).
+
+Prefere um daemon standalone, sem UI? Mesma engine, via CLI:
+
+```bash
+pnpm watch
+```
+
+Útil pra rodar num terminal separado, fazer backfill noturno, ou manter rodando enquanto você desenvolve em outro projeto.
+
+**Latência**: ~500ms–1.5s entre o write do Claude Code e a linha aparecer no dashboard. Isso é o threshold `awaitWriteFinish` do chokidar — ele espera o arquivo parar de crescer antes de ingerir pra não ler JSONL parcial. Refresh do browser depois da ingestão continua necessário (ou deixa a tab com revalidação ativa).
+
+**Desligar**: basta não passar o env, e o comportamento default (pull-based) volta. Se quiser matar as duas rotas de uma vez (ex.: no harness E2E ou durante testes), use `TOKENFX_DISABLE_AUTO_INGEST=1` — isso desativa tanto o watcher quanto a ingestão on-page-load.
+
+**Quando usar**: pra monitorar uma sessão ativa em tempo real sem refresh manual, ou quando você tá revisando efetividade turno a turno enquanto o Claude Code ainda tá respondendo.
+
 ### Como a ingestão permanece idempotente
 
 **Sim, `pnpm ingest` é seguro de rodar quantas vezes você quiser.** Três camadas garantem isso:

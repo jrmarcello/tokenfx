@@ -3,6 +3,7 @@ import { statSync } from 'node:fs';
 import { getDb, type DB } from '@/lib/db/client';
 import { listTranscriptFiles } from '@/lib/fs-paths';
 import { ingestAll, type IngestSummary } from '@/lib/ingest/writer';
+import { isWatcherRunning } from '@/lib/ingest/watcher';
 import { log } from '@/lib/logger';
 
 /**
@@ -43,6 +44,10 @@ export async function ensureFreshIngest(): Promise<void> {
   // E2E / test harnesses set this to keep page renders fast and deterministic
   // (otherwise every SSR pulls ~/.claude/projects/ into the test DB).
   if (process.env.TOKENFX_DISABLE_AUTO_INGEST === '1') return;
+  // When the chokidar watcher is running it is the authoritative source for
+  // keeping the DB fresh (push-based). Skip the redundant pull-based ingest
+  // to avoid duplicate filesystem scans per page render.
+  if (isWatcherRunning()) return;
   if (inflight) {
     await inflight;
     return;

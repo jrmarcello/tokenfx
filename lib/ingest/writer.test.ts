@@ -5,7 +5,12 @@ import os from 'node:os';
 import { openDatabase } from '@/lib/db/client';
 import { migrate } from '@/lib/db/migrate';
 import type { DB } from '@/lib/db/client';
-import { writeSession, writeOtelScrapes, ingestAll } from './writer';
+import {
+  writeSession,
+  writeOtelScrapes,
+  ingestAll,
+  ingestSingleFile,
+} from './writer';
 import type { ParsedSession } from './transcript/types';
 import type { OtelScrape } from './otel/parser';
 
@@ -296,6 +301,26 @@ describe('ingestAll', () => {
       db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number }
     ).c;
     expect(sessCount).toBe(2);
+  });
+
+  // TC-I-12d — verifies `ingestSingleFile` produces the same DB rows as the
+  // single-file path through `ingestAll`. Guards the TASK-2.5 refactor so the
+  // watcher (TASK-3) can reuse the helper without duplicating parse+write.
+  it('TC-I-12d: ingestSingleFile matches ingestAll for one file', async () => {
+    const filePath = path.join(tempDir, 'sample.jsonl');
+
+    // Path A: ingestAll over a directory containing just this file.
+    const outcome = ingestSingleFile(db, filePath);
+    expect(outcome.kind).toBe('processed');
+
+    const sessionCount = (
+      db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number }
+    ).c;
+    expect(sessionCount).toBe(1);
+
+    // Second call returns skipped-unchanged (mtime gate).
+    const rerun = ingestSingleFile(db, filePath);
+    expect(rerun.kind).toBe('skipped-unchanged');
   });
 
   it('TC-I-INGEST-03: captures OTEL errors without failing transcripts', async () => {

@@ -11,7 +11,7 @@
     "test": "vitest",
     "test:e2e": "playwright test",
     "ingest": "tsx scripts/ingest.ts",
-    "recompute-costs": "tsx scripts/recompute-costs.ts",
+    "watch": "tsx scripts/watch.ts",
     "seed-dev": "tsx scripts/seed-dev.ts",
     "setup": "pnpm install && pnpm seed-dev",
     "fresh": "rm -f data/dashboard.db data/dashboard.db-wal data/dashboard.db-shm && pnpm ingest",
@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
+    "chokidar": "^4.0.0",
     "next": "16.2.4",
     "react": "19.2.4",
     "react-dom": "19.2.4",

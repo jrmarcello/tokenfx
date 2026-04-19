@@ -19,6 +19,7 @@ pnpm test                 # Vitest watch mode
 pnpm test --run           # Vitest single run
 pnpm test:e2e             # Playwright end-to-end tests
 pnpm ingest               # One-shot ingestion of transcripts + OTEL metrics
+pnpm watch                # Standalone watcher — real-time ingestion of ~/.claude/projects
 pnpm seed-dev             # Seed local DB with synthetic data for development
 ```
 
@@ -51,7 +52,7 @@ Layered, but deliberately flat — this is a single-user local tool, not a distr
 - **Server Components by default** — `'use client'` only where interactivity / browser APIs / client hooks require it.
 - **Prepared statements** — every query goes through `db.prepare(...)` with parameter binding. Prepared statements are module-level or memoized (not per call).
 - **Mutations + revalidation** — Server Actions or API routes perform writes; always call `revalidatePath(...)` or `revalidateTag(...)` afterward so Server Component reads refresh.
-- **Idempotent ingestion** — the natural key is `sessionId + sourceFile`; writes use `INSERT ... ON CONFLICT DO UPDATE` so re-runs are safe.
+- **Idempotent ingestion** — the natural key is `sessionId + sourceFile`; writes use `INSERT ... ON CONFLICT DO UPDATE` so re-runs are safe. Default is pull-based (auto-ingest on page load); `TOKENFX_WATCH_MODE=1` enables a push-based chokidar watcher that ingests JSONL files as they're written (`pnpm watch` runs the same watcher standalone).
 - **Result pattern** — parsers and other ingestion-boundary modules return `Result<T, E>` instead of throwing.
 - **Path traversal guard** — all filesystem reads driven by user-controlled paths go through `lib/fs-paths.ts`, which resolves and verifies the path stays within `~/.claude/projects/`.
 - **Pricing table** — hardcoded in `lib/analytics/pricing.ts`; update when Anthropic publishes new per-token pricing.
@@ -111,9 +112,7 @@ Delegate with "use a subagent to..." or launch a team via `/full-review-team`.
 2. **Mandatory cycle** for non-trivial tasks: **Plan** → **Implement** → **Review** → **Test** → **Validate**. Do not finish without concrete validation evidence.
 3. **The Review step is MANDATORY and AUTOMATIC** — after implementing, re-read the plan/spec and diff what was implemented vs what was specified (files, patterns, mappings). Verify: all files listed in `files:` metadata were created/modified, all patterns from the Design section are followed, all error mappings are complete, no implementation gap vs the spec. Only then proceed to tests. This is NEVER skipped.
 4. **Post-implementation validation** — enforced automatically by the **Stop hook** (typecheck + lint + tests). The hook blocks completion until validation passes. For the full pipeline including Playwright e2e, run `/validate` explicitly.
-5. **SDD workflow** for complex features: `/spec` → approve → `/ralph-loop` → `/spec-review`. Specs live in `.specs/`. The ralph-loop uses the Stop hook (exit code 2) to iterate task-by-task within the same session. Two checkpoints gate the "done" of any spec — skipping either is a regression (see `.claude/rules/sdd.md` "Discipline Checkpoints"):
-   - **MANDATORY — Self-review REQ-by-REQ**: after the last task is marked `[x]`, walk every REQ with concrete evidence (`file:line`, test name, SQL fragment) and build a `✅ / 🟡 / ❌` checklist before reporting. Partial/blocked REQs are surfaced in the report, never hidden.
-   - **MANDATORY — Live validation with real data**: when the spec has user-visible effects (UI, queries, metrics, CLI, migration), start the dev server / run the CLI against the real DB, curl routes + grep HTML, cross-check SQL, and **lead** the final report with what was validated against real data — not with "tests pass". Skip only for pure refactors with no observable behavior change, and say so explicitly.
+5. **SDD workflow** for complex features: `/spec` → approve → `/ralph-loop` → `/spec-review`. Specs live in `.specs/`. The ralph-loop uses the Stop hook (exit code 2) to iterate task-by-task within the same session.
 6. **Parallelism** — Three types: (a) **Intra-spec**: `/spec` auto-generates Parallel Batches from task `files:` and `depends:` metadata; ralph-loop launches parallel agents with `isolation: "worktree"` for multi-task batches. (b) **Inter-spec**: independent specs run in separate worktrees. (c) Shared files classified as exclusive, shared-additive (sequential batches), or shared-mutative (must serialize).
 7. **Agent worktree cleanup is MANUAL** — when launching `Agent` with `isolation: "worktree"`, the runtime does NOT auto-cleanup worktrees if the agent made changes. After merging files from a worktree, ALWAYS run `git worktree remove <path> --force && git worktree prune`. Orphan worktrees accumulate fast and break IDE tooling. The `WorktreeRemove` hook only fires on explicit removal.
 

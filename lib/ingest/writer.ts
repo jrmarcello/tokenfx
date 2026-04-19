@@ -311,6 +311,82 @@ export function writeOtelScrapes(db: Database, rows: OtelScrape[]): void {
   tx();
 }
 
+/**
+ * Outcome of ingesting a single `.jsonl` file. Discriminated union so
+ * callers (the ingestAll loop + the chokidar watcher) can handle each
+ * branch without re-coding the per-file decision tree.
+ *
+ * - `processed`: parsed + written successfully; counts available.
+ * - `skipped-unchanged`: file's mtime hasn't advanced since last ingest
+ *   — the per-file gate via `ingested_files(path, mtime_ms)`.
+ * - `skipped-error`: parse or write failed; `error` carries a short
+ *   message suitable for a summary row.
+ */
+export type IngestSingleOutcome =
+  | {
+      kind: 'processed';
+      sessionId: string;
+      turnsUpserted: number;
+      toolCallsUpserted: number;
+    }
+  | { kind: 'skipped-unchanged' }
+  | { kind: 'skipped-error'; error: string };
+
+/**
+ * Ingest exactly one `.jsonl` file: checks the mtime gate, parses,
+ * writes, and upserts the `ingested_files` bookkeeping row. Never
+ * throws — errors funnel through the `skipped-error` branch so the
+ * caller (loop, watcher) stays single-threaded on failure handling.
+ */
+export function ingestSingleFile(
+  db: Database,
+  absPath: string,
+): IngestSingleOutcome {
+  const stmts = getStatements(db);
+
+  let mtimeMs: number | null = null;
+  try {
+    mtimeMs = statSync(absPath).mtimeMs;
+  } catch {
+    // Race with file removal between listing and stat; fall through to
+    // the parser which will surface its own error.
+  }
+  if (mtimeMs !== null) {
+    const prev = stmts.lookupIngestedFile.get(absPath) as
+      | { mtime_ms: number }
+      | undefined;
+    if (prev && mtimeMs <= prev.mtime_ms) {
+      return { kind: 'skipped-unchanged' };
+    }
+  }
+
+  const result = parseTranscriptFile(absPath, (msg) => log.warn(msg));
+  if (!result.ok) {
+    return { kind: 'skipped-error', error: result.error.message };
+  }
+  try {
+    writeSession(db, result.value, absPath);
+    if (mtimeMs !== null) {
+      stmts.upsertIngestedFile.run(absPath, mtimeMs, Date.now());
+    }
+    const toolCallsUpserted = result.value.turns.reduce(
+      (acc, t) => acc + t.toolCalls.length,
+      0,
+    );
+    return {
+      kind: 'processed',
+      sessionId: result.value.id,
+      turnsUpserted: result.value.turns.length,
+      toolCallsUpserted,
+    };
+  } catch (err) {
+    return {
+      kind: 'skipped-error',
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export async function ingestAll(options?: {
   db?: Database;
   transcriptsRoot?: string;
@@ -355,61 +431,25 @@ export async function ingestAll(options?: {
   const files = await listTranscriptFiles(options?.transcriptsRoot);
   log.info(`[ingest] found ${files.length} transcript file(s)`);
 
-  const stmts = getStatements(db);
   let skippedUnchanged = 0;
-
   for (const file of files) {
-    // Per-file gate: skip parsing when mtime hasn't advanced since our
-    // last ingest of this exact path. Auto-ingest fires on every SSR
-    // render, so without this gate a healthy dashboard re-parses every
-    // .jsonl on every navigation.
-    let mtimeMs: number | null = null;
-    try {
-      mtimeMs = statSync(file).mtimeMs;
-    } catch {
-      // Race with file removal between listing and stat; fall through to
-      // the parser which will surface its own error.
-    }
-    if (mtimeMs !== null) {
-      const prev = stmts.lookupIngestedFile.get(file) as
-        | { mtime_ms: number }
-        | undefined;
-      if (prev && mtimeMs <= prev.mtime_ms) {
-        skippedUnchanged += 1;
-        continue;
-      }
-    }
-
-    const result = parseTranscriptFile(file, (msg) => log.warn(msg));
-    if (!result.ok) {
+    const outcome = ingestSingleFile(db, file);
+    if (outcome.kind === 'skipped-unchanged') skippedUnchanged += 1;
+    else if (outcome.kind === 'skipped-error') {
       summary.filesSkipped += 1;
-      summary.errors.push({ file, error: result.error.message });
-      continue;
-    }
-    try {
-      writeSession(db, result.value, file);
+      summary.errors.push({ file, error: outcome.error });
+    } else {
       summary.filesProcessed += 1;
       summary.sessionsUpserted += 1;
-      summary.turnsUpserted += result.value.turns.length;
-      summary.toolCallsUpserted += result.value.turns.reduce(
-        (acc, t) => acc + t.toolCalls.length,
-        0,
-      );
-      if (mtimeMs !== null) {
-        stmts.upsertIngestedFile.run(file, mtimeMs, Date.now());
-      }
-    } catch (err) {
-      summary.filesSkipped += 1;
-      summary.errors.push({
-        file,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      summary.turnsUpserted += outcome.turnsUpserted;
+      summary.toolCallsUpserted += outcome.toolCallsUpserted;
     }
   }
 
   // Final sweep: update total_cost_usd_otel for any session whose OTEL
   // value differs from what's stored (covers sessions whose JSONL was
   // mtime-gated away but whose OTEL scrape arrived in this run).
+  const stmts = getStatements(db);
   const otelMap = getOtelCostBySession(db);
   const sweepTx = db.transaction(() => {
     for (const [sessionId, cost] of otelMap) {
