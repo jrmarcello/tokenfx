@@ -2,23 +2,10 @@
 ARG NODE_VERSION=22
 
 # ---------------------------------------------------------------------------
-# Stage 1 — deps: prod-only dependency tree. Re-used by the runner stage so
-# we don't ship dev deps (vitest, playwright, typescript) into the runtime
-# image. Native binding (better-sqlite3) is compiled here so the runtime
-# arch matches (slim = Debian glibc).
-# ---------------------------------------------------------------------------
-FROM node:${NODE_VERSION}-slim AS deps
-
-RUN corepack enable
-WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile --prod \
- && pnpm rebuild better-sqlite3
-
-# ---------------------------------------------------------------------------
-# Stage 2 — builder: full dependency tree + `pnpm build` with Next.js
-# `output: 'standalone'` emit. Scripts + schema + lib get copied into runner
-# directly from here (unmodified source), so no separate "sources" stage.
+# Stage 1 — builder: full dependency tree + `pnpm build` with Next.js
+# `output: 'standalone'` emit. Standalone traces the server import graph
+# and copies only what the request path actually needs into
+# `.next/standalone/node_modules/` — typically <100MB for a Next app.
 # ---------------------------------------------------------------------------
 FROM node:${NODE_VERSION}-slim AS builder
 
@@ -32,50 +19,57 @@ COPY . .
 RUN pnpm build
 
 # ---------------------------------------------------------------------------
-# Stage 3 — runner: minimal runtime. Standalone server + prod-only node_modules
-# + scripts. Installs `tsx` globally for `pnpm ingest` / `pnpm watch` invoked
-# via `docker compose exec`.
+# Stage 2 — runner: minimal runtime. Uses standalone's trimmed node_modules
+# directly (no full-prod overlay) and adds tsx + the runtime deps that
+# Next's tracer doesn't see through scripts/*.ts (outside the build graph).
 # ---------------------------------------------------------------------------
 FROM node:${NODE_VERSION}-slim AS runner
 
 # Enable corepack so `docker compose exec app pnpm <script>` works.
-# Create non-root user (UID 1001 is the Next.js docker convention).
-# `tsx` is a devDep in package.json but scripts/*.ts need it at runtime —
-# install it globally so it's on PATH without polluting pnpm-lock.yaml.
+# Non-root user follows the Next.js docker convention (UID 1001).
 RUN corepack enable \
  && groupadd -r -g 1001 nextjs \
- && useradd -r -u 1001 -g 1001 -m nextjs \
- && npm install -g tsx@^4
+ && useradd -r -u 1001 -g 1001 -m nextjs
 
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=3131 \
     HOSTNAME=0.0.0.0
 
-# Next.js standalone bundle = server.js + .next/server + minimal deps.
+# Next.js standalone bundle = server.js + trimmed node_modules + .next/server.
 COPY --from=builder --chown=nextjs:nextjs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nextjs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nextjs /app/public ./public
 
-# Runtime artifacts for scripts (outside the Next build graph):
-# - lib/: parsers, writer, queries — scripts import from here
-# - schema.sql: loaded at runtime by lib/db/migrate.ts
-# - scripts/: CLIs invoked via `pnpm ingest` / `pnpm watch` / `pnpm seed-dev`
-# - package.json + pnpm-lock.yaml: so `pnpm <script>` resolves by name
-# - deps stage's prod-only node_modules: replaces standalone's trimmed
-#   tree with zod/chokidar/better-sqlite3/etc that scripts need. Server.js
-#   ignores extras, so no downside.
+# Scripts' support files (not on the Next request path):
+# - lib/: parsers/writer/queries. Most of these are already copied into
+#   standalone by the tracer since the API routes import them, but the
+#   tsx loader resolves from the scripts/ folder and needs the source
+#   tree to exist at /app/lib.
+# - schema.sql: loaded at runtime by lib/db/migrate.ts (read from disk).
+# - scripts/: CLIs invoked via `pnpm ingest` / `pnpm watch` / `pnpm seed-dev`.
+# - package.json: so `pnpm <script>` resolves command names.
 COPY --from=builder --chown=nextjs:nextjs /app/lib ./lib
 COPY --from=builder --chown=nextjs:nextjs /app/scripts ./scripts
 COPY --from=builder --chown=nextjs:nextjs /app/package.json ./package.json
-COPY --from=builder --chown=nextjs:nextjs /app/pnpm-lock.yaml ./pnpm-lock.yaml
-COPY --from=deps --chown=nextjs:nextjs /app/node_modules ./node_modules
 
-# SQLite DB lives at /app/data/dashboard.db (volume-mounted by compose).
-# Pre-create + chown so the non-root user can write on first boot when
-# the host mount is empty.
+# Scripts' runtime deps live in a sidecar prefix so we don't pollute the
+# standalone node_modules (which is tightly trimmed by Next's tracer —
+# only 4 top-level packages: next, react, react-dom, better-sqlite3).
+# Everything else used by lib/ingest/* got bundled into .next/server/chunks/
+# by webpack, which is fine for the server runtime, but scripts/*.ts bypass
+# webpack and use Node's native resolver — they need real packages on disk.
+# NODE_PATH adds a fallback lookup location after the regular node_modules
+# walk, so `require('zod')` in scripts resolves to the sidecar.
+RUN mkdir -p /opt/scripts-deps \
+ && cd /opt/scripts-deps \
+ && npm init -y >/dev/null \
+ && npm install --no-fund --no-audit --omit=dev --no-package-lock \
+    tsx@^4 zod@^4 chokidar@^4 \
+ && ln -s /opt/scripts-deps/node_modules/.bin/tsx /usr/local/bin/tsx
+ENV NODE_PATH=/opt/scripts-deps/node_modules
+
 RUN mkdir -p /app/data && chown -R nextjs:nextjs /app/data
-
 USER nextjs
 EXPOSE 3131
 CMD ["node", "server.js"]
