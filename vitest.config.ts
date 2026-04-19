@@ -6,7 +6,12 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: 'node',
-    include: ['lib/**/*.test.ts', 'tests/unit/**/*.test.ts', 'tests/integration/**/*.test.ts'],
+    include: [
+      'lib/**/*.test.ts',
+      'app/**/*.test.ts',
+      'tests/unit/**/*.test.ts',
+      'tests/integration/**/*.test.ts',
+    ],
     exclude: ['tests/e2e/**', 'node_modules/**', '.next/**'],
     setupFiles: [],
     testTimeout: 10_000,

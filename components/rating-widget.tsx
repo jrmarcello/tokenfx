@@ -38,7 +38,7 @@ export function RatingWidget({
 
   const base = 'text-xs px-2 py-1 rounded border transition';
   return (
-    <div className="flex items-center gap-2 text-xs text-neutral-400">
+    <div className="flex items-center gap-2 text-xs text-neutral-400 print:hidden">
       <span>Avaliação:</span>
       <button
         className={cn(

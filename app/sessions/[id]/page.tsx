@@ -9,6 +9,7 @@ import { SubagentBreakdown } from '@/components/subagent-breakdown';
 import { KpiCard } from '@/components/kpi-card';
 import { CostSourceBadge } from '@/components/cost-source-badge';
 import { BranchIcon } from '@/components/icons';
+import { ShareActions } from '@/components/session/share-actions';
 import {
   fmtUsd,
   fmtDateTime,
@@ -44,9 +45,12 @@ export default async function SessionPage({
   return (
     <section className="space-y-8">
       <header className="space-y-3">
-        <h1 className="text-3xl font-semibold tracking-tight">
-          {session.project}
-        </h1>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="text-3xl font-semibold tracking-tight">
+            {session.project}
+          </h1>
+          <ShareActions sessionId={session.id} />
+        </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-neutral-500">
           <code className="rounded border border-neutral-800 bg-neutral-900 px-1.5 py-0.5 font-mono text-[11px] text-neutral-400">
             {session.id}

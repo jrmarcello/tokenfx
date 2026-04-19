@@ -33,5 +33,5 @@ export function TurnScrollTo() {
     }, 2000);
     return () => window.clearTimeout(timer);
   }, []);
-  return null;
+  return <span aria-hidden="true" className="hidden print:hidden" />;
 }

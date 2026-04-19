@@ -26,3 +26,11 @@ body {
 code, pre {
   font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+
+@media print {
+  html,
+  body {
+    background: white !important;
+    color: black !important;
+  }
+}
