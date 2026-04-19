@@ -109,6 +109,7 @@ File overlap analysis:
 
 **Before showing the spec to the user, critically review what you just wrote.** Drafts look fine to the author in the moment; the gaps show up on a second pass. Read the spec with fresh eyes and check:
 
+- **Best-way-possible check**: Does the spec solve the problem **the best way**, or settle for the first approach that came to mind? Any shortcut that hurts correctness, performance, or ergonomics you wouldn't defend in review? Any obvious simpler path (reuse an existing helper instead of rolling new logic, use the DB engine instead of an app-side loop, use Server Action instead of API route, etc.)? Best practices non-negotiable: named exports, Zod at boundaries, prepared statements, Result pattern, colocated tests.
 - **Alignment with the proposal**: Does every paragraph of the user's original request map to a REQ? Any concepts you paraphrased incorrectly? Any "decisões já travadas" you forgot to encode?
 - **Requirement clarity**: Each REQ uses GIVEN/WHEN/THEN unambiguously. Bounds are inclusive-or-exclusive explicitly. No "handle this appropriately" hand-waving.
 - **Ambiguity scan**: Any sentence that two readers could interpret differently? Any migration condition based on row values instead of schema state? Any test case marked "throw or return empty" without picking one?

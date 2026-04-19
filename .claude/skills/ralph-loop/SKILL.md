@@ -174,7 +174,7 @@ Re-read the spec's Requirements section and walk **every REQ** individually:
 
 - Is the REQ satisfied by something concrete you can cite (file:line, test name, SQL fragment)?
 - Is it **fully** satisfied, or partially? Partial = flag explicitly, don't hide it.
-- Is the implementation the best approach for the REQ, or did you settle for a shortcut?
+- **Was it implemented the best way possible?** Check: uses the right primitive (Server Action vs API route, SQL aggregation vs JS loop, existing helper vs new regex), no duplicated logic, follows project conventions (named exports, Zod at boundaries, prepared statements, Result pattern, colocated tests), no shortcut you'd lose an argument over in code review. "Works" is not the bar — "works + would survive a review" is.
 - Did you skip the spec's explicit decisions (`decisões já travadas`) anywhere?
 - Is the REVIEW step from each task genuinely done (all `files:` touched, patterns followed, no implementation gap)?
 

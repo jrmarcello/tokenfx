@@ -138,6 +138,7 @@ After the last task is marked `[x]` and before reporting:
 
 - Walk **every REQ** in the Requirements section and confirm it is satisfied by concrete evidence (`file:line`, test name, SQL fragment). Build an internal `REQ-1..N` checklist with `✅ / 🟡 partial / ❌ blocked` status.
 - For each partial/blocked REQ, surface it in the final report — never hide it behind "tests pass".
+- **Best-way-possible check**: for each REQ, ask "was this implemented the best way?" — right primitive (Server Action vs API route, SQL aggregation vs JS loop), no duplicated logic, reuses existing helpers, follows project conventions (named exports, Zod at boundaries, prepared statements, Result pattern, colocated tests). "Works" is not the bar — "works + would survive code review" is.
 - Re-check every `decisões já travadas` / `decisions locked` entry in the Context: each must have a corresponding code artifact.
 - Re-check every task's REVIEW step was genuinely executed (all `files:` touched, patterns from Design followed, no implementation gap).
 - If the self-review surfaces any gap, fix it before moving to Checkpoint 2.
