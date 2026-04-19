@@ -105,7 +105,23 @@ File overlap analysis:
 - All other files: exclusive to one task
 ```
 
-### 6. Present for Approval
+### 6. Self-Review the Spec (mandatory before presenting)
+
+**Before showing the spec to the user, critically review what you just wrote.** Drafts look fine to the author in the moment; the gaps show up on a second pass. Read the spec with fresh eyes and check:
+
+- **Alignment with the proposal**: Does every paragraph of the user's original request map to a REQ? Any concepts you paraphrased incorrectly? Any "decisões já travadas" you forgot to encode?
+- **Requirement clarity**: Each REQ uses GIVEN/WHEN/THEN unambiguously. Bounds are inclusive-or-exclusive explicitly. No "handle this appropriately" hand-waving.
+- **Ambiguity scan**: Any sentence that two readers could interpret differently? Any migration condition based on row values instead of schema state? Any test case marked "throw or return empty" without picking one?
+- **Missing TCs**: every REQ has ≥1 TC; every validation boundary (Zod min/max, null handling, empty input, division by zero) has a TC; every conditional branch hit at least once; every external dep has an infra-failure TC. Rigor check: error/edge TCs outnumber happy-path TCs.
+- **Architectural soundness**: Are task dependencies correct? Any shared-mutative files marked parallel that should be sequential? Any task doing two things (split it)? Any pattern duplication that should reuse existing helpers (e.g., `deriveModelFamily` instead of a new regex)?
+- **Design decisions inline**: Schemas of new tables written out in Design (not "as described elsewhere"). Key algorithms spelled out (not "see implementation"). Trade-offs documented.
+- **Inherited constraints**: Does the spec respect prior specs' contracts? Does it break an existing test you didn't realize was there?
+- **Empty-state behavior**: What renders when the data is empty? Has first run? Has zero OTEL? Each of these cases explicit in a REQ or Test Plan entry.
+- **Backward compatibility**: If changing a function signature, does the spec keep existing callers working (or explicitly migrate them in a task)?
+
+**If you find gaps, apply the fixes to the spec in place BEFORE showing it to the user.** Present a "9 findings resolved / spec updated" note alongside the final DRAFT — the user shouldn't have to catch the same issue you could have caught yourself.
+
+### 7. Present for Approval
 
 - Display the spec to the user, highlighting the **Test Plan** and **Parallel Batches** sections
 - Set status to `DRAFT`

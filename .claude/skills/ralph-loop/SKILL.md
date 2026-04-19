@@ -160,13 +160,50 @@ TDD: RED(N failing) -> GREEN(N passing) -> REFACTOR(clean)  <!-- if TDD -->
 
 ## On Final Task
 
-After marking the last task complete:
+After marking the last task complete, **do NOT rush to report back**. Five steps in order:
 
-1. The Stop hook detects all tasks done, returns exit 0
-2. `stop-validate.sh` runs full validation (typecheck + lint + tests)
-3. If validation passes: set spec status to `DONE`
-4. If validation fails: fix issues (stop-validate retries up to 3 times)
-5. Suggest: "Run `/spec-review .specs/<name>.md` for a formal review against requirements"
+### 1. Full validation pipeline
+
+- The Stop hook detects all tasks done, returns exit 0
+- `stop-validate.sh` runs full validation (typecheck + lint + tests)
+- If validation fails: fix issues (stop-validate retries up to 3 times)
+
+### 2. Self-review against the spec (mandatory)
+
+Re-read the spec's Requirements section and walk **every REQ** individually:
+
+- Is the REQ satisfied by something concrete you can cite (file:line, test name, SQL fragment)?
+- Is it **fully** satisfied, or partially? Partial = flag explicitly, don't hide it.
+- Is the implementation the best approach for the REQ, or did you settle for a shortcut?
+- Did you skip the spec's explicit decisions (`decisões já travadas`) anywhere?
+- Is the REVIEW step from each task genuinely done (all `files:` touched, patterns followed, no implementation gap)?
+
+Build a checklist (REQ-1..N) in your internal notes with status per REQ. Any ⚠️ or 🟡 items get surfaced in the report — never swept.
+
+### 3. Live validation with real data (when applicable)
+
+If the feature has user-visible effects (UI changes, new queries, new metrics, script behavior), validate against a **real** database or environment, not just test fixtures:
+
+- Start the dev server (`pnpm dev` in background) and curl the affected routes — confirm HTTP 200 and that the new content appears in the rendered HTML (grep the response for key aria-labels, headings, badges, data-attributes).
+- For new CLI tools (`pnpm recompute-costs`, `pnpm ingest`, `pnpm seed-dev`), run against the live DB and inspect the output. Cross-check with raw SQL (`sqlite3 data/dashboard.db "SELECT ..."`) that the expected rows/values appear.
+- For new UI states (badges, empty states, divergence hints), trigger the state via seed data or by hand and visually confirm via HTML grep.
+- For E2E tests that were flaky in the batch run (port collisions, timing), re-run in isolation to confirm they actually pass.
+- Stop the dev server when done.
+
+Skip only when the feature is truly internal (pure refactor, no observable behavior change).
+
+### 4. Spec status and cleanup
+
+- If validation + self-review pass cleanly: set spec status to `DONE`, remove the `.active.md` state file.
+- If partial: set status to `DONE` and flag the partial REQs in the final report with a clear "follow-up" note — don't leave them invisible.
+
+### 5. Report back
+
+- Lead with **what was validated against real data** (not just "tests pass"). Example: "30-day spend KPI: \$9,749 list → \$1,956 calibrated, 5× closer to actual Max usage."
+- Table of REQs with status (✅ / 🟡 partial / ❌ blocked) — this is your proof the spec was followed.
+- List of new tests and the delta (`399 → 429, +30`).
+- Any `[SIGTERM]` exit codes from dev-server kills: explain them; don't leave the user thinking something crashed.
+- Suggest: "Run `/spec-review .specs/<name>.md` for a formal review against requirements" **only if** the self-review surfaced anything worth a second pair of eyes.
 
 ## Resume After Interruption
 

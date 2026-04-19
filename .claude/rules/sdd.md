@@ -127,3 +127,36 @@ When parallel tasks share additive files (e.g. `app/layout.tsx` shell vs content
 
 - Spec files: lowercase, hyphen-separated: `dashboard-mvp.md`, `effectiveness-scoring.md`
 - Active state files: `<name>.active.md` (auto-created by ralph-loop, do not edit manually)
+
+## Discipline Checkpoints (non-negotiable)
+
+Two checkpoints gate the "done" of any spec. Skipping either is a regression — the user should never have to ask "você validou?".
+
+### Checkpoint 1 — Self-review against the spec (REQ-by-REQ)
+
+After the last task is marked `[x]` and before reporting:
+
+- Walk **every REQ** in the Requirements section and confirm it is satisfied by concrete evidence (`file:line`, test name, SQL fragment). Build an internal `REQ-1..N` checklist with `✅ / 🟡 partial / ❌ blocked` status.
+- For each partial/blocked REQ, surface it in the final report — never hide it behind "tests pass".
+- Re-check every `decisões já travadas` / `decisions locked` entry in the Context: each must have a corresponding code artifact.
+- Re-check every task's REVIEW step was genuinely executed (all `files:` touched, patterns from Design followed, no implementation gap).
+- If the self-review surfaces any gap, fix it before moving to Checkpoint 2.
+
+### Checkpoint 2 — Live validation with real data (when applicable)
+
+If the spec has user-visible effects (UI changes, new queries, new metrics, CLI scripts, migrations), validate against a **real** environment — not just test fixtures:
+
+- Start the dev server in background (`pnpm dev`) and curl the affected routes — confirm HTTP 200 and that expected aria-labels / headings / data-attributes / badges appear in the HTML (grep the response body).
+- For CLI tools (`pnpm ingest`, `pnpm recompute-costs`, `pnpm seed-dev`), run against the live DB and inspect both the CLI output and raw SQL (`sqlite3 data/dashboard.db "SELECT ..."`) — values must match across layers.
+- For new UI states (badges, empty states, divergence hints), trigger the state via seed data or by hand and confirm via HTML grep.
+- For E2E tests that were flaky in the batch run (port collisions, timing), re-run in isolation to confirm they actually pass.
+- Stop the dev server when done. A `SIGTERM (exit 143)` from explicitly killing the server is expected — mention it so the user doesn't think something crashed.
+
+Skip Checkpoint 2 **only** when the spec is truly internal (pure refactor, no observable behavior change) — and say so explicitly in the report.
+
+### Reporting discipline
+
+- **Lead** with what was validated against real data, not with "tests pass". Example: "Spend 30d: \$9,749 (list) → \$1,956 (calibrated), ratio 0.20 — matches Max plan".
+- Include a table of REQs with status (✅ / 🟡 / ❌). That table is the proof Checkpoint 1 happened.
+- List new tests and the delta (`399 → 429, +30`).
+- Partial items get explicit "follow-up" notes — never swept under the rug.
