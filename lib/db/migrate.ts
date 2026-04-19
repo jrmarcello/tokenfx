@@ -34,6 +34,7 @@ export function migrate(db: DB): void {
     backfillOtelScrapesUnique(db);
     backfillTurnsSubagentType(db);
     backfillSessionsOtelCost(db);
+    backfillTurnsCacheCreationSplit(db);
     const hasData = db
       .prepare('SELECT 1 FROM sessions LIMIT 1')
       .get() !== undefined;
@@ -126,6 +127,47 @@ function backfillSessionsOtelCost(db: DB): void {
   const hasCol = cols.some((c) => c.name === 'total_cost_usd_otel');
   if (!hasCol) {
     db.exec('ALTER TABLE sessions ADD COLUMN total_cost_usd_otel REAL');
+  }
+}
+
+/**
+ * Older DB files predate the cache-creation split columns and `service_tier`
+ * on `turns`. The parser historically collapsed
+ * `ephemeral_5m_input_tokens + ephemeral_1h_input_tokens` into the single
+ * `cache_creation_tokens` column. The cost-calibration spec separates them
+ * (different pricing multipliers) and also captures the explicit service tier.
+ *
+ * Same shape as `backfillTurnsSubagentType`: decision is driven purely by the
+ * schema state (`PRAGMA table_info`), never by row values. On the single run
+ * where the new columns are freshly added, we ALSO copy the legacy aggregate
+ * into the 5m slot (pre-split data is assumed 100% 5m TTL — that was the only
+ * cache TTL at the time). Subsequent migrate() calls observe `hasSplit === true`
+ * and skip both the ALTER and the UPDATE, so legitimate post-migration rows
+ * with `5m=0, 1h>0` are never re-migrated.
+ */
+function backfillTurnsCacheCreationSplit(db: DB): void {
+  const cols = db
+    .prepare('PRAGMA table_info(turns)')
+    .all() as Array<{ name: string }>;
+  const hasSplit = cols.some((c) => c.name === 'cache_creation_5m_tokens');
+  if (!hasSplit) {
+    db.exec(
+      'ALTER TABLE turns ADD COLUMN cache_creation_5m_tokens INTEGER NOT NULL DEFAULT 0',
+    );
+    db.exec(
+      'ALTER TABLE turns ADD COLUMN cache_creation_1h_tokens INTEGER NOT NULL DEFAULT 0',
+    );
+    // One-shot copy of legacy aggregate into the 5m slot. Runs exactly once,
+    // tied to "column just got created" — NOT to row contents.
+    db.exec(
+      'UPDATE turns SET cache_creation_5m_tokens = cache_creation_tokens WHERE cache_creation_tokens > 0',
+    );
+  }
+  const hasTier = cols.some((c) => c.name === 'service_tier');
+  if (!hasTier) {
+    db.exec(
+      "ALTER TABLE turns ADD COLUMN service_tier TEXT NOT NULL DEFAULT 'standard'",
+    );
   }
 }
 

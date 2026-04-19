@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { correctionPenalties } from '@/lib/analytics/scoring';
-import { extractSubagentType } from '@/lib/analytics/subagent';
 import {
   AssistantMessageSchema,
   TranscriptLineSchema,
@@ -185,22 +184,54 @@ export function parseTranscriptString(
       }
     }
 
-    const usage = msg.data.usage ?? {};
-    const subagentType = extractSubagentType(msg.data.content, (m) => warn(m));
+    const usage = (msg.data.usage ?? {}) as Record<string, unknown>;
+    // REQ-12 priority: split (cache_creation.ephemeral_*) > legacy aggregate > zero.
+    // Never sum the two. When split has at least one of its sub-fields set
+    // (including as 0), split wins; legacy is ignored entirely.
+    const split = usage.cache_creation as
+      | {
+          ephemeral_5m_input_tokens?: number;
+          ephemeral_1h_input_tokens?: number;
+        }
+      | undefined;
+    const legacyAggregate =
+      typeof usage.cache_creation_input_tokens === 'number'
+        ? (usage.cache_creation_input_tokens as number)
+        : undefined;
+    let cacheCreation5mTokens = 0;
+    let cacheCreation1hTokens = 0;
+    let cacheCreationAggregate = 0;
+    if (split !== undefined) {
+      cacheCreation5mTokens = split.ephemeral_5m_input_tokens ?? 0;
+      cacheCreation1hTokens = split.ephemeral_1h_input_tokens ?? 0;
+      cacheCreationAggregate = cacheCreation5mTokens + cacheCreation1hTokens;
+    } else if (legacyAggregate !== undefined) {
+      cacheCreation5mTokens = legacyAggregate;
+      cacheCreationAggregate = legacyAggregate;
+    }
+    const serviceTier =
+      typeof usage.service_tier === 'string' ? (usage.service_tier as string) : 'standard';
     turns.push({
       id: e.uuid,
       parentUuid: e.parentUuid ?? null,
       sequence: null,
       timestamp: Date.parse(e.timestamp),
       model: msg.data.model,
-      inputTokens: usage.input_tokens ?? 0,
-      outputTokens: usage.output_tokens ?? 0,
-      cacheReadTokens: usage.cache_read_input_tokens ?? 0,
-      cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+      inputTokens:
+        typeof usage.input_tokens === 'number' ? (usage.input_tokens as number) : 0,
+      outputTokens:
+        typeof usage.output_tokens === 'number' ? (usage.output_tokens as number) : 0,
+      cacheReadTokens:
+        typeof usage.cache_read_input_tokens === 'number'
+          ? (usage.cache_read_input_tokens as number)
+          : 0,
+      cacheCreationTokens: cacheCreationAggregate,
+      cacheCreation5mTokens,
+      cacheCreation1hTokens,
+      serviceTier,
       stopReason: msg.data.stop_reason ?? null,
       userPrompt,
       assistantText: textParts.length > 0 ? textParts.join('\n') : null,
-      subagentType,
       toolCalls,
     });
   }

@@ -146,7 +146,7 @@ describe('session queries', () => {
       expect(s.avgRating).toBeCloseTo(1, 8);
       // Seeded session has no OTEL cost → falls back to local, source 'local',
       // local mirrors totalCostUsd.
-      expect(s.costSource).toBe('local');
+      expect(s.costSource).toBe('list');
       expect(s.totalCostUsd).toBeCloseTo(1.5, 5);
       expect(s.totalCostUsdLocal).toBeCloseTo(1.5, 5);
     });
@@ -195,7 +195,7 @@ describe('session queries', () => {
       const items = listSessions(db, 10);
       expect(items.map((x) => x.id)).toEqual(['sess-2', 'sess-1', 'sess-0']);
       for (const row of items) {
-        expect(row.costSource).toBe('local');
+        expect(row.costSource).toBe('list');
       }
     });
   });
@@ -232,7 +232,7 @@ describe('session queries', () => {
       expect(otelRow?.totalCostUsd).toBeCloseTo(9.99, 5);
       expect(otelRow?.costSource).toBe('otel');
       expect(localRow?.totalCostUsd).toBeCloseTo(2.0, 5);
-      expect(localRow?.costSource).toBe('local');
+      expect(localRow?.costSource).toBe('list');
     });
 
     it('listSessionsByDate also surfaces costSource', () => {

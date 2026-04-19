@@ -121,7 +121,12 @@ function getPrepared(db: DB): PreparedSet {
       // Inline COALESCE prefers OTEL authoritative cost; falls back to the
       // local sum. Bypasses the `session_effectiveness` view (Design §4) so
       // every read of "cost" in this module goes through the same funnel.
-      `SELECT COALESCE(total_cost_usd_otel, total_cost_usd) / NULLIF(turn_count, 0) AS cost
+      // Cost cascade: OTEL → list × global calibration rate → list.
+      `SELECT COALESCE(
+                total_cost_usd_otel,
+                total_cost_usd * (SELECT effective_rate FROM cost_calibration WHERE family='global' LIMIT 1),
+                total_cost_usd
+              ) / NULLIF(turn_count, 0) AS cost
        FROM sessions
        WHERE started_at >= ? AND turn_count > 0`,
     ),
@@ -154,7 +159,11 @@ function getPrepared(db: DB): PreparedSet {
        FROM sessions s
        LEFT JOIN session_effectiveness v ON v.id = s.id
        WHERE s.started_at >= ?
-       ORDER BY COALESCE(s.total_cost_usd_otel, s.total_cost_usd) DESC
+       ORDER BY COALESCE(
+         s.total_cost_usd_otel,
+         s.total_cost_usd * (SELECT effective_rate FROM cost_calibration WHERE family='global' LIMIT 1),
+         s.total_cost_usd
+       ) DESC
        LIMIT ?`,
     ),
     turnsForSessions: db.prepare(

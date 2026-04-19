@@ -45,12 +45,15 @@ export default async function Home() {
           hint={`Hoje: ${fmtUsd(kpis.spendToday)} — 7d: ${fmtUsd(kpis.spend7d)}`}
           info={
             <>
-              Soma dos custos de todas as sessões nos últimos 30 dias. Quando
-              OTEL tá ativo, o custo vem autoritativo do Claude Code
-              (`claude_code_cost_usage_total`). Sem OTEL, cai pra tabela de
-              preços local em `lib/analytics/pricing.ts`. Nesse período:{' '}
-              {kpis.spend30dCostSources.otel} sessões via OTEL,{' '}
-              {kpis.spend30dCostSources.local} via tabela local.
+              Soma dos custos de todas as sessões nos últimos 30 dias.
+              Cascata por sessão: <strong>OTEL</strong> (autoritativo,
+              via `claude_code_cost_usage_total`) →{' '}
+              <strong>calibrado</strong> (list × ratio aprendido
+              OTEL/local) → <strong>list price</strong> (tabela local
+              em `lib/analytics/pricing.ts`). Nesse período:{' '}
+              {kpis.spend30dCostSources.otel} via OTEL,{' '}
+              {kpis.spend30dCostSources.calibrated} calibradas,{' '}
+              {kpis.spend30dCostSources.list} via tabela local.
             </>
           }
         />

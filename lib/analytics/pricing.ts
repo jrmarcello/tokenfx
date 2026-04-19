@@ -2,7 +2,8 @@ export type ModelPricing = {
   input: number; // $ per 1M tokens
   output: number; // $ per 1M tokens
   cacheRead: number; // $ per 1M tokens
-  cacheCreation: number; // $ per 1M tokens (5-minute TTL variant)
+  cacheCreation5m: number; // $ per 1M tokens (5-minute TTL, 1.25× input)
+  cacheCreation1h: number; // $ per 1M tokens (1-hour TTL, 2× input)
 };
 
 /**
@@ -32,21 +33,24 @@ const OPUS: ModelPricing = {
   input: 15,
   output: 75,
   cacheRead: 1.5,
-  cacheCreation: 18.75,
+  cacheCreation5m: 18.75,
+  cacheCreation1h: 30,
 };
 
 const SONNET: ModelPricing = {
   input: 3,
   output: 15,
   cacheRead: 0.3,
-  cacheCreation: 3.75,
+  cacheCreation5m: 3.75,
+  cacheCreation1h: 6,
 };
 
 const HAIKU: ModelPricing = {
   input: 1,
   output: 5,
   cacheRead: 0.1,
-  cacheCreation: 1.25,
+  cacheCreation5m: 1.25,
+  cacheCreation1h: 2,
 };
 
 export const PRICING: Record<string, ModelPricing> = {
@@ -103,19 +107,64 @@ export function getPricing(model: string): ModelPricing | null {
   return null;
 }
 
+/**
+ * Service-tier multiplier applied to the final cost.
+ * - `standard` (default): 1.0
+ * - `batch`: 0.5 (Anthropic batch API = 50% off)
+ * - `priority`: 1.0 (permissive — Anthropic hasn't documented the exact
+ *   multiplier; keep list price until they do)
+ * - anything else: 1.0 (permissive fallback; never crash on unknown tier)
+ */
+function serviceTierMultiplier(tier: string | undefined): number {
+  if (tier === "batch") return 0.5;
+  // standard, priority, unknown → 1.0
+  return 1.0;
+}
+
 export function computeCost(args: {
   model: string;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
-  cacheCreationTokens: number;
+  cacheCreation5mTokens?: number;
+  cacheCreation1hTokens?: number;
+  /**
+   * Legacy aggregate — assumed to be 100% 5m TTL when provided AND
+   * `cacheCreation5mTokens` is NOT provided. Never summed with the split
+   * params (REQ-12 priority).
+   */
+  cacheCreationTokens?: number;
+  serviceTier?: 'standard' | 'batch' | 'priority' | string;
 }): number {
   const pricing = getPricing(args.model);
   if (!pricing) return 0;
-  const cost =
+
+  // Resolve cache-creation tokens per REQ-12 priority:
+  // 1. split param wins (use cacheCreation5mTokens + cacheCreation1hTokens ?? 0)
+  // 2. else legacy aggregate (treat as 100% 5m, 1h = 0)
+  // 3. else both 0
+  let tokens5m = 0;
+  let tokens1h = 0;
+  if (args.cacheCreation5mTokens !== undefined) {
+    tokens5m = args.cacheCreation5mTokens;
+    tokens1h = args.cacheCreation1hTokens ?? 0;
+  } else if (args.cacheCreation1hTokens !== undefined) {
+    // Only 1h provided (no split-5m, no legacy) — treat 5m as 0.
+    tokens5m = 0;
+    tokens1h = args.cacheCreation1hTokens;
+  } else if (args.cacheCreationTokens !== undefined) {
+    tokens5m = args.cacheCreationTokens;
+    tokens1h = 0;
+  }
+
+  const rawCost =
     (args.inputTokens / 1_000_000) * pricing.input +
     (args.outputTokens / 1_000_000) * pricing.output +
     (args.cacheReadTokens / 1_000_000) * pricing.cacheRead +
-    (args.cacheCreationTokens / 1_000_000) * pricing.cacheCreation;
+    (tokens5m / 1_000_000) * pricing.cacheCreation5m +
+    (tokens1h / 1_000_000) * pricing.cacheCreation1h;
+
+  const multiplier = serviceTierMultiplier(args.serviceTier);
+  const cost = rawCost * multiplier;
   return Math.round(cost * 1e6) / 1e6;
 }

@@ -39,7 +39,10 @@ CREATE TABLE IF NOT EXISTS turns (
   user_prompt TEXT,
   assistant_text TEXT,
   tool_uses_json TEXT NOT NULL DEFAULT '[]',
-  subagent_type TEXT
+  subagent_type TEXT,
+  cache_creation_5m_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_creation_1h_tokens INTEGER NOT NULL DEFAULT 0,
+  service_tier TEXT NOT NULL DEFAULT 'standard'
 );
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, sequence);
 -- idx_turns_subagent is created in `backfillTurnsSubagentType` (migrate.ts)
@@ -72,6 +75,19 @@ CREATE TABLE IF NOT EXISTS ingested_files (
   path TEXT PRIMARY KEY,
   mtime_ms INTEGER NOT NULL,
   ingested_at INTEGER NOT NULL
+);
+
+-- Learned multiplier: ratio of OTEL-reported cost to locally-computed list price,
+-- aggregated per model family plus a 'global' row. Populated by
+-- `recomputeCostCalibration` at the end of every ingest. Rows only exist when
+-- the ratio is within `[MIN_RATE, MAX_RATE]` (see lib/analytics/cost-calibration.ts).
+CREATE TABLE IF NOT EXISTS cost_calibration (
+  family TEXT PRIMARY KEY,
+  effective_rate REAL NOT NULL,
+  sample_session_count INTEGER NOT NULL,
+  sum_otel_cost REAL NOT NULL,
+  sum_local_cost REAL NOT NULL,
+  last_updated_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS otel_scrapes (

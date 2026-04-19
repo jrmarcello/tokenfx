@@ -9,12 +9,13 @@ import type { ParsedSession } from '@/lib/ingest/transcript/types';
 import { fetchAndParse, type OtelScrape } from '@/lib/ingest/otel/parser';
 import { reconcileSession } from '@/lib/ingest/reconcile';
 import { computeCost } from '@/lib/analytics/pricing';
-import { deriveProjectName, listTranscriptFiles } from '@/lib/fs-paths';
-import { log } from '@/lib/logger';
 import {
   getOtelCostBySession,
   getOtelCostForSession,
 } from '@/lib/queries/otel';
+import { recomputeCostCalibration } from '@/lib/queries/calibration';
+import { deriveProjectName, listTranscriptFiles } from '@/lib/fs-paths';
+import { log } from '@/lib/logger';
 
 export type IngestSummary = {
   filesProcessed: number;
@@ -23,7 +24,12 @@ export type IngestSummary = {
   turnsUpserted: number;
   toolCallsUpserted: number;
   otelScrapes: number;
+  /** Sessions whose `total_cost_usd_otel` was set/updated from OTEL scrapes. */
   otelCostsUpgraded: number;
+  /** Families (incl. 'global') written to `cost_calibration`. */
+  calibrationFamiliesWritten: number;
+  /** Family aggregates rejected (rate out of bounds or zero samples). */
+  calibrationSkipped: number;
   errors: Array<{ file: string; error: string }>;
 };
 
@@ -83,13 +89,13 @@ function getStatements(db: Database): Prepared {
     INSERT INTO turns (
       id, session_id, parent_uuid, sequence, timestamp, model,
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-      cost_usd, stop_reason, user_prompt, assistant_text, tool_uses_json,
-      subagent_type
+      cache_creation_5m_tokens, cache_creation_1h_tokens, service_tier,
+      cost_usd, stop_reason, user_prompt, assistant_text, tool_uses_json
     ) VALUES (
       @id, @session_id, @parent_uuid, @sequence, @timestamp, @model,
       @input_tokens, @output_tokens, @cache_read_tokens, @cache_creation_tokens,
-      @cost_usd, @stop_reason, @user_prompt, @assistant_text, @tool_uses_json,
-      @subagent_type
+      @cache_creation_5m_tokens, @cache_creation_1h_tokens, @service_tier,
+      @cost_usd, @stop_reason, @user_prompt, @assistant_text, @tool_uses_json
     )
     ON CONFLICT(id) DO UPDATE SET
       session_id = excluded.session_id,
@@ -101,12 +107,14 @@ function getStatements(db: Database): Prepared {
       output_tokens = excluded.output_tokens,
       cache_read_tokens = excluded.cache_read_tokens,
       cache_creation_tokens = excluded.cache_creation_tokens,
+      cache_creation_5m_tokens = excluded.cache_creation_5m_tokens,
+      cache_creation_1h_tokens = excluded.cache_creation_1h_tokens,
+      service_tier = excluded.service_tier,
       cost_usd = excluded.cost_usd,
       stop_reason = excluded.stop_reason,
       user_prompt = excluded.user_prompt,
       assistant_text = excluded.assistant_text,
-      tool_uses_json = excluded.tool_uses_json,
-      subagent_type = excluded.subagent_type
+      tool_uses_json = excluded.tool_uses_json
   `);
 
   const insertToolCall = db.prepare(`
@@ -144,16 +152,12 @@ function getStatements(db: Database): Prepared {
        ingested_at = excluded.ingested_at`,
   );
 
-  // Write path for the OTEL-derived cost column. Kept separate from the
-  // sessions insert/upsert so that writes triggered by the final sweep
-  // don't need to re-know the full session row.
   const updateSessionOtelCost = db.prepare(
     'UPDATE sessions SET total_cost_usd_otel = ? WHERE id = ?',
   );
 
-  // Used by the final sweep to skip no-op updates (same value already stored).
   const readSessionOtelCost = db.prepare(
-    'SELECT total_cost_usd_otel FROM sessions WHERE id = ?',
+    'SELECT total_cost_usd_otel AS v FROM sessions WHERE id = ?',
   );
 
   cached = {
@@ -190,7 +194,9 @@ export function writeSession(
       inputTokens: t.inputTokens,
       outputTokens: t.outputTokens,
       cacheReadTokens: t.cacheReadTokens,
-      cacheCreationTokens: t.cacheCreationTokens,
+      cacheCreation5mTokens: t.cacheCreation5mTokens,
+      cacheCreation1hTokens: t.cacheCreation1hTokens,
+      serviceTier: t.serviceTier,
     });
     totalInput += t.inputTokens;
     totalOutput += t.outputTokens;
@@ -209,6 +215,9 @@ export function writeSession(
       output_tokens: t.outputTokens,
       cache_read_tokens: t.cacheReadTokens,
       cache_creation_tokens: t.cacheCreationTokens,
+      cache_creation_5m_tokens: t.cacheCreation5mTokens,
+      cache_creation_1h_tokens: t.cacheCreation1hTokens,
+      service_tier: t.serviceTier,
       cost_usd: cost,
       stop_reason: t.stopReason,
       user_prompt: t.userPrompt,
@@ -216,7 +225,6 @@ export function writeSession(
       tool_uses_json: JSON.stringify(
         t.toolCalls.map((tc) => ({ id: tc.id, name: tc.toolName })),
       ),
-      subagent_type: t.subagentType,
     };
   });
 
@@ -278,13 +286,11 @@ export function writeSession(
   // reflect reality across all files — not just the last one ingested.
   reconcileSession(db, parsed.id);
 
-  // Per-session OTEL cost upgrade (REQ-1). If the current run (or any prior
-  // run) ingested an OTEL scrape of `claude_code_cost_usage_total` for this
-  // session, prefer it over the locally-computed `total_cost_usd`. The
-  // ingestAll ordering guarantees OTEL scrapes are written before any
-  // writeSession runs, so same-run upgrades work without a second pass.
+  // If OTEL has already scraped this session, upgrade total_cost_usd_otel.
+  // Scrapes from the current run are already in the DB because ingestAll
+  // runs OTEL fetch/write BEFORE the JSONL loop.
   const otelCost = getOtelCostForSession(db, parsed.id);
-  if (otelCost !== null) {
+  if (otelCost !== null && otelCost > 0) {
     stmts.updateSessionOtelCost.run(otelCost, parsed.id);
   }
 }
@@ -324,15 +330,13 @@ export async function ingestAll(options?: {
     toolCallsUpserted: 0,
     otelScrapes: 0,
     otelCostsUpgraded: 0,
+    calibrationFamiliesWritten: 0,
+    calibrationSkipped: 0,
     errors: [],
   };
 
-  const stmts = getStatements(db);
-
-  // REQ-5: OTEL scrapes are written BEFORE JSONL processing so the
-  // per-session OTEL cost upgrade inside writeSession can consult scrapes
-  // from the SAME run. Previously JSONLs ran first and OTEL second, which
-  // meant cost upgrades lagged by one ingest cycle for brand-new sessions.
+  // OTEL FIRST: fetch + persist scrapes before JSONL processing so
+  // writeSession's per-session upgrade finds the current-run data.
   if (options?.otelUrl) {
     const otelResult = await fetchAndParse(options.otelUrl, options.fetchFn, {
       timeoutMs: options.otelTimeoutMs,
@@ -351,6 +355,7 @@ export async function ingestAll(options?: {
   const files = await listTranscriptFiles(options?.transcriptsRoot);
   log.info(`[ingest] found ${files.length} transcript file(s)`);
 
+  const stmts = getStatements(db);
   let skippedUnchanged = 0;
 
   for (const file of files) {
@@ -402,36 +407,30 @@ export async function ingestAll(options?: {
     }
   }
 
-  // REQ-14: final sweep. Walk the authoritative OTEL cost map once and
-  // upgrade any session whose stored `total_cost_usd_otel` differs from
-  // the current OTEL-derived value. Covers sessions whose JSONL was
-  // mtime-gated-skipped above but whose OTEL scrape landed this run, plus
-  // counter progressions (later scrape > earlier value) for any session.
-  // A no-op update check avoids bumping rows whose value already matches,
-  // keeping this cheap even on DBs with thousands of sessions.
-  const otelCostMap = getOtelCostBySession(db);
-  if (otelCostMap.size > 0) {
-    const sweep = db.transaction(() => {
-      for (const [sessionId, cost] of otelCostMap) {
-        const existing = stmts.readSessionOtelCost.get(sessionId) as
-          | { total_cost_usd_otel: number | null }
-          | undefined;
-        if (existing === undefined) {
-          // No session row yet (scrape arrived before JSONL was parsed).
-          // We'll pick it up next ingest once the session exists.
-          continue;
-        }
-        if (existing.total_cost_usd_otel !== cost) {
-          stmts.updateSessionOtelCost.run(cost, sessionId);
-          summary.otelCostsUpgraded += 1;
-        }
-      }
-    });
-    sweep();
-  }
+  // Final sweep: update total_cost_usd_otel for any session whose OTEL
+  // value differs from what's stored (covers sessions whose JSONL was
+  // mtime-gated away but whose OTEL scrape arrived in this run).
+  const otelMap = getOtelCostBySession(db);
+  const sweepTx = db.transaction(() => {
+    for (const [sessionId, cost] of otelMap) {
+      const existing = stmts.readSessionOtelCost.get(sessionId) as
+        | { v: number | null }
+        | undefined;
+      if (!existing) continue; // session doesn't exist — skip
+      if (existing.v === cost) continue;
+      stmts.updateSessionOtelCost.run(cost, sessionId);
+      summary.otelCostsUpgraded += 1;
+    }
+  });
+  sweepTx();
+
+  // Learned calibration from OTEL-bearing sessions.
+  const calib = recomputeCostCalibration(db);
+  summary.calibrationFamiliesWritten = calib.familiesWritten;
+  summary.calibrationSkipped = calib.skippedOutOfBounds;
 
   log.info(
-    `[ingest] done: ${summary.filesProcessed} processed, ${skippedUnchanged} unchanged, ${summary.filesSkipped} skipped, ${summary.otelScrapes} otel rows, ${summary.otelCostsUpgraded} otel cost upgrades, ${summary.errors.length} errors`,
+    `[ingest] done: ${summary.filesProcessed} processed, ${skippedUnchanged} unchanged, ${summary.filesSkipped} skipped, ${summary.otelScrapes} otel rows, ${summary.otelCostsUpgraded} otel-cost upgrades, calibration ${summary.calibrationFamiliesWritten} families (${summary.calibrationSkipped} skipped), ${summary.errors.length} errors`,
   );
 
   return summary;

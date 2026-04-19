@@ -74,7 +74,7 @@ type SessionListRow = {
   totalCostUsd: number;
   turnCount: number;
   avgRating: number | null;
-  cost_from_otel: number;
+  cost_source: string;
 };
 
 type PreparedSet = {
@@ -135,15 +135,23 @@ function getPrepared(db: DB): PreparedSet {
          rated_at = excluded.rated_at`
     ),
     listSessions: db.prepare(
-      // COALESCE prefers OTEL authoritative cost; `cost_from_otel` surfaces
-      // provenance so the UI can render per-row badges (REQ-4).
+      // Cost cascade: OTEL → list × calibration rate → list. `cost_source`
+      // discriminates which branch was taken so UI renders the right badge.
       `SELECT s.id AS id,
               s.project AS project,
               s.started_at AS startedAt,
-              COALESCE(s.total_cost_usd_otel, s.total_cost_usd) AS totalCostUsd,
+              COALESCE(
+                s.total_cost_usd_otel,
+                s.total_cost_usd * (SELECT effective_rate FROM cost_calibration WHERE family='global' LIMIT 1),
+                s.total_cost_usd
+              ) AS totalCostUsd,
               s.turn_count AS turnCount,
               v.avg_rating AS avgRating,
-              (s.total_cost_usd_otel IS NOT NULL) AS cost_from_otel
+              CASE
+                WHEN s.total_cost_usd_otel IS NOT NULL THEN 'otel'
+                WHEN (SELECT effective_rate FROM cost_calibration WHERE family='global' LIMIT 1) IS NOT NULL THEN 'calibrated'
+                ELSE 'list'
+              END AS cost_source
        FROM sessions s
        LEFT JOIN session_effectiveness v ON v.id = s.id
        ORDER BY s.started_at DESC
@@ -153,10 +161,18 @@ function getPrepared(db: DB): PreparedSet {
       `SELECT s.id AS id,
               s.project AS project,
               s.started_at AS startedAt,
-              COALESCE(s.total_cost_usd_otel, s.total_cost_usd) AS totalCostUsd,
+              COALESCE(
+                s.total_cost_usd_otel,
+                s.total_cost_usd * (SELECT effective_rate FROM cost_calibration WHERE family='global' LIMIT 1),
+                s.total_cost_usd
+              ) AS totalCostUsd,
               s.turn_count AS turnCount,
               v.avg_rating AS avgRating,
-              (s.total_cost_usd_otel IS NOT NULL) AS cost_from_otel
+              CASE
+                WHEN s.total_cost_usd_otel IS NOT NULL THEN 'otel'
+                WHEN (SELECT effective_rate FROM cost_calibration WHERE family='global' LIMIT 1) IS NOT NULL THEN 'calibrated'
+                ELSE 'list'
+              END AS cost_source
        FROM sessions s
        LEFT JOIN session_effectiveness v ON v.id = s.id
        WHERE s.started_at >= ? AND s.started_at < ?
@@ -193,11 +209,29 @@ export function getSession(db: DB, id: string): SessionDetail | null {
   const p = getPrepared(db);
   const row = p.getSession.get(id) as SessionRow | undefined;
   if (!row) return null;
-  // Inline COALESCE: pick OTEL when present, else fall back to the local sum.
-  // `totalCostUsdLocal` preserves the raw local value so the session detail
+  // Cost cascade: OTEL → list × global calibration rate → list.
+  // `totalCostUsdLocal` preserves the raw list value so the session detail
   // page can surface both when they diverge >1% (REQ-12).
-  const totalCostUsd =
-    row.total_cost_usd_otel !== null ? row.total_cost_usd_otel : row.total_cost_usd;
+  const globalRate =
+    (
+      db
+        .prepare(
+          "SELECT effective_rate AS v FROM cost_calibration WHERE family='global' LIMIT 1",
+        )
+        .get() as { v: number } | undefined
+    )?.v ?? null;
+  let totalCostUsd: number;
+  let costSource: CostSource;
+  if (row.total_cost_usd_otel !== null) {
+    totalCostUsd = row.total_cost_usd_otel;
+    costSource = 'otel';
+  } else if (globalRate !== null) {
+    totalCostUsd = row.total_cost_usd * globalRate;
+    costSource = 'calibrated';
+  } else {
+    totalCostUsd = row.total_cost_usd;
+    costSource = 'list';
+  }
   return {
     id: row.id,
     slug: row.slug,
@@ -218,7 +252,7 @@ export function getSession(db: DB, id: string): SessionDetail | null {
     avgRating: row.avg_rating,
     cacheHitRatio: row.cache_hit_ratio,
     outputInputRatio: row.output_input_ratio,
-    costSource: row.total_cost_usd_otel !== null ? 'otel' : 'local',
+    costSource,
   };
 }
 
@@ -328,7 +362,7 @@ const mapSessionListRow = (r: SessionListRow): SessionListItem => ({
   totalCostUsd: r.totalCostUsd,
   turnCount: r.turnCount,
   avgRating: r.avgRating,
-  costSource: r.cost_from_otel ? 'otel' : 'local',
+  costSource: r.cost_source as CostSource,
 });
 
 export function listSessions(db: DB, limit: number): SessionListItem[] {

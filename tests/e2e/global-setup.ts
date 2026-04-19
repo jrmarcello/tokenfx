@@ -345,6 +345,38 @@ export default async function globalSetup(): Promise<void> {
         });
       }
     }
+
+    // Populate cost_calibration so the UI renders the "calibrated" badge for
+    // sessions without OTEL. Derived from the e2e-today session which has
+    // both otel + local; ratio ~= 1.3 (seed sets otel = 1.3 * local).
+    const otelRow = db
+      .prepare(
+        "SELECT total_cost_usd, total_cost_usd_otel FROM sessions WHERE id = 'e2e-today'",
+      )
+      .get() as
+      | { total_cost_usd: number; total_cost_usd_otel: number | null }
+      | undefined;
+    if (otelRow && otelRow.total_cost_usd_otel !== null && otelRow.total_cost_usd > 0) {
+      const rate = otelRow.total_cost_usd_otel / otelRow.total_cost_usd;
+      db.prepare(
+        `INSERT INTO cost_calibration
+          (family, effective_rate, sample_session_count, sum_otel_cost, sum_local_cost, last_updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(family) DO UPDATE SET
+           effective_rate = excluded.effective_rate,
+           sample_session_count = excluded.sample_session_count,
+           sum_otel_cost = excluded.sum_otel_cost,
+           sum_local_cost = excluded.sum_local_cost,
+           last_updated_at = excluded.last_updated_at`,
+      ).run(
+        'global',
+        rate,
+        1,
+        otelRow.total_cost_usd_otel,
+        otelRow.total_cost_usd,
+        now,
+      );
+    }
   });
   tx();
 

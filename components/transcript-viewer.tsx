@@ -13,6 +13,14 @@ export function TranscriptViewer({ turns }: { turns: TurnDetail[] }) {
   return (
     <>
       <TurnScrollTo />
+      <p
+        className="mb-3 text-[11px] text-neutral-500"
+        title="Calibração e OTEL agregam no total da sessão; per-turn continua list price porque OTEL não tem granularidade de turno."
+      >
+        Custos por turno abaixo são <strong>list price</strong> (tabela de
+        preços local). OTEL e calibração são aplicados só no total da
+        sessão.
+      </p>
       <ol className="space-y-4">
       {turns.map((t) => (
         <li

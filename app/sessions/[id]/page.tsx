@@ -83,15 +83,23 @@ export default async function SessionPage({
           hint={
             session.costSource === 'otel' &&
             Math.abs(session.totalCostUsd - session.totalCostUsdLocal) /
-              Math.max(session.totalCostUsd, session.totalCostUsdLocal, 1e-9) >
+              Math.max(
+                session.totalCostUsd,
+                session.totalCostUsdLocal,
+                1e-9,
+              ) >
               0.01
               ? `estimado local: ${fmtUsd(session.totalCostUsdLocal)}`
-              : undefined
+              : session.costSource === 'calibrated'
+                ? `list: ${fmtUsd(session.totalCostUsdLocal)}`
+                : undefined
           }
           info={
             session.costSource === 'otel'
               ? 'Custo autoritativo via OTEL (claude_code_cost_usage_total). O valor local (soma de turns via tabela de preços) aparece no hint quando diverge >1%.'
-              : 'Custo estimado via tabela de preços local (lib/analytics/pricing.ts). Ative OTEL no Claude Code pra custos autoritativos.'
+              : session.costSource === 'calibrated'
+                ? 'Custo calibrado: list price multiplicado pela razão aprendida OTEL/local das suas sessões. Precisão depende de quantas sessões OTEL já foram capturadas. Veja /effectiveness → "Fonte dos custos" pra ratio e contagem.'
+                : 'Custo estimado via tabela de preços local (lib/analytics/pricing.ts). Ative OTEL no Claude Code pra custos autoritativos e calibração.'
           }
         />
         <KpiCard

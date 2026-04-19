@@ -212,10 +212,12 @@ describe('detectCorrectionPenalty (TC-U-05)', () => {
       outputTokens: 0,
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
+      cacheCreation5mTokens: 0,
+      cacheCreation1hTokens: 0,
+      serviceTier: 'standard',
       stopReason: null,
       userPrompt: p,
       assistantText: null,
-      subagentType: null,
       toolCalls: [],
     }));
   }

@@ -1,12 +1,7 @@
 import type { DB } from '@/lib/db/client';
 
-/**
- * Provenance tag for every cost surface. `otel` means the value came from
- * `sessions.total_cost_usd_otel` (authoritative via Claude Code OTEL counter);
- * `local` means the session fell back to `sessions.total_cost_usd` (sum of
- * per-turn costs via `lib/analytics/pricing`).
- */
-export type CostSource = 'otel' | 'local';
+import type { CostSource } from '@/lib/analytics/cost-calibration';
+export type { CostSource };
 
 export type OverviewKpis = {
   spend30d: number;
@@ -19,7 +14,7 @@ export type OverviewKpis = {
    * Count of sessions in the 30d window grouped by cost provenance. Used by
    * the "Custo 30d" KPI card tooltip to explain hybrid aggregates (REQ-13).
    */
-  spend30dCostSources: { otel: number; local: number };
+  spend30dCostSources: { otel: number; calibrated: number; list: number };
 };
 
 export type DailyPoint = {
@@ -39,7 +34,11 @@ export type TopSession = {
 };
 
 type NumRow = { v: number };
-type CostSourceRow = { otel: number | null; local: number | null };
+type CostSourceRow = {
+  otel: number | null;
+  calibrated: number | null;
+  list: number | null;
+};
 
 type TopSessionRow = {
   id: string;
@@ -47,8 +46,29 @@ type TopSessionRow = {
   startedAt: number;
   totalCostUsd: number;
   turnCount: number;
-  cost_from_otel: number;
+  cost_source: string;
 };
+
+// Effective cost cascade: OTEL → list × global calibration rate → list.
+// Applied in-SQL via a scalar subquery against `cost_calibration`. Family-
+// specific calibration (REQ-4) is deferred to a follow-up iteration — for now
+// the 'global' rate is the single adjustment lever.
+const EFFECTIVE_COST_EXPR = `
+  COALESCE(
+    total_cost_usd_otel,
+    total_cost_usd * (SELECT effective_rate FROM cost_calibration WHERE family='global' LIMIT 1),
+    total_cost_usd
+  )
+`;
+
+const COST_SOURCE_EXPR = `
+  CASE
+    WHEN total_cost_usd_otel IS NOT NULL THEN 'otel'
+    WHEN (SELECT effective_rate FROM cost_calibration WHERE family='global' LIMIT 1) IS NOT NULL
+      THEN 'calibrated'
+    ELSE 'list'
+  END
+`;
 
 type PreparedSet = {
   spendSince: import('better-sqlite3').Statement<[number]>;
@@ -70,7 +90,7 @@ function getPrepared(db: DB): PreparedSet {
     // cost-facing aggregates go through this COALESCE (see Design §4 of
     // .specs/pricing-otel-source-of-truth.md).
     spendSince: db.prepare(
-      'SELECT COALESCE(SUM(COALESCE(total_cost_usd_otel, total_cost_usd)), 0) AS v FROM sessions WHERE started_at >= ?'
+      `SELECT COALESCE(SUM(${EFFECTIVE_COST_EXPR}), 0) AS v FROM sessions WHERE started_at >= ?`
     ),
     tokensSince: db.prepare(
       'SELECT COALESCE(SUM(total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens), 0) AS v FROM sessions WHERE started_at >= ?'
@@ -85,14 +105,15 @@ function getPrepared(db: DB): PreparedSet {
     // which populates the hybrid-aggregate tooltip (REQ-13).
     costSourcesSince: db.prepare(
       `SELECT
-         SUM(CASE WHEN total_cost_usd_otel IS NOT NULL THEN 1 ELSE 0 END) AS otel,
-         SUM(CASE WHEN total_cost_usd_otel IS NULL THEN 1 ELSE 0 END) AS local
+         SUM(CASE WHEN ${COST_SOURCE_EXPR} = 'otel' THEN 1 ELSE 0 END) AS otel,
+         SUM(CASE WHEN ${COST_SOURCE_EXPR} = 'calibrated' THEN 1 ELSE 0 END) AS calibrated,
+         SUM(CASE WHEN ${COST_SOURCE_EXPR} = 'list' THEN 1 ELSE 0 END) AS list
        FROM sessions
        WHERE started_at >= ?`
     ),
     dailySpend: db.prepare(
       `SELECT strftime('%Y-%m-%d', started_at/1000, 'unixepoch', 'localtime') AS date,
-              COALESCE(SUM(COALESCE(total_cost_usd_otel, total_cost_usd)), 0) AS spend,
+              COALESCE(SUM(${EFFECTIVE_COST_EXPR}), 0) AS spend,
               COALESCE(SUM(total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens), 0) AS tokens,
               COUNT(*) AS sessionCount
        FROM sessions
@@ -104,9 +125,9 @@ function getPrepared(db: DB): PreparedSet {
       `SELECT id,
               project,
               started_at AS startedAt,
-              COALESCE(total_cost_usd_otel, total_cost_usd) AS totalCostUsd,
+              ${EFFECTIVE_COST_EXPR} AS totalCostUsd,
               turn_count AS turnCount,
-              (total_cost_usd_otel IS NOT NULL) AS cost_from_otel
+              ${COST_SOURCE_EXPR} AS cost_source
        FROM sessions
        WHERE started_at >= ?
        ORDER BY totalCostUsd DESC
@@ -153,7 +174,8 @@ export function getOverviewKpis(db: DB): OverviewKpis {
     | undefined;
   const spend30dCostSources = {
     otel: costSourcesRow?.otel ?? 0,
-    local: costSourcesRow?.local ?? 0,
+    calibrated: costSourcesRow?.calibrated ?? 0,
+    list: costSourcesRow?.list ?? 0,
   };
 
   return {
@@ -206,8 +228,6 @@ export function getTopSessions(db: DB, limit: number, days: number): TopSession[
     startedAt: r.startedAt,
     totalCostUsd: r.totalCostUsd,
     turnCount: r.turnCount,
-    // SQLite represents the `IS NOT NULL` predicate as 1/0; coerce to the
-    // union literal expected by consumers (and by the UI badge).
-    costSource: r.cost_from_otel ? 'otel' : 'local',
+    costSource: r.cost_source as CostSource,
   }));
 }

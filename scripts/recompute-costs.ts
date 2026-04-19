@@ -27,6 +27,7 @@ import { getDb } from '@/lib/db/client';
 import { computeCost } from '@/lib/analytics/pricing';
 import { reconcileAllSessions } from '@/lib/ingest/reconcile';
 import { getOtelCostBySession } from '@/lib/queries/otel';
+import { recomputeCostCalibration } from '@/lib/queries/calibration';
 import { log } from '@/lib/logger';
 
 type TurnRow = {
@@ -53,6 +54,11 @@ export type RecomputeSummary =
       totalOtelSessions: number;
       updatedOtelCosts: number;
       unchangedOtelCosts: number;
+    }
+  | {
+      mode: 'recalibrate';
+      familiesWritten: number;
+      skippedOutOfBounds: number;
     };
 
 const recomputeTurnsDefault = (): RecomputeSummary => {
@@ -156,14 +162,30 @@ const recomputeOtelCosts = (): RecomputeSummary => {
   };
 };
 
-export function recomputeCosts(opts: {
-  preferOtel: boolean;
-}): RecomputeSummary {
-  return opts.preferOtel ? recomputeOtelCosts() : recomputeTurnsDefault();
+const recalibrate = (): RecomputeSummary => {
+  const db = getDb();
+  const result = recomputeCostCalibration(db);
+  return {
+    mode: 'recalibrate',
+    familiesWritten: result.familiesWritten,
+    skippedOutOfBounds: result.skippedOutOfBounds,
+  };
+};
+
+export type RecomputeOpts = {
+  preferOtel?: boolean;
+  recalibrate?: boolean;
+};
+
+export function recomputeCosts(opts: RecomputeOpts): RecomputeSummary {
+  if (opts.recalibrate) return recalibrate();
+  if (opts.preferOtel) return recomputeOtelCosts();
+  return recomputeTurnsDefault();
 }
 
-const parseArgs = (argv: readonly string[]): { preferOtel: boolean } => ({
+const parseArgs = (argv: readonly string[]): RecomputeOpts => ({
   preferOtel: argv.includes('--prefer-otel'),
+  recalibrate: argv.includes('--recalibrate'),
 });
 
 function main(): void {

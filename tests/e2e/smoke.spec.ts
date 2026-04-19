@@ -41,6 +41,24 @@ test.describe('smoke', () => {
     await expect(page.getByText(/estimado local/)).toBeVisible();
   });
 
+  test('TC-E2E-10: session without OTEL shows calibrated badge on /sessions', async ({ page }) => {
+    await page.goto('/sessions');
+    // At least one row should carry the amber "calibrated" badge (the e2e-1
+    // session has no OTEL but the seed populates cost_calibration.global).
+    await expect(
+      page.locator('[aria-label="Custo calibrado"]').first(),
+    ).toBeVisible();
+  });
+
+  test('TC-E2E-11: /effectiveness renders "Fonte dos custos" section with calibration data', async ({ page }) => {
+    await page.goto('/effectiveness');
+    await expect(
+      page.getByRole('heading', { name: 'Fonte dos custos' }),
+    ).toBeVisible();
+    // Seed populates a 'global' row so the table body is non-empty.
+    await expect(page.getByText('Global (fallback)')).toBeVisible();
+  });
+
   test('TC-E2E-05: home page renders activity heatmap with at least one non-empty cell', async ({ page }) => {
     await page.goto('/');
     await expect(

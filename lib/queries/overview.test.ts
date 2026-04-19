@@ -160,8 +160,8 @@ describe('overview queries', () => {
       expect(top[1].id).toBe('s2'); // 2.25
       expect(top[0].totalCostUsd).toBeGreaterThanOrEqual(top[1].totalCostUsd);
       // None of the seeded sessions have OTEL cost → all fall back to local.
-      expect(top[0].costSource).toBe('local');
-      expect(top[1].costSource).toBe('local');
+      expect(top[0].costSource).toBe('list');
+      expect(top[1].costSource).toBe('list');
     });
 
     it('getDailySpend: returns exactly `days` zero-filled entries in ascending date order', () => {
@@ -260,7 +260,8 @@ describe('overview queries', () => {
         costUsd: 2.0,
       });
       const kpis = getOverviewKpis(db);
-      expect(kpis.spend30dCostSources).toEqual({ otel: 2, local: 1 });
+      // Calibration is empty → all non-OTEL rows classify as 'list'.
+      expect(kpis.spend30dCostSources).toEqual({ otel: 2, calibrated: 0, list: 1 });
     });
 
     it('getTopSessions: per-row costSource reflects which column was read', () => {
@@ -281,7 +282,7 @@ describe('overview queries', () => {
       expect(otelRow?.totalCostUsd).toBeCloseTo(9.99, 5);
       expect(otelRow?.costSource).toBe('otel');
       expect(localRow?.totalCostUsd).toBeCloseTo(2.0, 5);
-      expect(localRow?.costSource).toBe('local');
+      expect(localRow?.costSource).toBe('list');
     });
 
     it('getDailySpend: sums COALESCE(otel, local) per day', () => {
@@ -316,7 +317,7 @@ describe('overview queries', () => {
       expect(kpis.tokens30d).toBe(0);
       expect(kpis.cacheHitRatio30d).toBe(0);
       expect(kpis.sessionCount30d).toBe(0);
-      expect(kpis.spend30dCostSources).toEqual({ otel: 0, local: 0 });
+      expect(kpis.spend30dCostSources).toEqual({ otel: 0, calibrated: 0, list: 0 });
     });
 
     it('getTopSessions returns []', () => {

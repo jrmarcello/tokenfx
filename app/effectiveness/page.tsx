@@ -15,6 +15,9 @@ import {
   getModelBreakdown,
 } from '@/lib/queries/effectiveness';
 import { getOtelInsights, getWeeklyAcceptRate } from '@/lib/queries/otel';
+import { getCostCalibration } from '@/lib/queries/calibration';
+import { getOverviewKpis } from '@/lib/queries/overview';
+import { CostSourcesBreakdown } from '@/components/effectiveness/cost-sources-breakdown';
 import { bucketCostPerTurn } from '@/lib/analytics/scoring';
 import { fmtScore, fmtRatio, fmtPct, fmtCompact, fmtUsdFine } from '@/lib/fmt';
 
@@ -40,6 +43,8 @@ export default async function EffectivenessPage() {
 
   const otel = getOtelInsights(db, 30);
   const weeklyAccept = otel.hasOtelData ? getWeeklyAcceptRate(db, 12) : [];
+  const overviewKpis = getOverviewKpis(db);
+  const calibration = Array.from(getCostCalibration(db).values());
 
   const hasData = scores.length > 0 || costs.length > 0;
 
@@ -51,6 +56,11 @@ export default async function EffectivenessPage() {
           Últimos 30 dias — heurísticas de eficiência de custo
         </p>
       </header>
+
+      <CostSourcesBreakdown
+        calibration={calibration}
+        coverage={overviewKpis.spend30dCostSources}
+      />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard
