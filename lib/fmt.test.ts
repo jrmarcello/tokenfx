@@ -47,7 +47,8 @@ describe('fmt', () => {
   it('fmtRating: 2-decimal with null sentinel', () => {
     expect(fmtRating(0.75)).toBe('0.75');
     expect(fmtRating(-1)).toBe('-1.00');
-    expect(fmtRating(null)).toBe('—');
+    expect(fmtRating(0)).toBe('0.00');
+    expect(fmtRating(null)).toBe('Sem avaliação');
   });
 
   it('fmtRatio: 2-decimal with null sentinel', () => {

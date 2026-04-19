@@ -30,7 +30,7 @@ export function ShareActions({ sessionId }: { sessionId: string }) {
   };
 
   const baseBtn =
-    'text-xs px-2.5 py-1 rounded border border-neutral-700 hover:border-neutral-500 text-neutral-300 transition';
+    'text-xs px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:border-neutral-500 text-neutral-700 dark:text-neutral-300 transition';
 
   return (
     <div
@@ -44,9 +44,9 @@ export function ShareActions({ sessionId }: { sessionId: string }) {
         className={cn(
           baseBtn,
           copyStatus === 'copied' &&
-            'border-emerald-500 text-emerald-300 bg-emerald-950/40',
+            'border-emerald-500 text-emerald-700 dark:text-emerald-300 bg-emerald-950/40',
           copyStatus === 'error' &&
-            'border-red-500 text-red-300 bg-red-950/40',
+            'border-red-500 text-red-700 dark:text-red-300 bg-red-950/40',
         )}
       >
         {copyStatus === 'copied'

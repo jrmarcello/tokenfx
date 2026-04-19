@@ -86,7 +86,7 @@ export default async function QuotaPage() {
     <section className="space-y-8">
       <header className="space-y-2">
         <h1 className="text-3xl font-semibold tracking-tight">Quota do Max</h1>
-        <p className="text-sm text-neutral-400 max-w-3xl">
+        <p className="text-sm text-neutral-600 dark:text-neutral-400 max-w-3xl">
           A Anthropic não publica os limites exatos do plano Max — calibre os
           thresholds abaixo conforme for batendo rate-limit. Janelas são
           rolling (últimas 5h / últimos 7 dias), então o número pode estar
@@ -97,7 +97,7 @@ export default async function QuotaPage() {
       {!anyThresholdSet && (
         <div
           role="status"
-          className="rounded border border-neutral-800 bg-neutral-900 px-4 py-3 text-sm text-neutral-300"
+          className="rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 px-4 py-3 text-sm text-neutral-700 dark:text-neutral-300"
         >
           Defina seu primeiro threshold abaixo pra ver consumo.
         </div>

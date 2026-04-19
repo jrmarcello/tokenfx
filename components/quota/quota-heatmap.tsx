@@ -1,5 +1,4 @@
 import type { QuotaHeatmapCell } from '@/lib/queries/quota';
-import { cn } from '@/lib/cn';
 
 // index = strftime %w (0=Domingo .. 6=Sábado)
 const WEEKDAY_LABELS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'] as const;
@@ -10,12 +9,18 @@ const DOW_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const HOURS_PER_DAY = 24;
 const HOUR_LABEL_STEP = 6; // exibe rótulo a cada 6h para não poluir
 
-const intensityClass = (tokens: number, thresholds: readonly number[]): string => {
-  if (tokens <= 0) return 'bg-neutral-900';
-  if (tokens < thresholds[0]) return 'bg-amber-900/40';
-  if (tokens < thresholds[1]) return 'bg-amber-800/60';
-  if (tokens < thresholds[2]) return 'bg-amber-600/80';
-  return 'bg-amber-500';
+// Returns an inline `background-color` value sourced from a CSS variable so
+// the palette responds to `.dark` class changes without needing to re-render
+// the component (see globals.css `--quota-heatmap-*`).
+const intensityColor = (
+  tokens: number,
+  thresholds: readonly number[],
+): string => {
+  if (tokens <= 0) return 'var(--quota-heatmap-empty)';
+  if (tokens < thresholds[0]) return 'var(--quota-heatmap-low)';
+  if (tokens < thresholds[1]) return 'var(--quota-heatmap-mid-low)';
+  if (tokens < thresholds[2]) return 'var(--quota-heatmap-mid-high)';
+  return 'var(--quota-heatmap-high)';
 };
 
 const computeThresholds = (
@@ -40,11 +45,11 @@ export function QuotaHeatmap({ cells }: Props) {
   if (cells.length === 0) {
     return (
       <div className="space-y-2">
-        <h3 className="text-sm font-medium text-neutral-300">
+        <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
           Padrão de consumo (últimas 4 semanas)
         </h3>
         <p className="text-sm text-neutral-500">
-          Sem dados nos últimos 28 dias — ingira transcripts pra ver o padrão aqui.
+          Sem dados nos últimos 28 dias — rode <code className="font-mono">pnpm ingest</code> pra ver o padrão aqui.
         </p>
       </div>
     );
@@ -57,10 +62,10 @@ export function QuotaHeatmap({ cells }: Props) {
 
   return (
     <div className="space-y-2">
-      <h3 className="text-sm font-medium text-neutral-300">
+      <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
         Padrão de consumo (últimas 4 semanas)
       </h3>
-      <div className="inline-block rounded border border-neutral-800 bg-neutral-950 p-2">
+      <div className="inline-block rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950 p-2">
         {/* Header: horas */}
         <div className="flex gap-0.5 text-[10px] text-neutral-500">
           <span className="w-8" aria-hidden="true" />
@@ -86,10 +91,8 @@ export function QuotaHeatmap({ cells }: Props) {
               return (
                 <div
                   key={`cell-${dow}-${h}`}
-                  className={cn(
-                    'h-3 w-3 rounded-sm',
-                    intensityClass(tokens, thresholds),
-                  )}
+                  className="h-3 w-3 rounded-sm"
+                  style={{ backgroundColor: intensityColor(tokens, thresholds) }}
                   title={title}
                   role="gridcell"
                   aria-label={title}

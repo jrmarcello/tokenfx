@@ -49,24 +49,24 @@ export default async function SessionPage({
           <h1 className="text-3xl font-semibold tracking-tight">
             {session.project}
           </h1>
-          <ShareActions sessionId={session.id} />
+          {turns.length > 0 && <ShareActions sessionId={session.id} />}
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-neutral-500">
-          <code className="rounded border border-neutral-800 bg-neutral-900 px-1.5 py-0.5 font-mono text-[11px] text-neutral-400">
+          <code className="rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 px-1.5 py-0.5 font-mono text-[11px] text-neutral-600 dark:text-neutral-400">
             {session.id}
           </code>
-          <span className="text-neutral-700">•</span>
+          <span className="text-neutral-300 dark:text-neutral-700">•</span>
           <span>
             {fmtDateTime(session.startedAt)}
-            <span className="mx-1.5 text-neutral-700">→</span>
+            <span className="mx-1.5 text-neutral-300 dark:text-neutral-700">→</span>
             {fmtDateTime(session.endedAt)}
           </span>
           {session.gitBranch && (
             <>
-              <span className="text-neutral-700">•</span>
+              <span className="text-neutral-300 dark:text-neutral-700">•</span>
               <span className="inline-flex items-center gap-1.5">
-                <BranchIcon className="size-3.5 text-neutral-600" />
-                <code className="font-mono text-neutral-400">
+                <BranchIcon className="size-3.5 text-neutral-400 dark:text-neutral-600" />
+                <code className="font-mono text-neutral-600 dark:text-neutral-400">
                   {session.gitBranch}
                 </code>
               </span>
@@ -157,7 +157,7 @@ export default async function SessionPage({
 
       <SubagentBreakdown items={subagentBreakdown} />
 
-      <TranscriptViewer turns={turns} />
+      <TranscriptViewer turns={turns} turnCount={session.turnCount} />
     </section>
   );
 }

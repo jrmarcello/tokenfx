@@ -49,7 +49,7 @@ export function PaginationNav({
   };
 
   const baseClass =
-    'rounded border border-neutral-800 px-3 py-1.5 text-sm text-neutral-300 transition';
+    'rounded border border-neutral-200 dark:border-neutral-800 px-3 py-1.5 text-sm text-neutral-700 dark:text-neutral-300 transition';
 
   const prevHref = buildHref(Math.max(0, currentOffset - pageSize));
   const nextHref = buildHref(currentOffset + pageSize);

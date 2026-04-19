@@ -36,13 +36,13 @@ export function SubagentBreakdown({
       >
         Distribuição por agente
       </h2>
-      <div className="overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900">
+      <div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
         <table className="w-full text-sm">
           <caption className="sr-only">
             Custo agregado por agente nesta sessão, com contagem de turnos,
             tokens de saída e percentual do spend total.
           </caption>
-          <thead className="bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
+          <thead className="bg-white/60 dark:bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
             <tr>
               <th scope="col" className="px-4 py-2 text-left font-medium">
                 Agente
@@ -73,28 +73,28 @@ export function SubagentBreakdown({
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-neutral-800">
+          <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800">
             {items.map((row, idx) => {
               const isMain = row.subagentType === null;
               return (
                 <tr key={row.subagentType ?? '__main__'}>
                   <td
                     className={`px-4 py-2 font-medium ${
-                      isMain ? 'text-neutral-400' : 'text-amber-300'
+                      isMain ? 'text-neutral-600 dark:text-neutral-400' : 'text-amber-700 dark:text-amber-300'
                     }`}
                   >
                     {isMain ? 'Main' : row.subagentType}
                   </td>
-                  <td className="px-4 py-2 text-right tabular-nums text-neutral-300">
+                  <td className="px-4 py-2 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
                     {row.turns}
                   </td>
-                  <td className="px-4 py-2 text-right tabular-nums text-neutral-100">
+                  <td className="px-4 py-2 text-right tabular-nums text-neutral-900 dark:text-neutral-100">
                     {fmtUsdFine(row.costUsd)}
                   </td>
-                  <td className="px-4 py-2 text-right tabular-nums text-neutral-300">
+                  <td className="px-4 py-2 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
                     {fmtCompact(row.outputTokens)}
                   </td>
-                  <td className="px-4 py-2 text-right tabular-nums text-neutral-400">
+                  <td className="px-4 py-2 text-right tabular-nums text-neutral-600 dark:text-neutral-400">
                     {pctLabels[idx]}
                   </td>
                 </tr>

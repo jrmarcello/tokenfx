@@ -15,7 +15,8 @@ export async function OtelStatusBadge() {
             : 'bg-neutral-700',
         )}
       />
-      <span>OTEL {active ? 'on' : 'off'}</span>
+      <span className="hidden sm:inline">OTEL {active ? 'on' : 'off'}</span>
+      <span className="sr-only sm:hidden">OTEL {active ? 'ativo' : 'inativo'}</span>
       <InfoTooltip
         label={active ? 'OTEL ativo' : 'OTEL inativo'}
         side="bottom"
@@ -24,7 +25,7 @@ export async function OtelStatusBadge() {
         {active ? (
           <>
             Claude Code está exportando métricas Prometheus em{' '}
-            <code className="font-mono text-neutral-300">
+            <code className="font-mono text-neutral-700 dark:text-neutral-300">
               localhost:9464/metrics
             </code>
             . Ingerimos sinais extras (accept/reject, linhas, commits,
@@ -40,11 +41,11 @@ export async function OtelStatusBadge() {
             Claude Code não está exportando Prometheus agora. O endpoint
             só existe enquanto um processo <code>claude</code> está vivo.
             Para ativar permanentemente, edite{' '}
-            <code className="font-mono text-neutral-300">
+            <code className="font-mono text-neutral-700 dark:text-neutral-300">
               ~/.claude/settings.json
             </code>{' '}
             e adicione{' '}
-            <code className="font-mono text-neutral-300">
+            <code className="font-mono text-neutral-700 dark:text-neutral-300">
               {'{ "env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1", "OTEL_METRICS_EXPORTER": "prometheus" } }'}
             </code>
             . Os transcripts JSONL cobrem o essencial — OTEL é um bônus.

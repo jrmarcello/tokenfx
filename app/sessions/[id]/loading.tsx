@@ -11,7 +11,7 @@ export default function Loading() {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
         {Array.from({ length: 4 }).map((_, i) => (
-          <Card key={i} className="bg-neutral-900 border-neutral-800">
+          <Card key={i} className="bg-white dark:bg-neutral-900 border-neutral-200 dark:border-neutral-800">
             <CardContent className="p-4 space-y-2">
               <Skeleton className="h-3 w-20" />
               <Skeleton className="h-6 w-24" />
@@ -30,9 +30,9 @@ export default function Loading() {
         {Array.from({ length: 3 }).map((_, i) => (
           <li
             key={i}
-            className="rounded-lg border border-neutral-800 bg-neutral-900 overflow-hidden"
+            className="rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 overflow-hidden"
           >
-            <header className="flex items-center justify-between px-4 py-2 border-b border-neutral-800">
+            <header className="flex items-center justify-between px-4 py-2 border-b border-neutral-200 dark:border-neutral-800">
               <div className="flex items-center gap-3">
                 <Skeleton className="h-4 w-6" />
                 <Skeleton className="h-4 w-32" />

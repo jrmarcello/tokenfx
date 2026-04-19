@@ -13,15 +13,15 @@ type Props = {
 export function KpiCard({ title, value, hint, info, trend }: Props) {
   const deltaColor = trend
     ? trend.delta > 0
-      ? 'text-red-400'
+      ? 'text-red-600 dark:text-red-400'
       : trend.delta < 0
-      ? 'text-emerald-400'
-      : 'text-neutral-400'
-    : 'text-neutral-400';
+      ? 'text-emerald-600 dark:text-emerald-400'
+      : 'text-neutral-600 dark:text-neutral-400'
+    : 'text-neutral-600 dark:text-neutral-400';
   return (
-    <Card className="bg-neutral-900 border-neutral-800">
+    <Card className="bg-white dark:bg-neutral-900 border-neutral-200 dark:border-neutral-800">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-normal text-neutral-400 flex items-center gap-1.5">
+        <CardTitle className="text-sm font-normal text-neutral-600 dark:text-neutral-400 flex items-center gap-1.5">
           <span>{title}</span>
           {info && <InfoTooltip label={`O que é ${title}?`}>{info}</InfoTooltip>}
         </CardTitle>

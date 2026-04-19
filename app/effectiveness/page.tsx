@@ -149,7 +149,7 @@ export default async function EffectivenessPage() {
           </div>
           {weeklyAccept.length > 0 && (
             <section>
-              <h3 className="text-sm font-medium text-neutral-300 mb-3">
+              <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-3">
                 Accept rate semanal
               </h3>
               <AcceptRateTrend data={weeklyAccept} />
@@ -194,9 +194,9 @@ export default async function EffectivenessPage() {
           )}
         </div>
       ) : (
-        <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-neutral-400 text-sm">
+        <div className="mt-8 rounded-lg border border-dashed border-neutral-300 dark:border-neutral-700 p-8 text-center text-neutral-600 dark:text-neutral-400 text-sm">
           Sem dados ainda. Rode{' '}
-          <code className="bg-neutral-800 px-1.5 py-0.5 rounded">
+          <code className="bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded">
             pnpm ingest
           </code>{' '}
           para popular.

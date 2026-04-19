@@ -60,7 +60,7 @@ export default async function SearchPage({
       />
 
       {overflow && (
-        <p className="text-sm text-amber-400">
+        <p className="text-sm text-amber-600 dark:text-amber-400">
           Consulta muito longa (máx. 200 caracteres).
         </p>
       )}

@@ -36,9 +36,9 @@ export function QuotaBar({ label, used, limit }: QuotaBarProps): JSX.Element {
       className="flex items-center gap-2 text-xs tabular-nums"
       aria-label={`Quota ${label}`}
     >
-      <span className="text-neutral-400">{label}</span>
+      <span className="text-neutral-600 dark:text-neutral-400">{label}</span>
       <div
-        className="h-1.5 w-16 overflow-hidden rounded-full bg-neutral-800"
+        className="h-1.5 w-16 overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-800"
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={100}

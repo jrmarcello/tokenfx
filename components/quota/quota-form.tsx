@@ -113,7 +113,7 @@ export function QuotaForm({ initial }: QuotaFormProps): React.JSX.Element {
               : null;
           return (
             <label key={f.key} className="flex flex-col gap-1 text-sm">
-              <span className="font-medium text-neutral-200">{f.label}</span>
+              <span className="font-medium text-neutral-800 dark:text-neutral-200">{f.label}</span>
               <input
                 type="number"
                 min={1}
@@ -125,12 +125,13 @@ export function QuotaForm({ initial }: QuotaFormProps): React.JSX.Element {
                 }
                 aria-label={f.label}
                 aria-invalid={fieldError !== null}
-                className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-neutral-100 focus:border-neutral-500 focus:outline-none"
+                placeholder="vazio = não rastrear"
+                className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1 text-neutral-900 dark:text-neutral-100 focus:border-neutral-500 focus:outline-none"
               />
               <span className="text-xs text-neutral-500">{f.help}</span>
               {fieldError && (
-                <span className="text-xs text-red-400" role="alert">
-                  {fieldError}
+                <span className="text-xs text-red-600 dark:text-red-400" role="alert">
+                  Erro: {fieldError}
                 </span>
               )}
             </label>
@@ -141,16 +142,16 @@ export function QuotaForm({ initial }: QuotaFormProps): React.JSX.Element {
         <button
           type="submit"
           disabled={status.kind === 'saving'}
-          className="rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm hover:border-neutral-500 disabled:opacity-50"
+          className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-1.5 text-sm hover:border-neutral-500 disabled:opacity-50"
         >
           {status.kind === 'saving' ? 'Salvando…' : 'Salvar'}
         </button>
         {status.kind === 'success' && (
-          <span className="text-xs text-emerald-400">Salvo!</span>
+          <span className="text-xs text-emerald-600 dark:text-emerald-400">Salvo!</span>
         )}
         {status.kind === 'error' && !status.field && (
-          <span className="text-xs text-red-400" role="alert">
-            {status.message}
+          <span className="text-xs text-red-600 dark:text-red-400" role="alert">
+            Erro: {status.message}
           </span>
         )}
       </div>

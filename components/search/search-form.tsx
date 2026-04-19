@@ -1,6 +1,6 @@
 'use client';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useState, useTransition } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 
 type DaysOption = { label: string; value: string };
 
@@ -23,6 +23,17 @@ export function SearchForm({
   const [q, setQ] = useState(initialQuery);
   const [days, setDays] = useState(initialDays);
   const [pending, startTransition] = useTransition();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Focus the input on first entry to /search — only when no query is
+  // pre-populated yet. Avoids stealing focus from the nav on unrelated
+  // routes (this component is client-only so it never runs elsewhere)
+  // and avoids yanking focus when the user arrived via a pre-filled URL.
+  useEffect(() => {
+    if (!initialQuery) inputRef.current?.focus();
+    // Intentionally run once on mount — ignore re-focus on prop changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const submit = (nextQ: string, nextDays: string) => {
     const sp = new URLSearchParams(params?.toString() ?? '');
@@ -52,14 +63,14 @@ export function SearchForm({
           Consulta
         </span>
         <input
+          ref={inputRef}
           type="search"
           name="q"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Busque no transcript (ex: auth bug)"
           maxLength={200}
-          autoFocus
-          className="w-full rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-neutral-600"
+          className="w-full rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-100 outline-none focus:border-neutral-400 dark:focus:border-neutral-600"
         />
       </label>
       <label>
@@ -73,7 +84,7 @@ export function SearchForm({
             setDays(e.target.value);
             submit(q, e.target.value);
           }}
-          className="rounded border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm text-neutral-100"
+          className="rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 px-2 py-2 text-sm text-neutral-900 dark:text-neutral-100"
         >
           {DAYS_OPTIONS.map((o) => (
             <option key={o.label} value={o.value}>
@@ -85,7 +96,7 @@ export function SearchForm({
       <button
         type="submit"
         disabled={pending}
-        className="rounded border border-neutral-700 bg-neutral-800 px-4 py-2 text-sm text-neutral-100 transition hover:bg-neutral-700 disabled:opacity-50"
+        className="rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 px-4 py-2 text-sm text-neutral-900 dark:text-neutral-100 transition hover:bg-neutral-200 dark:hover:bg-neutral-700 disabled:opacity-50"
       >
         {pending ? 'Buscando…' : 'Buscar'}
       </button>

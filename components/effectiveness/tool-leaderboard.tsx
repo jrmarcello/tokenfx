@@ -8,19 +8,19 @@ export function ToolLeaderboard({ items }: { items: ToolLeaderboardItem[] }) {
     );
   }
   return (
-    <Card className="bg-neutral-900 border-neutral-800">
+    <Card className="bg-white dark:bg-neutral-900 border-neutral-200 dark:border-neutral-800">
       <CardContent className="p-0">
-        <ul className="divide-y divide-neutral-800">
+        <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
           {items.map((t) => (
             <li
               key={t.toolName}
               className="flex items-center justify-between px-4 py-2 text-sm"
             >
               <span className="font-medium">{t.toolName}</span>
-              <div className="flex items-center gap-6 tabular-nums text-neutral-400">
+              <div className="flex items-center gap-6 tabular-nums text-neutral-600 dark:text-neutral-400">
                 <span>{t.count} chamadas</span>
                 {t.errorCount > 0 && (
-                  <span className="text-red-400">{t.errorCount} erros</span>
+                  <span className="text-red-600 dark:text-red-400">{t.errorCount} erros</span>
                 )}
               </div>
             </li>

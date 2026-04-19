@@ -52,7 +52,7 @@ export const fmtDate = (ms: number): string => DATE.format(new Date(ms));
 export const fmtDateTime = (ms: number): string => DATE_TIME.format(new Date(ms));
 export const fmtTime = (ms: number): string => TIME.format(new Date(ms));
 export const fmtRating = (n: number | null): string =>
-  n === null ? '—' : n.toFixed(2);
+  n === null ? 'Sem avaliação' : n.toFixed(2);
 export const fmtScore = (n: number | null): string =>
   n === null ? '—' : n.toFixed(1);
 export const fmtRatio = (n: number | null): string =>

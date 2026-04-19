@@ -14,6 +14,7 @@ import {
   colorForTool,
   MIN_CALLS_PER_BUCKET,
 } from '@/lib/analytics/tool-trend';
+import { useChartColors } from '@/lib/chart-colors';
 
 type TooltipItem = {
   dataKey?: string | number;
@@ -40,8 +41,8 @@ function CustomTooltip({
   const point = payload[0]?.payload;
   if (!point) return null;
   return (
-    <div className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-xs text-neutral-100 shadow-lg">
-      <div className="mb-1 font-medium text-neutral-300">{label}</div>
+    <div className="rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 text-xs text-neutral-900 dark:text-neutral-100 shadow-lg">
+      <div className="mb-1 font-medium text-neutral-700 dark:text-neutral-300">{label}</div>
       <ul className="space-y-1">
         {Object.keys(point.counts).map((tool) => {
           const rate = point.rates[tool];
@@ -62,7 +63,7 @@ function CustomTooltip({
                 />
                 {tool}
               </span>
-              <span className="text-neutral-300">
+              <span className="text-neutral-700 dark:text-neutral-300">
                 {rate === null
                   ? `calls insuficientes (${c.calls})`
                   : `${(rate * 100).toFixed(1)}% · ${c.errors}/${c.calls}`}
@@ -76,22 +77,23 @@ function CustomTooltip({
 }
 
 export function ToolSuccessTrend({ data }: { data: ToolTrendResult }) {
+  const c = useChartColors();
   if (data.tools.length === 0 || data.points.length === 0) return null;
   return (
     <div
       role="img"
       aria-label={`Tendência semanal de taxa de erro por ferramenta. Dados suprimidos quando a semana tem menos de ${MIN_CALLS_PER_BUCKET} chamadas pra aquela ferramenta.`}
-      className="h-64 w-full rounded-lg border border-neutral-800 bg-neutral-900 p-4"
+      className="h-64 w-full rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4"
     >
       <ResponsiveContainer>
         <LineChart
           data={data.points}
           margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
         >
-          <CartesianGrid stroke="#262626" strokeDasharray="3 3" />
-          <XAxis dataKey="week" stroke="#737373" fontSize={11} />
+          <CartesianGrid stroke={c.grid} strokeDasharray="3 3" />
+          <XAxis dataKey="week" stroke={c.axis} fontSize={11} />
           <YAxis
-            stroke="#737373"
+            stroke={c.axis}
             fontSize={11}
             domain={[0, 1]}
             tickFormatter={(v: number) => `${Math.round(v * 100)}%`}
@@ -99,10 +101,10 @@ export function ToolSuccessTrend({ data }: { data: ToolTrendResult }) {
           />
           <Tooltip
             content={<CustomTooltip />}
-            cursor={{ stroke: '#404040', strokeDasharray: '3 3' }}
+            cursor={{ stroke: c.tooltipBorder, strokeDasharray: '3 3' }}
           />
           <Legend
-            wrapperStyle={{ fontSize: 11, color: '#a3a3a3' }}
+            wrapperStyle={{ fontSize: 11, color: c.axis }}
             iconType="plainline"
           />
           {data.tools.map((tool) => (

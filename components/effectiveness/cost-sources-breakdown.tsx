@@ -30,9 +30,9 @@ export function CostSourcesBreakdown({ calibration, coverage }: Props) {
   const total = coverage.otel + coverage.calibrated + coverage.list;
 
   return (
-    <section className="space-y-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+    <section className="space-y-3 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4">
       <header className="flex items-center justify-between gap-2">
-        <h2 className="text-sm font-medium text-neutral-200">
+        <h2 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">
           Fonte dos custos
         </h2>
         <CostSourceBadge counts={coverage} />
@@ -68,11 +68,11 @@ export function CostSourcesBreakdown({ calibration, coverage }: Props) {
                 <th className="font-normal py-1">Atualizado</th>
               </tr>
             </thead>
-            <tbody className="text-neutral-300">
+            <tbody className="text-neutral-700 dark:text-neutral-300">
               {calibration.map((c) => (
                 <tr
                   key={c.family}
-                  className="border-t border-neutral-800"
+                  className="border-t border-neutral-200 dark:border-neutral-800"
                 >
                   <td className="py-1 pr-4">{FAMILY_LABEL[c.family]}</td>
                   <td className="py-1 pr-4 tabular-nums">

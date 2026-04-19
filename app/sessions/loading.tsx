@@ -9,9 +9,9 @@ export default function Loading() {
         <Skeleton className="mt-2 h-4 w-24" />
       </header>
 
-      <Card className="bg-neutral-900 border-neutral-800">
+      <Card className="bg-white dark:bg-neutral-900 border-neutral-200 dark:border-neutral-800">
         <CardContent className="p-0">
-          <ul className="divide-y divide-neutral-800">
+          <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
             {Array.from({ length: 8 }).map((_, i) => (
               <li key={i} className="flex items-center justify-between px-4 py-3">
                 <div className="min-w-0 flex-1 space-y-2">

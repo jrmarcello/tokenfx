@@ -20,9 +20,11 @@
     "release": "bash scripts/release.sh"
   },
   "dependencies": {
+    "@radix-ui/react-dropdown-menu": "^2.1.16",
     "better-sqlite3": "^12.9.0",
     "chokidar": "^4.0.0",
     "next": "16.2.4",
+    "next-themes": "^0.4.6",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "recharts": "^3.8.1",

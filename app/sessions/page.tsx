@@ -109,7 +109,7 @@ export default async function SessionsPage({ searchParams }: SessionsPageProps) 
               {' '}
               <Link
                 href="/sessions"
-                className="text-neutral-400 underline-offset-2 hover:underline"
+                className="text-neutral-600 dark:text-neutral-400 underline-offset-2 hover:underline"
               >
                 ver todas
               </Link>
@@ -118,16 +118,16 @@ export default async function SessionsPage({ searchParams }: SessionsPageProps) 
         </p>
       </header>
       {branch.kind === 'all' && branch.invalid && (
-        <div className="rounded border border-yellow-700/50 bg-yellow-900/20 px-3 py-2 text-xs text-yellow-200">
+        <div className="rounded border border-yellow-300 bg-yellow-50 px-3 py-2 text-xs text-yellow-800 dark:border-yellow-700/50 dark:bg-yellow-900/20 dark:text-yellow-200">
           Parâmetro date inválido — mostrando todas.
         </div>
       )}
       {branch.pagination.overflow && branch.total > 0 ? (
-        <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-sm text-neutral-400">
+        <div className="mt-8 rounded-lg border border-dashed border-neutral-300 dark:border-neutral-700 p-8 text-center text-sm text-neutral-600 dark:text-neutral-400">
           Sem sessões nesta página.{' '}
           <Link
             href={firstPageHref}
-            className="text-neutral-300 underline-offset-2 hover:underline"
+            className="text-neutral-700 dark:text-neutral-300 underline-offset-2 hover:underline"
           >
             Voltar pra primeira página
           </Link>
@@ -135,45 +135,45 @@ export default async function SessionsPage({ searchParams }: SessionsPageProps) 
       ) : branch.kind === 'filtered' &&
         branch.items.length === 0 &&
         !branch.pagination.overflow ? (
-        <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-sm text-neutral-400">
+        <div className="mt-8 rounded-lg border border-dashed border-neutral-300 dark:border-neutral-700 p-8 text-center text-sm text-neutral-600 dark:text-neutral-400">
           Sem sessões em {branch.date}.{' '}
           <Link
             href="/sessions"
-            className="text-neutral-300 underline-offset-2 hover:underline"
+            className="text-neutral-700 dark:text-neutral-300 underline-offset-2 hover:underline"
           >
             ver todas
           </Link>
         </div>
       ) : branch.items.length === 0 && !branch.pagination.overflow ? (
-        <div className="mt-8 rounded-lg border border-dashed border-neutral-700 p-8 text-center text-sm text-neutral-400">
+        <div className="mt-8 rounded-lg border border-dashed border-neutral-300 dark:border-neutral-700 p-8 text-center text-sm text-neutral-600 dark:text-neutral-400">
           Sem sessões ainda. Rode{' '}
-          <code className="rounded bg-neutral-800 px-1.5 py-0.5">
+          <code className="rounded bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5">
             pnpm ingest
           </code>
           .
         </div>
       ) : (
-        <Card className="border-neutral-800 bg-neutral-900">
+        <Card className="border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
           <CardContent className="p-0">
-            <ul className="divide-y divide-neutral-800">
+            <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
               {branch.items.map((s) => (
                 <li key={s.id}>
                   <Link
                     href={`/sessions/${s.id}`}
-                    className="group flex items-center justify-between gap-4 px-4 py-3 transition hover:bg-neutral-800/50"
+                    className="group flex flex-col gap-2 px-4 py-3 transition hover:bg-neutral-100 dark:hover:bg-neutral-800/50 md:flex-row md:items-center md:justify-between md:gap-4"
                   >
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium text-neutral-100">
+                    <div className="min-w-0 md:flex-1">
+                      <div className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
                         {s.project}
                       </div>
                       <div className="mt-0.5 truncate font-mono text-[11px] text-neutral-500">
                         {s.id}
-                        <span className="mx-1.5 text-neutral-700">•</span>
+                        <span className="mx-1.5 text-neutral-300 dark:text-neutral-700">•</span>
                         <span className="font-sans">{fmtDateTime(s.startedAt)}</span>
                       </div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-6 text-sm">
-                      <span className="inline-flex items-center gap-1.5 font-medium tabular-nums text-neutral-100">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm md:shrink-0 md:flex-nowrap md:gap-6">
+                      <span className="inline-flex items-center gap-1.5 font-medium tabular-nums text-neutral-900 dark:text-neutral-100">
                         {fmtUsd(s.totalCostUsd)}
                         <CostSourceBadge source={s.costSource} />
                       </span>
@@ -182,13 +182,13 @@ export default async function SessionsPage({ searchParams }: SessionsPageProps) 
                       </span>
                       {s.avgRating !== null && (
                         <span
-                          className="tabular-nums text-neutral-400"
+                          className="tabular-nums text-neutral-600 dark:text-neutral-400"
                           title="Avaliação média (−1 ruim · 0 neutro · +1 bom)"
                         >
-                          aval {fmtRating(s.avgRating)}
+                          Avaliação {fmtRating(s.avgRating)}
                         </span>
                       )}
-                      <ChevronRightIcon className="size-4 text-neutral-600 transition-colors group-hover:text-neutral-300" />
+                      <ChevronRightIcon className="ml-auto size-4 shrink-0 text-neutral-400 dark:text-neutral-600 transition-colors group-hover:text-neutral-700 dark:group-hover:text-neutral-300 md:ml-0" />
                     </div>
                   </Link>
                 </li>

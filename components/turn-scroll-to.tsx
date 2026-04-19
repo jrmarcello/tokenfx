@@ -17,21 +17,18 @@ export function TurnScrollTo() {
     const el = document.getElementById(hash.slice(1));
     if (!el) return;
     el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    el.classList.add(
+    const ringClasses = [
       'ring-2',
       'ring-amber-400',
       'ring-offset-2',
-      'ring-offset-neutral-950',
-    );
+      'ring-offset-neutral-50',
+      'dark:ring-offset-neutral-950',
+    ];
+    el.classList.add(...ringClasses);
     const timer = window.setTimeout(() => {
-      el.classList.remove(
-        'ring-2',
-        'ring-amber-400',
-        'ring-offset-2',
-        'ring-offset-neutral-950',
-      );
+      el.classList.remove(...ringClasses);
     }, 2000);
     return () => window.clearTimeout(timer);
   }, []);
-  return <span aria-hidden="true" className="hidden print:hidden" />;
+  return null;
 }

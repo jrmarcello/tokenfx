@@ -18,12 +18,15 @@ const LEFT_LABEL_W = 28;
 const TOP_LABEL_H = 16;
 const LEGEND_GAP = 12;
 
+// Resolved at paint time by CSS — `:root` has the light ramp, `.dark` has the
+// original dark ramp (see app/globals.css). Using `var()` at attribute level
+// is SVG-friendly and avoids hydration-mismatch from theme-aware JS.
 const LEVEL_FILL: Record<0 | 1 | 2 | 3 | 4, string> = {
-  0: '#262626', // neutral-800
-  1: '#064e3b', // emerald-900
-  2: '#047857', // emerald-700
-  3: '#10b981', // emerald-500
-  4: '#34d399', // emerald-400
+  0: 'var(--heatmap-0)',
+  1: 'var(--heatmap-1)',
+  2: 'var(--heatmap-2)',
+  3: 'var(--heatmap-3)',
+  4: 'var(--heatmap-4)',
 };
 
 const DAY_LABELS: Array<{ row: number; text: string }> = [
@@ -47,7 +50,7 @@ export function ActivityHeatmap({ data }: Props) {
 
   if (data.length === 0 || data.every((d) => d.spend === 0)) {
     return (
-      <div className="flex h-32 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-900 text-sm text-neutral-500">
+      <div className="flex h-32 items-center justify-center rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-sm text-neutral-500">
         Sem sessões ainda
       </div>
     );
@@ -94,15 +97,18 @@ export function ActivityHeatmap({ data }: Props) {
   };
 
   return (
-    <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-      <div className="w-full">
+    <div className="rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4">
+      {/* Horizontal scroll on narrow viewports — the 53-week grid has an
+          intrinsic minimum width; letting the SVG stretch to w-full in
+          mobile compresses cells to ~5px and erases the month labels. */}
+      <div className="w-full overflow-x-auto">
         <svg
           viewBox={`0 0 ${svgWidth} ${svgHeight}`}
           preserveAspectRatio="xMidYMid meet"
           role="grid"
           aria-label="Atividade diária do último ano"
           onClick={onSvgClick}
-          className="block h-auto w-full"
+          className="block h-auto w-full min-w-[720px]"
         >
           {months.map((label, i) =>
             label ? (
