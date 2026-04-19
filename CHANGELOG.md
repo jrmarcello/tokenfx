@@ -7,6 +7,44 @@ Commits seguem [Conventional Commits](https://www.conventionalcommits.org/).
 
 ---
 
+## [0.2.0] - 2026-04-19
+
+### Correções
+
+- **metrics**: Audit findings — pricing fallback, ratio formulas, UX labels
+
+### Documentação
+
+- Rename README sections to Como funciona / Na prática
+
+### Funcionalidades
+
+- **docker**: Containerizar TokenFx + reorganizar README (spec dockerize)
+- **ui**: Light/dark/system themes + audit fixes (2 specs consolidated)
+- **sessions**: Pagination com ?offset + overflow CTA
+- **quota**: Max plan quota tracking — usage vs threshold em janelas rolling
+- **ingest**: Watch mode — chokidar-based push ingestion
+- **sessions**: Share as markdown + PDF — endpoint, UI, print CSS
+- **effectiveness**: Tool success trends — weekly error-rate per tool
+- **pricing**: Cost calibration — learned plan multiplier from OTEL samples
+- **pricing**: Hybrid OTEL + local cost, metric name audit, UI polish
+- **sessions**: Sub-agent cost attribution per session
+- **overview**: Session timeline heatmap + /sessions date filter
+- **search**: Transcript full-text search via SQLite FTS5
+- **effectiveness**: Model breakdown pie chart by family (30d)
+
+### Manutenção
+
+- **sdd**: Add best-way-possible check to spec + ralph-loop checkpoints
+- **dev**: Bind dev/start to port 3131
+- **sdd**: Codify discipline checkpoints in skills + rules + CLAUDE
+- Address full-review-team findings (code + security + data)
+- **release**: V0.1.0 [skip ci]
+
+### Performance
+
+- **docker**: Reduce image from 1.2GB to 484MB via standalone-strict
+
 ## [0.1.0] - 2026-04-18
 
 ### Correções
