@@ -37,9 +37,13 @@ CREATE TABLE IF NOT EXISTS turns (
   stop_reason TEXT,
   user_prompt TEXT,
   assistant_text TEXT,
-  tool_uses_json TEXT NOT NULL DEFAULT '[]'
+  tool_uses_json TEXT NOT NULL DEFAULT '[]',
+  subagent_type TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, sequence);
+-- idx_turns_subagent is created in `backfillTurnsSubagentType` (migrate.ts)
+-- AFTER the ALTER TABLE so legacy DBs (no subagent_type column yet at schema
+-- replay time) don't fail on "no such column" during CREATE INDEX.
 
 CREATE TABLE IF NOT EXISTS tool_calls (
   id TEXT PRIMARY KEY,

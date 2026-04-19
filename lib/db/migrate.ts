@@ -32,6 +32,7 @@ export function migrate(db: DB): void {
     // Backfill constraints that `CREATE TABLE IF NOT EXISTS` can't add to
     // pre-existing tables created under older schema revisions.
     backfillOtelScrapesUnique(db);
+    backfillTurnsSubagentType(db);
     const hasData = db
       .prepare('SELECT 1 FROM sessions LIMIT 1')
       .get() !== undefined;
@@ -77,6 +78,33 @@ function backfillOtelScrapesUnique(db: DB): void {
     CREATE INDEX IF NOT EXISTS idx_otel_scrape_metric_time
       ON otel_scrapes(metric_name, scraped_at);
   `);
+}
+
+/**
+ * Older DB files predate the `subagent_type` column on `turns`. Running
+ * `CREATE TABLE IF NOT EXISTS turns (...)` on an existing DB is a no-op and
+ * does NOT add the column. We detect it via `PRAGMA table_info(turns)` and
+ * ALTER TABLE on first encounter. Idempotent — subsequent runs see the
+ * column and skip the ALTER.
+ *
+ * The matching `idx_turns_subagent` index is also created here (instead of
+ * schema.sql) because the CREATE INDEX references the new column: on a
+ * legacy DB the schema.sql replay happens BEFORE the ALTER, and a CREATE
+ * INDEX on a not-yet-existing column raises `no such column`. Creating it
+ * here — after the ALTER — avoids that ordering problem while staying
+ * idempotent via `IF NOT EXISTS`.
+ */
+function backfillTurnsSubagentType(db: DB): void {
+  const cols = db
+    .prepare('PRAGMA table_info(turns)')
+    .all() as Array<{ name: string }>;
+  const hasCol = cols.some((c) => c.name === 'subagent_type');
+  if (!hasCol) {
+    db.exec('ALTER TABLE turns ADD COLUMN subagent_type TEXT');
+  }
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_turns_subagent ON turns(session_id, subagent_type)',
+  );
 }
 
 export function ensureMigrated(db: DB): void {

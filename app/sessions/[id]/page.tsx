@@ -3,7 +3,9 @@ import { getDb } from '@/lib/db/client';
 import { ensureFreshIngest } from '@/lib/ingest/auto';
 import { getSession, getTurns } from '@/lib/queries/session';
 import { getSessionOtelStats } from '@/lib/queries/otel';
+import { getSubagentBreakdown } from '@/lib/queries/subagent';
 import { TranscriptViewer } from '@/components/transcript-viewer';
+import { SubagentBreakdown } from '@/components/subagent-breakdown';
 import { KpiCard } from '@/components/kpi-card';
 import { BranchIcon } from '@/components/icons';
 import {
@@ -29,6 +31,7 @@ export default async function SessionPage({
   if (!session) notFound();
   const turns = getTurns(db, id);
   const otel = getSessionOtelStats(db, id);
+  const subagentBreakdown = getSubagentBreakdown(db, id);
 
   const fmtDurationShort = (s: number): string => {
     if (s <= 0) return '0s';
@@ -116,6 +119,8 @@ export default async function SessionPage({
           />
         </div>
       )}
+
+      <SubagentBreakdown items={subagentBreakdown} />
 
       <TranscriptViewer turns={turns} />
     </section>

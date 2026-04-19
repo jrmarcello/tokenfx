@@ -98,6 +98,11 @@ export type ParsedTurn = {
   stopReason: string | null;
   userPrompt: string | null;
   assistantText: string | null;
+  // Name of the sub-agent that produced this turn, extracted from the first
+  // `tool_use(name="Agent")` block's `input.subagent_type`. `null` when the
+  // turn is main-agent work (no Agent tool_use, or the subagent_type was
+  // absent / invalid).
+  subagentType: string | null;
   toolCalls: ParsedToolCall[];
 };
 

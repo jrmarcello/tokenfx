@@ -215,6 +215,7 @@ describe('detectCorrectionPenalty (TC-U-05)', () => {
       stopReason: null,
       userPrompt: p,
       assistantText: null,
+      subagentType: null,
       toolCalls: [],
     }));
   }

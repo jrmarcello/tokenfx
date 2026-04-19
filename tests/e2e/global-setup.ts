@@ -30,6 +30,7 @@ type SeedTurn = {
   userPrompt: string;
   assistantText: string;
   toolCalls: Array<{ name: string; isError: boolean }>;
+  subagentType?: string | null;
 };
 
 type SeedSession = {
@@ -152,6 +153,50 @@ const FIXED_SESSIONS: readonly SeedSession[] = [
       },
     ],
   },
+  {
+    id: 'e2e-subagent',
+    project: 'e2e-project-subagents',
+    cwd: '/Users/e2e/subagent',
+    daysAgo: 2,
+    turns: [
+      {
+        seq: 1,
+        model: 'claude-sonnet-4-6',
+        input: 1000,
+        output: 300,
+        cacheRead: 2000,
+        cacheCreation: 50,
+        userPrompt: 'Kick off exploration',
+        assistantText: 'I will delegate to Explore',
+        toolCalls: [],
+        subagentType: 'Explore',
+      },
+      {
+        seq: 2,
+        model: 'claude-sonnet-4-6',
+        input: 800,
+        output: 200,
+        cacheRead: 1500,
+        cacheCreation: 40,
+        userPrompt: 'Now review',
+        assistantText: 'Delegating to code-reviewer',
+        toolCalls: [],
+        subagentType: 'code-reviewer',
+      },
+      {
+        seq: 3,
+        model: 'claude-sonnet-4-6',
+        input: 500,
+        output: 150,
+        cacheRead: 800,
+        cacheCreation: 30,
+        userPrompt: 'Summarize',
+        assistantText: 'Main agent summary',
+        toolCalls: [],
+        subagentType: null,
+      },
+    ],
+  },
 ];
 
 const DAY_MS = 86_400_000;
@@ -190,11 +235,13 @@ export default async function globalSetup(): Promise<void> {
     `INSERT INTO turns (
        id, session_id, parent_uuid, sequence, timestamp, model,
        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-       cost_usd, stop_reason, user_prompt, assistant_text, tool_uses_json
+       cost_usd, stop_reason, user_prompt, assistant_text, tool_uses_json,
+       subagent_type
      ) VALUES (
        @id, @session_id, @parent_uuid, @sequence, @timestamp, @model,
        @input_tokens, @output_tokens, @cache_read_tokens, @cache_creation_tokens,
-       @cost_usd, @stop_reason, @user_prompt, @assistant_text, @tool_uses_json
+       @cost_usd, @stop_reason, @user_prompt, @assistant_text, @tool_uses_json,
+       @subagent_type
      )`
   );
   const insertToolCall = db.prepare(
@@ -278,6 +325,7 @@ export default async function globalSetup(): Promise<void> {
           tool_uses_json: JSON.stringify(
             t.toolCalls.map((tc, idx) => ({ id: `${turnId}-tc${idx}`, name: tc.name }))
           ),
+          subagent_type: t.subagentType ?? null,
         });
         t.toolCalls.forEach((tc, idx) => {
           insertToolCall.run({

@@ -6,7 +6,8 @@ import { openDatabase } from '@/lib/db/client';
 import { migrate } from '@/lib/db/migrate';
 import type { DB } from '@/lib/db/client';
 import { writeSession, writeOtelScrapes, ingestAll } from './writer';
-import type { ParsedSession } from './transcript/types';
+import { parseTranscriptFile } from './transcript/parser';
+import type { ParsedSession, ParsedTurn } from './transcript/types';
 import type { OtelScrape } from './otel/parser';
 
 function makeSession(overrides?: Partial<ParsedSession>): ParsedSession {
@@ -32,6 +33,7 @@ function makeSession(overrides?: Partial<ParsedSession>): ParsedSession {
         stopReason: 'tool_use',
         userPrompt: 'list files',
         assistantText: "I'll list the files.",
+        subagentType: null,
         toolCalls: [
           {
             id: 'toolu_01',
@@ -55,6 +57,7 @@ function makeSession(overrides?: Partial<ParsedSession>): ParsedSession {
         stopReason: 'end_turn',
         userPrompt: null,
         assistantText: 'Found three entries.',
+        subagentType: null,
         toolCalls: [],
       },
       {
@@ -70,9 +73,29 @@ function makeSession(overrides?: Partial<ParsedSession>): ParsedSession {
         stopReason: 'end_turn',
         userPrompt: 'thanks',
         assistantText: "You're welcome!",
+        subagentType: null,
         toolCalls: [],
       },
     ],
+    ...overrides,
+  };
+}
+
+function makeTurn(overrides: Partial<ParsedTurn> & { id: string }): ParsedTurn {
+  return {
+    parentUuid: null,
+    sequence: 0,
+    timestamp: 1_700_000_010_000,
+    model: 'claude-sonnet-4-5',
+    inputTokens: 10,
+    outputTokens: 5,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    stopReason: 'end_turn',
+    userPrompt: null,
+    assistantText: null,
+    subagentType: null,
+    toolCalls: [],
     ...overrides,
   };
 }
@@ -153,6 +176,93 @@ describe('writer', () => {
       db.prepare('SELECT COUNT(*) as c FROM turns').get() as { c: number }
     ).c;
     expect(turnCount).toBe(3);
+  });
+
+  it('TC-I-03: writes subagent_type for a turn tagged with Explore', () => {
+    const parsed: ParsedSession = {
+      ...makeSession(),
+      id: 'sess-sub-01',
+      turns: [makeTurn({ id: 't-explore', subagentType: 'Explore' })],
+    };
+    writeSession(db, parsed, '/tmp/sub.jsonl');
+
+    const row = db
+      .prepare('SELECT subagent_type FROM turns WHERE id = ?')
+      .get('t-explore') as { subagent_type: string | null };
+    expect(row.subagent_type).toBe('Explore');
+  });
+
+  it('TC-I-04: ON CONFLICT DO UPDATE refreshes subagent_type on re-ingest', () => {
+    const first: ParsedSession = {
+      ...makeSession(),
+      id: 'sess-sub-02',
+      turns: [makeTurn({ id: 't-conflict', subagentType: 'Explore' })],
+    };
+    writeSession(db, first, '/tmp/sub.jsonl');
+
+    const second: ParsedSession = {
+      ...first,
+      turns: [makeTurn({ id: 't-conflict', subagentType: 'Plan' })],
+    };
+    writeSession(db, second, '/tmp/sub.jsonl');
+
+    const row = db
+      .prepare('SELECT subagent_type FROM turns WHERE id = ?')
+      .get('t-conflict') as { subagent_type: string | null };
+    expect(row.subagent_type).toBe('Plan');
+  });
+
+  it('TC-I-05: persists null subagent_type as SQL NULL', () => {
+    const parsed: ParsedSession = {
+      ...makeSession(),
+      id: 'sess-sub-03',
+      turns: [makeTurn({ id: 't-null', subagentType: null })],
+    };
+    writeSession(db, parsed, '/tmp/sub.jsonl');
+
+    const row = db
+      .prepare('SELECT subagent_type FROM turns WHERE id = ?')
+      .get('t-null') as { subagent_type: string | null };
+    expect(row.subagent_type).toBeNull();
+  });
+
+  it('TC-I-14: end-to-end parse + write preserves subagent_type per turn', () => {
+    const fixturePath = path.resolve(
+      process.cwd(),
+      'tests/fixtures/sample-with-agent.jsonl',
+    );
+    const result = parseTranscriptFile(fixturePath);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.turns).toHaveLength(2);
+    writeSession(db, result.value, fixturePath);
+
+    const rows = db
+      .prepare('SELECT id, subagent_type FROM turns ORDER BY timestamp ASC')
+      .all() as Array<{ id: string; subagent_type: string | null }>;
+    expect(rows).toHaveLength(2);
+    const agentTurn = rows.find((r) => r.id === 'a1');
+    const plainTurn = rows.find((r) => r.id === 'a2');
+    expect(agentTurn?.subagent_type).toBe('Explore');
+    expect(plainTurn?.subagent_type).toBeNull();
+  });
+
+  it('TC-I-15: multi-Agent edge case — first valid subagent_type wins', () => {
+    // Simulates what the parser would produce for a turn whose content has
+    // two Agent tool_use blocks. extractSubagentType's first-wins behavior is
+    // unit-tested in lib/analytics/subagent.test.ts (TC-U-15); here we just
+    // confirm whatever value the parser picks survives the writer round-trip.
+    const parsed: ParsedSession = {
+      ...makeSession(),
+      id: 'sess-sub-04',
+      turns: [makeTurn({ id: 't-multi', subagentType: 'Explore' })],
+    };
+    writeSession(db, parsed, '/tmp/sub.jsonl');
+
+    const row = db
+      .prepare('SELECT subagent_type FROM turns WHERE id = ?')
+      .get('t-multi') as { subagent_type: string | null };
+    expect(row.subagent_type).toBe('Explore');
   });
 
   it('TC-I-WRITER-04: otel scrapes dedup on (metric, labels, scraped_at)', () => {

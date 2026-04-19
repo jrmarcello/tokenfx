@@ -76,11 +76,13 @@ function getStatements(db: Database): Prepared {
     INSERT INTO turns (
       id, session_id, parent_uuid, sequence, timestamp, model,
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-      cost_usd, stop_reason, user_prompt, assistant_text, tool_uses_json
+      cost_usd, stop_reason, user_prompt, assistant_text, tool_uses_json,
+      subagent_type
     ) VALUES (
       @id, @session_id, @parent_uuid, @sequence, @timestamp, @model,
       @input_tokens, @output_tokens, @cache_read_tokens, @cache_creation_tokens,
-      @cost_usd, @stop_reason, @user_prompt, @assistant_text, @tool_uses_json
+      @cost_usd, @stop_reason, @user_prompt, @assistant_text, @tool_uses_json,
+      @subagent_type
     )
     ON CONFLICT(id) DO UPDATE SET
       session_id = excluded.session_id,
@@ -96,7 +98,8 @@ function getStatements(db: Database): Prepared {
       stop_reason = excluded.stop_reason,
       user_prompt = excluded.user_prompt,
       assistant_text = excluded.assistant_text,
-      tool_uses_json = excluded.tool_uses_json
+      tool_uses_json = excluded.tool_uses_json,
+      subagent_type = excluded.subagent_type
   `);
 
   const insertToolCall = db.prepare(`
@@ -192,6 +195,7 @@ export function writeSession(
       tool_uses_json: JSON.stringify(
         t.toolCalls.map((tc) => ({ id: tc.id, name: tc.toolName })),
       ),
+      subagent_type: t.subagentType,
     };
   });
 

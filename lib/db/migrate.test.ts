@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import { openDatabase, type DB } from './client';
 import { migrate } from './migrate';
 import { writeSession } from '@/lib/ingest/writer';
@@ -219,6 +221,7 @@ describe('migrate — FTS5 turns_fts', () => {
           stopReason: null,
           userPrompt: 'ingestion test xylophone',
           assistantText: 'the response text',
+          subagentType: null,
           toolCalls: [],
         },
       ],
@@ -245,5 +248,105 @@ describe('migrate — FTS5 turns_fts', () => {
       .prepare("SELECT rowid FROM turns_fts WHERE turns_fts MATCH 'xyz'")
       .all() as Array<{ rowid: number }>;
     expect(rows.length).toBe(1);
+  });
+});
+
+describe('migrate — turns.subagent_type column + index', () => {
+  it('TC-I-01 (REQ-5): fresh DB has subagent_type TEXT column (nullable) and idx_turns_subagent index', () => {
+    const db = openDatabase(':memory:');
+    migrate(db);
+
+    const cols = db
+      .prepare('PRAGMA table_info(turns)')
+      .all() as Array<{ name: string; type: string; notnull: number }>;
+    const col = cols.find((c) => c.name === 'subagent_type');
+    expect(col).toBeDefined();
+    expect(col?.type).toBe('TEXT');
+    expect(col?.notnull).toBe(0);
+
+    const idx = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_turns_subagent'",
+      )
+      .get() as { name: string } | undefined;
+    expect(idx).toBeDefined();
+    expect(idx?.name).toBe('idx_turns_subagent');
+  });
+
+  it('TC-I-02 (REQ-6): migrates a legacy DB missing subagent_type; preserves existing rows; idempotent', () => {
+    // Simulate a legacy DB: apply current schema.sql with the new column +
+    // index stripped out. Insert 2 pre-existing turns, then run migrate.
+    const db = openDatabase(':memory:');
+
+    const schemaPath = path.resolve(__dirname, 'schema.sql');
+    const fullSql = fs.readFileSync(schemaPath, 'utf8');
+    // Strip the `subagent_type TEXT` column and any idx_turns_subagent
+    // CREATE INDEX statement to simulate the pre-migration state. The
+    // column strip ALSO removes the preceding comma on the prior line
+    // (tool_uses_json) so SQL stays valid.
+    const legacySql = fullSql
+      .replace(/,\s*\n\s*subagent_type TEXT\s*/g, '\n')
+      .replace(
+        /CREATE INDEX IF NOT EXISTS idx_turns_subagent[^;]*;\s*/g,
+        '',
+      );
+    db.exec(legacySql);
+
+    // Seed: session + 2 turns under the legacy schema.
+    db.prepare(
+      `INSERT INTO sessions (
+        id, slug, cwd, project, git_branch, cc_version,
+        started_at, ended_at,
+        total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens,
+        total_cost_usd, turn_count, tool_call_count,
+        source_file, ingested_at
+      ) VALUES (?, NULL, ?, ?, NULL, NULL, ?, ?, 0, 0, 0, 0, 0, 0, 0, ?, ?)`,
+    ).run('s-legacy', '/tmp/cwd', 'demo', 1, 2, 'file.jsonl', 3);
+    for (let i = 0; i < 2; i++) {
+      db.prepare(
+        `INSERT INTO turns (
+          id, session_id, parent_uuid, sequence, timestamp, model,
+          input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+          cost_usd, stop_reason, user_prompt, assistant_text, tool_uses_json
+        ) VALUES (?, 's-legacy', NULL, ?, ?, 'claude', 0, 0, 0, 0, 0, NULL, NULL, NULL, '[]')`,
+      ).run(`tl-${i}`, i, 100 + i);
+    }
+
+    // Pre-condition: column does NOT exist in the legacy schema.
+    const preCols = db
+      .prepare('PRAGMA table_info(turns)')
+      .all() as Array<{ name: string }>;
+    expect(preCols.some((c) => c.name === 'subagent_type')).toBe(false);
+
+    // First migrate: schema.sql re-applied + backfill adds the column.
+    migrate(db);
+
+    const postCols = db
+      .prepare('PRAGMA table_info(turns)')
+      .all() as Array<{ name: string; type: string; notnull: number }>;
+    const col = postCols.find((c) => c.name === 'subagent_type');
+    expect(col).toBeDefined();
+    expect(col?.type).toBe('TEXT');
+    expect(col?.notnull).toBe(0);
+
+    // Pre-existing rows preserved with NULL subagent_type.
+    const preserved = db
+      .prepare('SELECT id, subagent_type FROM turns ORDER BY sequence')
+      .all() as Array<{ id: string; subagent_type: string | null }>;
+    expect(preserved.length).toBe(2);
+    expect(preserved.every((r) => r.subagent_type === null)).toBe(true);
+
+    // Second migrate: idempotent — still 2 rows, column still present.
+    migrate(db);
+
+    const finalCount = db
+      .prepare('SELECT COUNT(*) as c FROM turns')
+      .get() as { c: number };
+    expect(finalCount.c).toBe(2);
+
+    const stillHasCol = (
+      db.prepare('PRAGMA table_info(turns)').all() as Array<{ name: string }>
+    ).some((c) => c.name === 'subagent_type');
+    expect(stillHasCol).toBe(true);
   });
 });

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { correctionPenalties } from '@/lib/analytics/scoring';
+import { extractSubagentType } from '@/lib/analytics/subagent';
 import {
   AssistantMessageSchema,
   TranscriptLineSchema,
@@ -185,6 +186,7 @@ export function parseTranscriptString(
     }
 
     const usage = msg.data.usage ?? {};
+    const subagentType = extractSubagentType(msg.data.content, (m) => warn(m));
     turns.push({
       id: e.uuid,
       parentUuid: e.parentUuid ?? null,
@@ -198,6 +200,7 @@ export function parseTranscriptString(
       stopReason: msg.data.stop_reason ?? null,
       userPrompt,
       assistantText: textParts.length > 0 ? textParts.join('\n') : null,
+      subagentType,
       toolCalls,
     });
   }
