@@ -7,7 +7,7 @@ Obrigado pelo interesse em contribuir com o **TokenFx**!
 1. Clone o projeto
 2. Crie uma branch: `git checkout -b feat/minha-feature`
 3. Setup: `pnpm setup` (instala deps + popula banco com dados sintéticos pra UI aparecer)
-4. Dev server: `pnpm dev` → `http://localhost:3000`
+4. Dev server: `pnpm dev` → `http://localhost:3131`
 
 ## Propor features e reportar bugs
 

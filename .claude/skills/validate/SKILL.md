@@ -26,7 +26,7 @@ Post-implementation validation pipeline. Ensures TS/Next.js changes are producti
 ### Phase 4 — Functional Validation (skip with `quick`)
 
 1. Spin up `pnpm dev`, exercise the specific behavior that was implemented/fixed
-2. Hit `http://localhost:3000` and verify pages render
+2. Hit `http://localhost:3131` and verify pages render
 3. If ingestion was changed: run `pnpm ingest` against a small fixture and verify DB state via `sqlite3 data/dashboard.db`
 
 ## Usage

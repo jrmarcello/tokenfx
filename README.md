@@ -25,7 +25,7 @@ Esse dashboard ingere os transcripts locais do Claude Code (`~/.claude/projects/
 ```bash
 pnpm install
 pnpm seed-dev          # popula com dados sintéticos pra ver a UI
-pnpm dev               # http://localhost:3000
+pnpm dev               # http://localhost:3131
 ```
 
 Abriu? Você vê KPIs, tendência de 30 dias, top sessões. Clica numa → transcript completo com botões de avaliação em cada turno.
@@ -245,7 +245,7 @@ Cadência recomendada: conferir `https://www.anthropic.com/pricing` a cada 30–
 
 | Comando | O que faz |
 | --- | --- |
-| `pnpm dev` | Sobe o Next.js dev em `:3000` |
+| `pnpm dev` | Sobe o Next.js dev em `:3131` |
 | `pnpm build` | Production build |
 | `pnpm start` | Serve o build de produção |
 | `pnpm typecheck` | `tsc --noEmit` |
