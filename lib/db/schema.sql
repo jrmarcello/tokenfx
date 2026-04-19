@@ -160,3 +160,14 @@ SELECT
   -- back to local total_cost_usd (computeCost-derived) otherwise.
   COALESCE(s.total_cost_usd_otel, s.total_cost_usd) / NULLIF(s.turn_count, 0) AS cost_per_turn
 FROM sessions s;
+
+-- Singleton user settings: per-deployment config (thresholds for quota
+-- tracking, etc). `id = 1` enforced via CHECK so only one row can exist.
+CREATE TABLE IF NOT EXISTS user_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  quota_tokens_5h INTEGER,
+  quota_tokens_7d INTEGER,
+  quota_sessions_5h INTEGER,
+  quota_sessions_7d INTEGER,
+  updated_at INTEGER NOT NULL
+);

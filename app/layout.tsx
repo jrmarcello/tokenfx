@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Nav } from "@/components/nav";
 import { OtelStatusBadge } from "@/components/otel-status-badge";
+import { QuotaNavWidget } from "@/components/quota/quota-nav-widget";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -30,7 +31,14 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable}`}
     >
       <body className="bg-neutral-950 text-neutral-100 antialiased min-h-screen">
-        <Nav slot={<OtelStatusBadge />} />
+        <Nav
+          slot={
+            <div className="flex items-center gap-3">
+              <QuotaNavWidget />
+              <OtelStatusBadge />
+            </div>
+          }
+        />
         <main className="max-w-7xl mx-auto px-6 py-8">{children}</main>
       </body>
     </html>

@@ -7,6 +7,7 @@ const links = [
   { href: '/', label: 'Visão geral' },
   { href: '/sessions', label: 'Sessões' },
   { href: '/effectiveness', label: 'Efetividade' },
+  { href: '/quota', label: 'Quota' },
   { href: '/search', label: 'Busca' },
 ];
 

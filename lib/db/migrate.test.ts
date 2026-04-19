@@ -250,3 +250,81 @@ describe('migrate — FTS5 turns_fts', () => {
     expect(rows.length).toBe(1);
   });
 });
+
+describe('migrate — user_settings singleton', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it('TC-I-01 (REQ-1, happy): creates user_settings with expected schema', () => {
+    const cols = db
+      .prepare('PRAGMA table_info(user_settings)')
+      .all() as Array<{
+      cid: number;
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+      pk: number;
+    }>;
+    expect(cols.length).toBe(6);
+    const byName = Object.fromEntries(cols.map((c) => [c.name, c]));
+    expect(Object.keys(byName).sort()).toEqual(
+      [
+        'id',
+        'quota_tokens_5h',
+        'quota_tokens_7d',
+        'quota_sessions_5h',
+        'quota_sessions_7d',
+        'updated_at',
+      ].sort(),
+    );
+    // id is the singleton primary key.
+    expect(byName.id.pk).toBe(1);
+    expect(byName.id.type.toUpperCase()).toBe('INTEGER');
+    // updated_at is NOT NULL.
+    expect(byName.updated_at.notnull).toBe(1);
+    expect(byName.updated_at.type.toUpperCase()).toBe('INTEGER');
+    // The 4 quota fields are nullable (notnull = 0).
+    expect(byName.quota_tokens_5h.notnull).toBe(0);
+    expect(byName.quota_tokens_7d.notnull).toBe(0);
+    expect(byName.quota_sessions_5h.notnull).toBe(0);
+    expect(byName.quota_sessions_7d.notnull).toBe(0);
+  });
+
+  it('TC-I-02 (REQ-2, idempotency): migrate() twice leaves table empty and errors nothing', () => {
+    // Fresh DB already migrated once in beforeEach. Run again — must not throw.
+    expect(() => migrate(db)).not.toThrow();
+    const countBefore = db
+      .prepare('SELECT COUNT(*) AS c FROM user_settings')
+      .get() as { c: number };
+    expect(countBefore.c).toBe(0);
+    // Third run for good measure.
+    expect(() => migrate(db)).not.toThrow();
+    const countAfter = db
+      .prepare('SELECT COUNT(*) AS c FROM user_settings')
+      .get() as { c: number };
+    expect(countAfter.c).toBe(0);
+  });
+
+  it('TC-I-03 (REQ-1, business): CHECK (id = 1) rejects inserts with id != 1', () => {
+    const now = Date.now();
+    expect(() =>
+      db
+        .prepare(
+          'INSERT INTO user_settings (id, updated_at) VALUES (?, ?)',
+        )
+        .run(2, now),
+    ).toThrow(/CHECK/);
+    // Sanity: id = 1 is accepted.
+    expect(() =>
+      db
+        .prepare(
+          'INSERT INTO user_settings (id, updated_at) VALUES (?, ?)',
+        )
+        .run(1, now),
+    ).not.toThrow();
+  });
+});

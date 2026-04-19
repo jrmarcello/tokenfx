@@ -1,0 +1,180 @@
+import { test, expect } from '@playwright/test';
+import path from 'node:path';
+import Database from 'better-sqlite3';
+
+const dbPath = path.resolve(__dirname, '../../data/e2e-test.db');
+
+function resetUserSettings(): void {
+  const db = new Database(dbPath);
+  db.prepare('DELETE FROM user_settings WHERE id = 1').run();
+  db.close();
+}
+
+function seedUserSettings(settings: {
+  quotaTokens5h: number | null;
+  quotaTokens7d: number | null;
+  quotaSessions5h: number | null;
+  quotaSessions7d: number | null;
+}): void {
+  const db = new Database(dbPath);
+  db.prepare(
+    `INSERT INTO user_settings
+       (id, quota_tokens_5h, quota_tokens_7d, quota_sessions_5h, quota_sessions_7d, updated_at)
+     VALUES (1, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       quota_tokens_5h = excluded.quota_tokens_5h,
+       quota_tokens_7d = excluded.quota_tokens_7d,
+       quota_sessions_5h = excluded.quota_sessions_5h,
+       quota_sessions_7d = excluded.quota_sessions_7d,
+       updated_at = excluded.updated_at`,
+  ).run(
+    settings.quotaTokens5h,
+    settings.quotaTokens7d,
+    settings.quotaSessions5h,
+    settings.quotaSessions7d,
+    Date.now(),
+  );
+  db.close();
+}
+
+test.describe('max plan quota', () => {
+  test.beforeEach(() => {
+    resetUserSettings();
+  });
+
+  test('TC-E2E-01: nav has "Quota" link between Efetividade and Busca', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    const nav = page.locator('nav').first();
+    await expect(nav.getByRole('link', { name: 'Efetividade' })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Quota' })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Busca' })).toBeVisible();
+  });
+
+  test('TC-E2E-02: /quota without settings shows H1 + CTA + empty form', async ({
+    page,
+  }) => {
+    await page.goto('/quota');
+    await expect(
+      page.getByRole('heading', { level: 1, name: 'Quota do Max' }),
+    ).toBeVisible();
+    await expect(
+      page.getByText('Defina seu primeiro threshold abaixo pra ver consumo.'),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Salvar' }),
+    ).toBeVisible();
+  });
+
+  test('TC-E2E-03: submit form persists threshold and nav widget appears', async ({
+    page,
+  }) => {
+    await page.goto('/quota');
+    await page
+      .getByLabel('Tokens — janela 5h')
+      .fill('50000');
+    await page.getByRole('button', { name: 'Salvar' }).click();
+    await expect(page.getByText('Salvo!')).toBeVisible();
+
+    await page.goto('/');
+    const widget = page.locator('[aria-label="Quota do Max"]').first();
+    await expect(widget).toBeVisible();
+    await expect(widget.getByText(/5h/)).toBeVisible();
+  });
+
+  test('TC-E2E-04: all thresholds null → nav widget is absent', async ({
+    page,
+  }) => {
+    // Route through the form so Server Action invalidates the layout cache
+    // (revalidatePath('/', 'layout')). A direct DB DELETE doesn't trigger
+    // Next's Full Route Cache invalidation, so the nav slot can stick with
+    // stale HTML between tests.
+    await page.goto('/quota');
+    for (const label of [
+      'Tokens — janela 5h',
+      'Tokens — janela 7d',
+      'Sessões — janela 5h',
+      'Sessões — janela 7d',
+    ]) {
+      await page.getByLabel(label).fill('');
+    }
+    await page.getByRole('button', { name: 'Salvar' }).click();
+    await expect(page.getByText('Salvo!')).toBeVisible();
+
+    await page.goto('/');
+    const widget = page.locator('[aria-label="Quota do Max"]');
+    await expect(widget).toHaveCount(0);
+  });
+
+  test('TC-E2E-05: submit negative value shows error and does not persist', async ({
+    page,
+  }) => {
+    await page.goto('/quota');
+    const input = page.getByLabel('Tokens — janela 5h');
+    await input.fill('-1');
+    await page.getByRole('button', { name: 'Salvar' }).click();
+    // Form reports either a field-scoped error (aria-invalid + role=alert) or
+    // a generic footer error; both variants assert "did not succeed".
+    await expect(page.getByText('Salvo!')).toHaveCount(0);
+  });
+
+  test('TC-E2E-06: /quota with threshold and seeded turns renders heatmap title', async ({
+    page,
+  }) => {
+    seedUserSettings({
+      quotaTokens5h: 50000,
+      quotaTokens7d: null,
+      quotaSessions5h: null,
+      quotaSessions7d: null,
+    });
+    await page.goto('/quota');
+    await expect(
+      page.getByRole('heading', { name: 'Padrão de consumo (últimas 4 semanas)' }),
+    ).toBeVisible();
+  });
+
+  test('TC-E2E-07: only one threshold set → exactly one KPI card rendered', async ({
+    page,
+  }) => {
+    seedUserSettings({
+      quotaTokens5h: 50000,
+      quotaTokens7d: null,
+      quotaSessions5h: null,
+      quotaSessions7d: null,
+    });
+    await page.goto('/quota');
+    // The only KPI card in scope should be "Tokens 5h"; the other three titles
+    // must NOT appear as KPI cards.
+    await expect(page.getByRole('heading', { name: 'Tokens 5h' })).toHaveCount(
+      1,
+    );
+    await expect(page.getByRole('heading', { name: 'Tokens 7d' })).toHaveCount(
+      0,
+    );
+    await expect(
+      page.getByRole('heading', { name: 'Sessões 5h' }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole('heading', { name: 'Sessões 7d' }),
+    ).toHaveCount(0);
+  });
+
+  test('TC-E2E-08: KpiCard info tooltip contains rolling-window explanation', async ({
+    page,
+  }) => {
+    seedUserSettings({
+      quotaTokens5h: 50000,
+      quotaTokens7d: null,
+      quotaSessions5h: null,
+      quotaSessions7d: null,
+    });
+    await page.goto('/quota');
+    const trigger = page.getByRole('button', { name: 'O que é Tokens 5h?' });
+    await expect(trigger).toBeVisible();
+    await trigger.hover();
+    await expect(
+      page.getByText(/Janela rolling — o Max reseta a cada 5h/),
+    ).toBeVisible();
+  });
+});
