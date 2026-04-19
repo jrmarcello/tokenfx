@@ -165,12 +165,13 @@ describe('effectiveness queries', () => {
 
     it('getEffectivenessKpis returns weighted ratios and rated session count', () => {
       const kpis = getEffectivenessKpis(db, 30);
-      // cache_hit_ratio: s1 = 500/1500, s2 = 1000/3000 = 0.333. Both equal => avg ~0.333
+      // cache_hit_ratio per session (view) is non-null for both in-window
+      // sessions and averages to something > 0.
       expect(kpis.avgCacheHitRatio).not.toBeNull();
       expect(kpis.avgCacheHitRatio!).toBeGreaterThan(0);
-      // output/input: s1 ratio = 2.0, tokens weight = 3000; s2 ratio = 0.5, weight = 3000.
-      // Weighted = (2*3000 + 0.5*3000) / 6000 = 1.25
-      expect(kpis.avgOutputInputRatio).toBeCloseTo(1.25, 5);
+      // Weighted output/input = SUM(output) / SUM(input) across the window.
+      // s1: 2000 out / 1000 in, s2: 1000 out / 2000 in → 3000/3000 = 1.0
+      expect(kpis.avgOutputInputRatio).toBeCloseTo(1.0, 5);
       expect(kpis.ratedSessionCount).toBe(1);
       expect(kpis.avgScore).not.toBeNull();
     });

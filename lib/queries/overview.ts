@@ -48,7 +48,10 @@ function getPrepared(db: DB): PreparedSet {
       'SELECT COALESCE(SUM(total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens), 0) AS v FROM sessions WHERE started_at >= ?'
     ),
     cacheRatioSince: db.prepare(
-      'SELECT COALESCE(CAST(SUM(total_cache_read_tokens) AS REAL) / NULLIF(SUM(total_input_tokens + total_cache_read_tokens), 0), 0) AS v FROM sessions WHERE started_at >= ?'
+      // Denominator includes cache_creation so the ratio reflects "% de
+      // tokens de prompt reaproveitados do cache" — previous formula
+      // excluded creation and over-reported effectiveness on new prompts.
+      'SELECT COALESCE(CAST(SUM(total_cache_read_tokens) AS REAL) / NULLIF(SUM(total_input_tokens + total_cache_read_tokens + total_cache_creation_tokens), 0), 0) AS v FROM sessions WHERE started_at >= ?'
     ),
     sessionCountSince: db.prepare(
       'SELECT COUNT(*) AS v FROM sessions WHERE started_at >= ?'

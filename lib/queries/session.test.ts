@@ -137,7 +137,9 @@ describe('session queries', () => {
       expect(s.id).toBe('sess-1');
       expect(s.totalInputTokens).toBe(1000);
       expect(s.totalCacheReadTokens).toBe(3000);
-      expect(s.cacheHitRatio).toBeCloseTo(3000 / 4000, 8);
+      // cache_hit_ratio = cache_read / (input + cache_read + cache_creation)
+      // = 3000 / (1000 + 3000 + 100) = 3000/4100
+      expect(s.cacheHitRatio).toBeCloseTo(3000 / 4100, 8);
       expect(s.outputInputRatio).toBeCloseTo(500 / 1000, 8);
       expect(s.avgRating).toBeCloseTo(1, 8);
     });

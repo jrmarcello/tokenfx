@@ -120,7 +120,7 @@ export function TranscriptViewer({ turns }: { turns: TurnDetail[] }) {
               </div>
             )}
             <div className="border-t border-neutral-800 pt-3">
-              <RatingWidget turnId={t.id} initial={t.rating?.value ?? 0} />
+              <RatingWidget turnId={t.id} initial={t.rating?.value ?? null} />
             </div>
           </div>
         </li>

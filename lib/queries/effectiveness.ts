@@ -38,8 +38,8 @@ const MAX_SCORED_SESSIONS = 50;
 
 type KpiRow = {
   avgCacheHitRatio: number | null;
-  weightedNumerator: number | null;
-  weightedDenominator: number | null;
+  sumOutput: number | null;
+  sumInput: number | null;
   ratedSessionCount: number;
 };
 
@@ -92,15 +92,13 @@ function getPrepared(db: DB): PreparedSet {
   if (existing) return existing;
   const prepared: PreparedSet = {
     kpis: db.prepare(
+      // Weighted ratio uses the mathematically-correct SUM(output)/SUM(input)
+      // form — the previous SUM(ratio × (input+output))/SUM(input+output)
+      // was double-weighted and produced ~10× inflated values on real data.
       `SELECT
          AVG(v.cache_hit_ratio) AS avgCacheHitRatio,
-         SUM(v.output_input_ratio *
-             (s.total_input_tokens + s.total_output_tokens)) AS weightedNumerator,
-         SUM(
-           CASE WHEN v.output_input_ratio IS NOT NULL
-                THEN (s.total_input_tokens + s.total_output_tokens)
-                ELSE 0 END
-         ) AS weightedDenominator,
+         SUM(s.total_output_tokens) AS sumOutput,
+         SUM(s.total_input_tokens) AS sumInput,
          (SELECT COUNT(DISTINCT t.session_id)
             FROM ratings r JOIN turns t ON t.id = r.turn_id
             JOIN sessions ss ON ss.id = t.session_id
@@ -193,11 +191,9 @@ export function getEffectivenessKpis(db: DB, days: number): EffectivenessKpis {
 
   const avgCacheHitRatio =
     row && row.avgCacheHitRatio !== null ? row.avgCacheHitRatio : null;
-  const denom =
-    row && row.weightedDenominator !== null ? row.weightedDenominator : 0;
-  const num =
-    row && row.weightedNumerator !== null ? row.weightedNumerator : 0;
-  const avgOutputInputRatio = denom > 0 ? num / denom : null;
+  const sumInput = row?.sumInput ?? 0;
+  const sumOutput = row?.sumOutput ?? 0;
+  const avgOutputInputRatio = sumInput > 0 ? sumOutput / sumInput : null;
   const ratedSessionCount = row?.ratedSessionCount ?? 0;
 
   // Compute avgScore from session scores in the same window.
@@ -278,7 +274,7 @@ export function getSessionScores(db: DB, days: number): SessionScore[] {
     const turns = turnsBySession.get(s.id) ?? [];
     const penalties = correctionPenalties(turns);
     const correctionDensity =
-      turns.length > 0 ? penalties.size / turns.length : 0;
+      turns.length > 0 ? penalties.size / turns.length : null;
     const score = effectivenessScore({
       outputInputRatio: s.outputInputRatio,
       cacheHitRatio: s.cacheHitRatio,

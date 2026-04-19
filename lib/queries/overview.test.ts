@@ -130,11 +130,13 @@ describe('overview queries', () => {
       expect(kpis.tokens30d).toBe(expected);
     });
 
-    it('getOverviewKpis: cacheHitRatio30d computed from cacheRead / (input + cacheRead)', () => {
+    it('getOverviewKpis: cacheHitRatio30d = cacheRead / (input + cacheRead + cacheCreation)', () => {
       const kpis = getOverviewKpis(db);
-      const sumCache = 2000 + 1500 + 1000;
+      const sumCacheRead = 2000 + 1500 + 1000;
+      const sumCacheCreation = 100 + 50 + 200;
       const sumInput = 1000 + 500 + 800;
-      const expected = sumCache / (sumInput + sumCache);
+      const expected =
+        sumCacheRead / (sumInput + sumCacheRead + sumCacheCreation);
       expect(kpis.cacheHitRatio30d).toBeCloseTo(expected, 8);
       expect(kpis.cacheHitRatio30d).toBeGreaterThan(0);
       expect(kpis.cacheHitRatio30d).toBeLessThanOrEqual(1);

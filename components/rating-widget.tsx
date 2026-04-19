@@ -9,9 +9,12 @@ export function RatingWidget({
   initial,
 }: {
   turnId: string;
-  initial: Value;
+  // `null` = turn has no rating row yet. `Value` = user-persisted rating.
+  // Distinguishing the two keeps "Neutro" from looking preselected on
+  // unrated turns.
+  initial: Value | null;
 }) {
-  const [value, setValue] = useState<Value>(initial);
+  const [value, setValue] = useState<Value | null>(initial);
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 

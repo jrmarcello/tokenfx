@@ -75,6 +75,26 @@ describe("pricing", () => {
     });
   });
 
+  describe("family-prefix fallback", () => {
+    it.each([
+      ["claude-opus-4-6", 15, 75],
+      ["claude-opus-4-8-20270101", 15, 75],
+      ["claude-sonnet-4-7", 3, 15],
+      ["claude-sonnet-5-0", 3, 15],
+      ["claude-haiku-4-6", 1, 5],
+    ])("maps %s to its family pricing", (model, expectedInput, expectedOutput) => {
+      const p = getPricing(model);
+      expect(p).not.toBeNull();
+      expect(p?.input).toBe(expectedInput);
+      expect(p?.output).toBe(expectedOutput);
+    });
+
+    it("falls back only when prefix matches claude-(opus|sonnet|haiku)", () => {
+      expect(getPricing("claude-sage-1")).toBeNull();
+      expect(getPricing("gpt-4")).toBeNull();
+    });
+  });
+
   describe("TC-U-06 boundary: 0 tokens and exact values (REQ-2)", () => {
     it("0 tokens → 0 cost", () => {
       expect(

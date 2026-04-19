@@ -6,7 +6,7 @@ import type { SessionListItem } from '@/lib/queries/session';
 import { parseDateParam } from '@/lib/analytics/heatmap';
 import { Card, CardContent } from '@/components/ui/card';
 import { ChevronRightIcon } from '@/components/icons';
-import { fmtUsd, fmtDateTime } from '@/lib/fmt';
+import { fmtUsd, fmtDateTime, fmtRating } from '@/lib/fmt';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -114,8 +114,11 @@ export default async function SessionsPage({ searchParams }: SessionsPageProps) 
                         {s.turnCount} turnos
                       </span>
                       {s.avgRating !== null && (
-                        <span className="tabular-nums text-neutral-400">
-                          {s.avgRating.toFixed(1)}★
+                        <span
+                          className="tabular-nums text-neutral-400"
+                          title="Avaliação média (−1 ruim · 0 neutro · +1 bom)"
+                        >
+                          aval {fmtRating(s.avgRating)}
                         </span>
                       )}
                       <ChevronRightIcon className="size-4 text-neutral-600 transition-colors group-hover:text-neutral-300" />

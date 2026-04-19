@@ -121,7 +121,11 @@ export type ScoreInput = {
   outputInputRatio: number | null;
   cacheHitRatio: number | null;
   avgRating: number | null;
-  correctionDensity: number;
+  /**
+   * Fraction of turns followed by a correction prompt. Null when the
+   * session had zero turns (nothing to score against).
+   */
+  correctionDensity: number | null;
   /**
    * Fraction of tool calls in the session that returned is_error=1.
    * Null when the session had zero tool calls.
@@ -147,9 +151,10 @@ export type ScoreInput = {
  *   output/input ratio (clipped at 2.0):     10%
  *
  * Null inputs are skipped and remaining weights are redistributed
- * proportionally. correctionDensity is never null (zero when no turns);
- * toolErrorRate is null when the session had no tool calls; acceptRate
- * is null when OTEL is off or the session had no Edit/Write decisions.
+ * proportionally. correctionDensity is null when the session had zero
+ * turns (no denominator); toolErrorRate is null when the session had no
+ * tool calls; acceptRate is null when OTEL is off or the session had no
+ * Edit/Write decisions.
  *
  * Design notes:
  * - Manual rating (30%) is the strongest single signal — human judgment
@@ -188,8 +193,10 @@ export function effectivenessScore(input: ScoreInput): number {
     const clipped = Math.max(-1, Math.min(input.avgRating, 1));
     parts.push({ weight: 0.3, value: (clipped + 1) / 2 });
   }
-  const density = Math.max(0, Math.min(input.correctionDensity, 1));
-  parts.push({ weight: 0.2, value: 1 - density });
+  if (input.correctionDensity !== null) {
+    const density = Math.max(0, Math.min(input.correctionDensity, 1));
+    parts.push({ weight: 0.2, value: 1 - density });
+  }
   if (input.toolErrorRate !== null) {
     const rate = Math.max(0, Math.min(input.toolErrorRate, 1));
     parts.push({ weight: 0.15, value: 1 - rate });

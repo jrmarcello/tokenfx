@@ -123,11 +123,19 @@ END;
 -- alternative (gated rebuild) requires runtime logic beyond plain SQL.
 INSERT INTO turns_fts(turns_fts) VALUES('rebuild');
 
-CREATE VIEW IF NOT EXISTS session_effectiveness AS
+-- Views are recreated every migrate so formula changes to derived columns
+-- propagate without a manual drop step on pre-existing DBs.
+DROP VIEW IF EXISTS session_effectiveness;
+CREATE VIEW session_effectiveness AS
 SELECT
   s.id, s.project, s.total_cost_usd, s.turn_count,
+  -- Share of total prompt tokens (including cache-creation writes) that
+  -- were served from cache. Including creation in the denominator matches
+  -- the "% de tokens reaproveitados" mental model; excluding it (previous
+  -- formula) over-reports cache effectiveness on sessions that spend most
+  -- tokens priming a new cache.
   (CAST(s.total_cache_read_tokens AS REAL) /
-   NULLIF(s.total_input_tokens + s.total_cache_read_tokens, 0)) AS cache_hit_ratio,
+   NULLIF(s.total_input_tokens + s.total_cache_read_tokens + s.total_cache_creation_tokens, 0)) AS cache_hit_ratio,
   (CAST(s.total_output_tokens AS REAL) /
    NULLIF(s.total_input_tokens, 0)) AS output_input_ratio,
   (SELECT AVG(rating) FROM ratings r JOIN turns t ON t.id=r.turn_id WHERE t.session_id=s.id) AS avg_rating,

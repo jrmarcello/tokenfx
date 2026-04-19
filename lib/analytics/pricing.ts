@@ -72,6 +72,20 @@ function normalizeModel(model: string): string {
   return s.trim();
 }
 
+/**
+ * Family-prefix match: `claude-opus-*` → OPUS, etc. This keeps future
+ * Claude releases priced correctly without requiring a table update on
+ * every minor version bump (which otherwise silently cost $0 — a
+ * previously shipped bug where 22k+ `claude-opus-4-6` turns were
+ * recorded at zero cost).
+ */
+const FAMILY_PATTERN = /^claude-(opus|sonnet|haiku)\b/;
+const FAMILY_PRICING: Record<'opus' | 'sonnet' | 'haiku', ModelPricing> = {
+  opus: OPUS,
+  sonnet: SONNET,
+  haiku: HAIKU,
+};
+
 export function getPricing(model: string): ModelPricing | null {
   if (!model) return null;
   const key = normalizeModel(model);
@@ -79,7 +93,14 @@ export function getPricing(model: string): ModelPricing | null {
   if (direct) return direct;
   // Also try exact lowercase lookup in case the table key has unusual suffix
   const exact = PRICING[model.toLowerCase()];
-  return exact ?? null;
+  if (exact) return exact;
+  // Family-prefix fallback — catches unreleased-at-audit-time versions
+  // (e.g. claude-opus-4-8) as long as Anthropic keeps family pricing stable.
+  const familyMatch = FAMILY_PATTERN.exec(key);
+  if (familyMatch) {
+    return FAMILY_PRICING[familyMatch[1] as 'opus' | 'sonnet' | 'haiku'];
+  }
+  return null;
 }
 
 export function computeCost(args: {

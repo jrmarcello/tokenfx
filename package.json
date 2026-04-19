@@ -11,6 +11,7 @@
     "test": "vitest",
     "test:e2e": "playwright test",
     "ingest": "tsx scripts/ingest.ts",
+    "recompute-costs": "tsx scripts/recompute-costs.ts",
     "seed-dev": "tsx scripts/seed-dev.ts",
     "setup": "pnpm install && pnpm seed-dev",
     "fresh": "rm -f data/dashboard.db data/dashboard.db-wal data/dashboard.db-shm && pnpm ingest",

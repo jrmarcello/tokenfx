@@ -56,14 +56,15 @@ export default async function EffectivenessPage() {
         <KpiCard
           title="Score médio de efetividade"
           value={fmtScore(kpis.avgScore)}
-          hint="0..100 composto"
+          hint="0..100 · top 50 por custo"
           info={
             <>
-              Métrica composta (0..100). Pesos: avaliação manual 30%,
-              (1 − densidade de correção) 20%, accept rate do OTEL 15%,
-              (1 − taxa de erro de tool) 15%, cache hit 10%, razão
-              output/input 10%. Sinais nulos são descartados e os pesos se
-              redistribuem proporcionalmente.
+              Média dos scores compostos das <strong>50 sessões mais
+              caras</strong> da janela (performance cap). Score (0..100)
+              pondera: avaliação manual 30%, (1 − densidade de correção)
+              20%, accept rate do OTEL 15%, (1 − taxa de erro de tool) 15%,
+              cache hit 10%, razão output/input 10%. Sinais nulos são
+              descartados e os pesos se redistribuem proporcionalmente.
             </>
           }
         />

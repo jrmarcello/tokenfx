@@ -47,7 +47,7 @@ export default async function Home() {
         <KpiCard
           title="Taxa de cache hit"
           value={fmtPct(kpis.cacheHitRatio30d)}
-          info="Razão entre tokens lidos do cache e (entrada + cache). Quanto maior, mais barato — prompts similares reaproveitam o contexto."
+          info="Razão entre tokens lidos do cache e o total de tokens de prompt (entrada + cache read + cache creation). Quanto maior, mais barato — prompts similares reaproveitam o contexto. Criação de cache entra no denominador pra refletir custo real de primeiros prompts."
         />
         <KpiCard
           title="Sessões (30d)"
