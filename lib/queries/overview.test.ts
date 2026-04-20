@@ -5,6 +5,7 @@ import {
   getOverviewKpis,
   getDailySpend,
   getTopSessions,
+  getTokenBreakdown,
 } from '@/lib/queries/overview';
 
 const DAY_MS = 86_400_000;
@@ -331,6 +332,136 @@ describe('overview queries', () => {
         expect(pt.spend).toBe(0);
         expect(pt.tokens).toBe(0);
       }
+    });
+  });
+
+  describe('getTokenBreakdown', () => {
+    it('TC-I-01 (happy): sums the 4 parcels; total === sum of the 3 components', () => {
+      insertSession(db, {
+        id: 's1',
+        startedAt: now - 1 * DAY_MS,
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheReadTokens: 8000,
+        cacheCreationTokens: 200,
+      });
+      insertSession(db, {
+        id: 's2',
+        startedAt: now - 2 * DAY_MS,
+        inputTokens: 2000,
+        outputTokens: 1500,
+        cacheReadTokens: 12000,
+        cacheCreationTokens: 300,
+      });
+      insertSession(db, {
+        id: 's3',
+        startedAt: now - 10 * DAY_MS,
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      });
+      insertSession(db, {
+        id: 's4',
+        startedAt: now - 15 * DAY_MS,
+        inputTokens: 400,
+        outputTokens: 200,
+        cacheReadTokens: 2000,
+        cacheCreationTokens: 100,
+      });
+      insertSession(db, {
+        id: 's5',
+        startedAt: now - 25 * DAY_MS,
+        inputTokens: 50,
+        outputTokens: 25,
+        cacheReadTokens: 500,
+        cacheCreationTokens: 0,
+      });
+
+      const bd = getTokenBreakdown(db, 30);
+      expect(bd.inputOutput).toBe(1000 + 500 + 2000 + 1500 + 100 + 50 + 400 + 200 + 50 + 25);
+      expect(bd.cacheCreation).toBe(200 + 300 + 0 + 100 + 0);
+      expect(bd.cacheRead).toBe(8000 + 12000 + 0 + 2000 + 500);
+      expect(bd.total).toBe(bd.inputOutput + bd.cacheCreation + bd.cacheRead);
+    });
+
+    it('TC-I-02 (edge): empty DB returns all zeros', () => {
+      expect(getTokenBreakdown(db, 30)).toEqual({
+        inputOutput: 0,
+        cacheCreation: 0,
+        cacheRead: 0,
+        total: 0,
+      });
+    });
+
+    it('TC-I-03 (edge): sessions outside the window are excluded', () => {
+      // Inside 7d window: distinct values so the assertion is unambiguous.
+      insertSession(db, {
+        id: 'inside1',
+        startedAt: now - 1 * DAY_MS,
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadTokens: 1000,
+        cacheCreationTokens: 10,
+      });
+      insertSession(db, {
+        id: 'inside2',
+        startedAt: now - 3 * DAY_MS,
+        inputTokens: 200,
+        outputTokens: 100,
+        cacheReadTokens: 2000,
+        cacheCreationTokens: 20,
+      });
+      insertSession(db, {
+        id: 'inside3',
+        startedAt: now - 6 * DAY_MS,
+        inputTokens: 50,
+        outputTokens: 25,
+        cacheReadTokens: 500,
+        cacheCreationTokens: 5,
+      });
+      // Outside 7d window — large values we must NOT see in the sum.
+      insertSession(db, {
+        id: 'outside1',
+        startedAt: now - 10 * DAY_MS,
+        inputTokens: 999_999,
+        outputTokens: 999_999,
+        cacheReadTokens: 999_999,
+        cacheCreationTokens: 999_999,
+      });
+      insertSession(db, {
+        id: 'outside2',
+        startedAt: now - 20 * DAY_MS,
+        inputTokens: 888_888,
+        outputTokens: 888_888,
+        cacheReadTokens: 888_888,
+        cacheCreationTokens: 888_888,
+      });
+
+      const bd = getTokenBreakdown(db, 7);
+      expect(bd.inputOutput).toBe(100 + 50 + 200 + 100 + 50 + 25);
+      expect(bd.cacheCreation).toBe(10 + 20 + 5);
+      expect(bd.cacheRead).toBe(1000 + 2000 + 500);
+      expect(bd.total).toBe(bd.inputOutput + bd.cacheCreation + bd.cacheRead);
+    });
+
+    it('TC-I-04 (business): session with only cache_read', () => {
+      insertSession(db, {
+        id: 'only-cache',
+        startedAt: now - 1 * DAY_MS,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 500_000,
+        cacheCreationTokens: 0,
+      });
+
+      const bd = getTokenBreakdown(db, 30);
+      expect(bd).toEqual({
+        inputOutput: 0,
+        cacheCreation: 0,
+        cacheRead: 500_000,
+        total: 500_000,
+      });
     });
   });
 });

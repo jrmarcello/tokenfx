@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   extractSubagentType,
   MAX_SUBAGENT_TYPE_LEN,
+  SUBAGENT_TOOL_NAME,
 } from '@/lib/analytics/subagent';
 
 /**
@@ -19,6 +20,12 @@ const makeWarnCollector = () => {
 describe('MAX_SUBAGENT_TYPE_LEN', () => {
   it('is exported as 64', () => {
     expect(MAX_SUBAGENT_TYPE_LEN).toBe(64);
+  });
+});
+
+describe('SUBAGENT_TOOL_NAME', () => {
+  it('TC-U-01: is exported as the literal "Agent"', () => {
+    expect(SUBAGENT_TOOL_NAME).toBe('Agent');
   });
 });
 

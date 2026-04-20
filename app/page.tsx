@@ -18,6 +18,7 @@ import {
   getTopSessionsByScore,
   getTopSessionsByTurns,
   getDailyAcceptRate,
+  getTokenBreakdown,
 } from '@/lib/queries/overview';
 import {
   getEffectivenessKpis,
@@ -26,6 +27,7 @@ import {
   getModelBreakdown,
   getToolErrorTrend,
   getSessionScoreDistribution,
+  getSubagentUsage,
 } from '@/lib/queries/effectiveness';
 import { getOtelInsights } from '@/lib/queries/otel';
 import { fmtUsd, fmtCompact, fmtPct, fmtScore, fmtUsdFine } from '@/lib/fmt';
@@ -77,6 +79,8 @@ export default async function Home({
     scoreDist,
     otel,
     dailyAccept,
+    tokenBreakdown,
+    subagentUsage,
   ] = await Promise.all([
     Promise.resolve(getOverviewKpis(db)),
     Promise.resolve(getDailySpend(db, 30)),
@@ -92,6 +96,8 @@ export default async function Home({
     Promise.resolve(getSessionScoreDistribution(db, 30)),
     Promise.resolve(getOtelInsights(db, 30)),
     Promise.resolve(getDailyAcceptRate(db, 30)),
+    Promise.resolve(getTokenBreakdown(db, 30)),
+    Promise.resolve(getSubagentUsage(db, 30)),
   ]);
 
   const hasData = kpis.sessionCount30d > 0;
@@ -153,7 +159,25 @@ export default async function Home({
           <KpiCard
             title="Tokens (30d)"
             value={fmtCompact(kpis.tokens30d)}
-            info="Total de tokens processados (entrada + saída + cache read + cache creation) nos últimos 30 dias."
+            info={
+              <>
+                Total de tokens processados nos últimos 30 dias. Breakdown:
+                <ul className="mt-1 space-y-0.5 list-disc list-inside">
+                  <li>
+                    Input + output: <strong>{fmtCompact(tokenBreakdown.inputOutput)}</strong>{' '}
+                    (o que ferramentas externas como <code>ccusage</code> contam)
+                  </li>
+                  <li>
+                    Cache creation: <strong>{fmtCompact(tokenBreakdown.cacheCreation)}</strong>{' '}
+                    (cria novas entradas de cache — contam pra billing de cache write)
+                  </li>
+                  <li>
+                    Cache read: <strong>{fmtCompact(tokenBreakdown.cacheRead)}</strong>{' '}
+                    (reutilização de cache — 10% do custo de input)
+                  </li>
+                </ul>
+              </>
+            }
           />
           <KpiCard
             title="Taxa de cache hit"
@@ -233,7 +257,7 @@ export default async function Home({
       <section id="efetividade" className="space-y-6 scroll-mt-20">
         <h2 className="text-xl font-semibold tracking-tight">Efetividade</h2>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <KpiCard
             title="Score médio"
             value={fmtScore(effKpis.avgScore)}
@@ -259,6 +283,18 @@ export default async function Home({
             value={effKpis.ratedSessionCount}
             info="Quantas sessões têm ao menos um turno com avaliação manual (Bom / Neutro / Ruim). Quanto mais avaliações, mais confiável a entrada manual no score."
           />
+          {subagentUsage.sessionsTotal > 0 && (
+            <KpiCard
+              title="Delegação a subagents"
+              value={`${subagentUsage.sessionsWithAgent}/${subagentUsage.sessionsTotal} sessões`}
+              hint={`${fmtPct(
+                subagentUsage.tokensTotal > 0
+                  ? subagentUsage.tokensFromAgentSessions / subagentUsage.tokensTotal
+                  : 0,
+              )} dos tokens`}
+              info="Proporção de sessões (últimos 30d) em que você delegou pra um subagent via a ferramenta Agent. Indicador de quão orquestrado é seu workflow. Tokens excluem cache reads pra comparabilidade com ferramentas externas como ccusage."
+            />
+          )}
         </div>
 
         <section>

@@ -14,6 +14,7 @@ import {
   type ToolTrendResult,
 } from '@/lib/analytics/tool-trend';
 import { getAcceptRatesBySession } from '@/lib/queries/otel';
+import { SUBAGENT_TOOL_NAME } from '@/lib/analytics/subagent';
 
 export type { ModelBreakdownItem } from '@/lib/analytics/model';
 export type { ToolTrendResult } from '@/lib/analytics/tool-trend';
@@ -388,4 +389,80 @@ export function getSessionScoreDistribution(db: DB, days: number): ScoreBucket[]
     high: i === 4 ? 100 : (i + 1) * 20,
     count: counts[i],
   }));
+}
+
+/**
+ * Aggregate measure of how much of a time window was spent in sessions that
+ * delegated work to a sub-agent (via the `Agent` tool — the subagent tool
+ * name is bound from `SUBAGENT_TOOL_NAME` so the SQL never hard-codes the
+ * literal).
+ *
+ * `tokensTotal` and `tokensFromAgentSessions` deliberately EXCLUDE
+ * `cache_read` so the proportion is comparable with external tools like
+ * `ccusage` that measure "new work tokens". Cache-read-heavy sessions would
+ * otherwise dominate and drown the signal (cache reads are reuse, not new
+ * orchestration work).
+ */
+export type SubagentUsage = {
+  sessionsTotal: number;
+  sessionsWithAgent: number;
+  tokensTotal: number;
+  tokensFromAgentSessions: number;
+};
+
+type SubagentUsageRow = {
+  sessionsTotal: number;
+  sessionsWithAgent: number;
+  tokensTotal: number;
+  tokensFromAgentSessions: number;
+};
+
+const subagentUsageStmtCache = new WeakMap<
+  DB,
+  import('better-sqlite3').Statement<[number, string]>
+>();
+
+function getSubagentUsageStmt(
+  db: DB,
+): import('better-sqlite3').Statement<[number, string]> {
+  const cached = subagentUsageStmtCache.get(db);
+  if (cached) return cached;
+  const stmt = db.prepare(
+    `WITH recent AS (
+       SELECT id,
+              (total_input_tokens + total_output_tokens + total_cache_creation_tokens) AS t
+       FROM sessions
+       WHERE started_at >= ?
+     ),
+     agent_sessions AS (
+       SELECT DISTINCT t.session_id AS id
+       FROM turns t
+       JOIN tool_calls tc ON tc.turn_id = t.id
+       WHERE tc.tool_name = ?
+         AND t.session_id IN (SELECT id FROM recent)
+     )
+     SELECT
+       (SELECT COUNT(*) FROM recent)                                                        AS sessionsTotal,
+       (SELECT COUNT(*) FROM agent_sessions)                                                AS sessionsWithAgent,
+       (SELECT COALESCE(SUM(t), 0) FROM recent)                                             AS tokensTotal,
+       (SELECT COALESCE(SUM(t), 0) FROM recent WHERE id IN (SELECT id FROM agent_sessions)) AS tokensFromAgentSessions`,
+  );
+  subagentUsageStmtCache.set(db, stmt);
+  return stmt;
+}
+
+export function getSubagentUsage(db: DB, days: number): SubagentUsage {
+  const cutoff = Date.now() - days * DAY_MS;
+  const row = getSubagentUsageStmt(db).get(cutoff, SUBAGENT_TOOL_NAME) as
+    | SubagentUsageRow
+    | undefined;
+  if (!row) {
+    return {
+      sessionsTotal: 0,
+      sessionsWithAgent: 0,
+      tokensTotal: 0,
+      tokensFromAgentSessions: 0,
+    };
+  }
+  return row;
 }

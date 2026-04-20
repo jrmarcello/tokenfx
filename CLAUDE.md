@@ -91,6 +91,8 @@ Agent Teams enabled (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`). Each agent has p
 
 Delegate with "use a subagent to..." or launch a team via `/full-review-team`.
 
+> **Naming note**: the underlying Claude Code tool that launches a subagent is called `Agent` (renamed from `Task` in a recent version — no schema bump). Our JSONL parser and aggregation queries reference the `SUBAGENT_TOOL_NAME` constant in `lib/analytics/subagent.ts`; external docs and tools like `ccusage` may still say "Task tool" — it's the same thing.
+
 ### Rules (auto-applied by file pattern)
 
 - `.claude/rules/ts-conventions.md` — `**/*.{ts,tsx}`

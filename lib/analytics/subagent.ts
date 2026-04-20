@@ -10,6 +10,15 @@
 export const MAX_SUBAGENT_TYPE_LEN = 64;
 
 /**
+ * Tool name emitted by Claude Code when an assistant turn delegates work to a
+ * sub-agent. Was called `Task` in older versions of Claude Code; renamed to
+ * `Agent` without a version bump of the tool_use schema, so JSONL ingestion
+ * and downstream queries MUST reference this constant rather than hard-coding
+ * the literal string.
+ */
+export const SUBAGENT_TOOL_NAME = 'Agent' as const;
+
+/**
  * Matches any ASCII C0 control char (0x00-0x1F) or DEL (0x7F).
  *
  * These are rejected in `subagent_type` to prevent log / UI injection from
@@ -62,7 +71,7 @@ const validateSubagentType = (
 const isAgentToolUse = (block: unknown): block is Record<string, unknown> => {
   if (!isRecord(block)) return false;
   if (block.type !== 'tool_use') return false;
-  return block.name === 'Agent';
+  return block.name === SUBAGENT_TOOL_NAME;
 };
 
 /**

@@ -24,6 +24,25 @@ export type DailyPoint = {
   sessionCount: number;
 };
 
+/**
+ * 4-way breakdown of session tokens. Feeds the "Tokens (30d)" KPI card tooltip
+ * so users can see the mix that makes up the composite number — today's is
+ * dominated by cache_read, blocking apples-to-apples comparison with ccusage
+ * (REQ-3 token-accounting-parity spec).
+ */
+export type TokenBreakdown = {
+  inputOutput: number;
+  cacheCreation: number;
+  cacheRead: number;
+  total: number;
+};
+
+type TokenBreakdownRow = {
+  inputOutput: number;
+  cacheCreation: number;
+  cacheRead: number;
+};
+
 export type TopSession = {
   id: string;
   project: string;
@@ -78,6 +97,7 @@ type PreparedSet = {
   costSourcesSince: import('better-sqlite3').Statement<[number]>;
   dailySpend: import('better-sqlite3').Statement<[number]>;
   topSessions: import('better-sqlite3').Statement<[number, number]>;
+  tokenBreakdown: import('better-sqlite3').Statement<[number]>;
 };
 
 const cache = new WeakMap<DB, PreparedSet>();
@@ -133,9 +153,35 @@ function getPrepared(db: DB): PreparedSet {
        ORDER BY totalCostUsd DESC
        LIMIT ?`
     ),
+    // 4-way split of token usage for sessions in the window. Powers the
+    // "Tokens (30d)" KPI tooltip — `total` is derived in TS to preserve the
+    // arithmetic invariant inputOutput + cacheCreation + cacheRead === total.
+    tokenBreakdown: db.prepare(
+      `SELECT
+         COALESCE(SUM(total_input_tokens + total_output_tokens), 0) AS inputOutput,
+         COALESCE(SUM(total_cache_creation_tokens), 0)              AS cacheCreation,
+         COALESCE(SUM(total_cache_read_tokens), 0)                  AS cacheRead
+       FROM sessions
+       WHERE started_at >= ?`
+    ),
   };
   cache.set(db, prepared);
   return prepared;
+}
+
+export function getTokenBreakdown(db: DB, days: number): TokenBreakdown {
+  const p = getPrepared(db);
+  const cutoff = Date.now() - days * DAY_MS;
+  const row = p.tokenBreakdown.get(cutoff) as TokenBreakdownRow | undefined;
+  if (!row) {
+    return { inputOutput: 0, cacheCreation: 0, cacheRead: 0, total: 0 };
+  }
+  return {
+    inputOutput: row.inputOutput,
+    cacheCreation: row.cacheCreation,
+    cacheRead: row.cacheRead,
+    total: row.inputOutput + row.cacheCreation + row.cacheRead,
+  };
 }
 
 const DAY_MS = 86_400_000;
