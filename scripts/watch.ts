@@ -24,20 +24,29 @@ async function main(): Promise<void> {
   if (process.env.TOKENFX_WATCH_BACKFILL === '0') {
     opts.backfill = false;
   }
-  const handle = await startWatcher(opts);
 
+  // Register signal handlers BEFORE awaiting startWatcher so an early
+  // SIGTERM (e.g. from a test harness racing the "ready" log) never hits
+  // the default kernel handler — which exits with signal, not code 0.
+  // The handle is late-bound: if SIGTERM arrives pre-ready, we exit with
+  // a tombstone stop() attempt that no-ops.
+  let handle: Awaited<ReturnType<typeof startWatcher>> | null = null;
+  let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     log.info(`[watch] ${signal} received — stopping`);
     try {
-      await handle.stop();
+      await handle?.stop();
     } catch (err) {
       log.error('[watch] stop failed:', err);
     }
     process.exit(0);
   };
-
   process.once('SIGINT', () => void shutdown('SIGINT'));
   process.once('SIGTERM', () => void shutdown('SIGTERM'));
+
+  handle = await startWatcher(opts);
 
   // Keep the process alive — chokidar holds the loop open via its
   // fs.watch handles, but an explicit hint doesn't hurt.

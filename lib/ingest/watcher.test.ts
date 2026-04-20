@@ -238,28 +238,37 @@ describe('startWatcher + handleFileEvent', () => {
   });
 
   // TC-I-01: new file → ingestion via chokidar add event
-  it('TC-I-01: ingests a new .jsonl after add event', async () => {
-    watcher = await startWatcher({ root: tmp, db, backfill: false });
-    expect(watcher.running).toBe(true);
+  // Test timeout bumped to 20s: `waitFor(..., 10_000)` races the global
+  // vitest testTimeout=10_000; on chokidar under parallel vitest load the
+  // event latency occasionally exceeds the waitFor budget itself.
+  it(
+    'TC-I-01: ingests a new .jsonl after add event',
+    async () => {
+      watcher = await startWatcher({ root: tmp, db, backfill: false });
+      expect(watcher.running).toBe(true);
 
-    const target = path.join(tmp, 'fresh.jsonl');
-    fs.writeFileSync(target, fixtureJsonl());
+      const target = path.join(tmp, 'fresh.jsonl');
+      fs.writeFileSync(target, fixtureJsonl());
 
-    await waitFor(
-      () => {
-        const row = db
+      await waitFor(
+        () => {
+          const row = db
+            .prepare('SELECT COUNT(*) as c FROM sessions')
+            .get() as { c: number };
+          return row.c > 0;
+        },
+        15_000, // chokidar awaitWriteFinish=500ms + generous pool-contention buffer
+      );
+
+      const rowCount = (
+        db
           .prepare('SELECT COUNT(*) as c FROM sessions')
-          .get() as { c: number };
-        return row.c > 0;
-      },
-      10_000, // chokidar awaitWriteFinish=500ms + pool contention buffer
-    );
-
-    const rowCount = (
-      db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number }
-    ).c;
-    expect(rowCount).toBe(1);
-  });
+          .get() as { c: number }
+      ).c;
+      expect(rowCount).toBe(1);
+    },
+    20_000,
+  );
 
   // TC-I-02: existing file grows → change event → re-ingest
   it('TC-I-02: re-ingests on change (append) — idempotent', async () => {
@@ -416,29 +425,37 @@ describe('startWatcher + handleFileEvent', () => {
   });
 
   // TC-I-10: file in a subdirectory still ingests
-  it('TC-I-10: ingests a .jsonl created in a subdirectory', async () => {
-    watcher = await startWatcher({ root: tmp, db, backfill: false });
+  // Same timeout treatment as TC-I-01 — chokidar fs-event race under vitest
+  // parallel load. waitFor budget must fit inside per-test testTimeout.
+  it(
+    'TC-I-10: ingests a .jsonl created in a subdirectory',
+    async () => {
+      watcher = await startWatcher({ root: tmp, db, backfill: false });
 
-    const sub = path.join(tmp, 'project-x');
-    fs.mkdirSync(sub);
-    const target = path.join(sub, 'nested.jsonl');
-    fs.writeFileSync(target, fixtureJsonl());
+      const sub = path.join(tmp, 'project-x');
+      fs.mkdirSync(sub);
+      const target = path.join(sub, 'nested.jsonl');
+      fs.writeFileSync(target, fixtureJsonl());
 
-    await waitFor(
-      () => {
-        const row = db
+      await waitFor(
+        () => {
+          const row = db
+            .prepare('SELECT COUNT(*) as c FROM sessions')
+            .get() as { c: number };
+          return row.c > 0;
+        },
+        15_000,
+      );
+
+      const count = (
+        db
           .prepare('SELECT COUNT(*) as c FROM sessions')
-          .get() as { c: number };
-        return row.c > 0;
-      },
-      10_000,
-    );
-
-    const count = (
-      db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number }
-    ).c;
-    expect(count).toBe(1);
-  });
+          .get() as { c: number }
+      ).c;
+      expect(count).toBe(1);
+    },
+    20_000,
+  );
 
   // TC-I-11: chokidar error event is logged, watcher survives
   it('TC-I-11: chokidar error event is logged without crashing', async () => {
