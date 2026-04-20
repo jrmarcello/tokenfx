@@ -269,7 +269,7 @@ describe('migrate — user_settings singleton', () => {
       dflt_value: string | null;
       pk: number;
     }>;
-    expect(cols.length).toBe(6);
+    expect(cols.length).toBe(8);
     const byName = Object.fromEntries(cols.map((c) => [c.name, c]));
     expect(Object.keys(byName).sort()).toEqual(
       [
@@ -278,6 +278,8 @@ describe('migrate — user_settings singleton', () => {
         'quota_tokens_7d',
         'quota_sessions_5h',
         'quota_sessions_7d',
+        'quota_5h_reset_at',
+        'quota_7d_reset_at',
         'updated_at',
       ].sort(),
     );

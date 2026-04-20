@@ -2,7 +2,11 @@ import type { JSX } from 'react';
 
 import { QuotaBar } from '@/components/quota/quota-bar';
 import { getDb } from '@/lib/db/client';
-import { getQuotaUsage, getUserSettings } from '@/lib/queries/quota';
+import {
+  getQuotaResetEstimates,
+  getQuotaUsage,
+  getUserSettings,
+} from '@/lib/queries/quota';
 
 type Bar = {
   key: string;
@@ -26,8 +30,8 @@ const readNow = (): number => Date.now();
  * when every threshold in `user_settings` is `null` (REQ-9), so the
  * widget is invisible until the user defines at least one threshold.
  *
- * Rendered bars follow the order `tokens5h -> tokens7d -> sessions5h ->
- * sessions7d` (REQ-11). Bars with a `null` threshold are omitted.
+ * Rendered bars follow the order `tokens5h -> tokens7d` (REQ-11). Bars
+ * with a `null` threshold are omitted.
  */
 export async function QuotaNavWidget(): Promise<JSX.Element | null> {
   // Capture "now" up-front so the rest of the component body reads
@@ -38,13 +42,23 @@ export async function QuotaNavWidget(): Promise<JSX.Element | null> {
   const settings = getUserSettings(db);
 
   const anyThresholdSet =
-    settings.quotaTokens5h !== null ||
-    settings.quotaTokens7d !== null ||
-    settings.quotaSessions5h !== null ||
-    settings.quotaSessions7d !== null;
+    settings.quotaTokens5h !== null || settings.quotaTokens7d !== null;
   if (!anyThresholdSet) return null;
 
-  const usage = getQuotaUsage(db, now);
+  // Block-aware usage: count tokens only from the current 5h/7d cycle,
+  // not a rolling `now - windowMs` window (see `getQuotaUsage` docstring).
+  const resets = getQuotaResetEstimates(db, now, {
+    calibratedReset5hAt: settings.quota5hResetAt,
+    calibratedReset7dAt: settings.quota7dResetAt,
+  });
+  const FIVE_H_MS = 5 * 3_600_000;
+  const SEVEN_D_MS = 7 * 86_400_000;
+  const usage = getQuotaUsage(db, now, {
+    cycleStart5hMs:
+      resets.reset5hMs !== null ? resets.reset5hMs - FIVE_H_MS : null,
+    cycleStart7dMs:
+      resets.reset7dMs !== null ? resets.reset7dMs - SEVEN_D_MS : null,
+  });
 
   const bars: Bar[] = [];
   if (settings.quotaTokens5h !== null) {
@@ -61,22 +75,6 @@ export async function QuotaNavWidget(): Promise<JSX.Element | null> {
       label: '7d',
       used: usage.tokens7d,
       limit: settings.quotaTokens7d,
-    });
-  }
-  if (settings.quotaSessions5h !== null) {
-    bars.push({
-      key: 's5h',
-      label: 'S 5h',
-      used: usage.sessions5h,
-      limit: settings.quotaSessions5h,
-    });
-  }
-  if (settings.quotaSessions7d !== null) {
-    bars.push({
-      key: 's7d',
-      label: 'S 7d',
-      used: usage.sessions7d,
-      limit: settings.quotaSessions7d,
     });
   }
 

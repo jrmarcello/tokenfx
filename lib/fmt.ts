@@ -57,3 +57,29 @@ export const fmtScore = (n: number | null): string =>
   n === null ? '—' : n.toFixed(1);
 export const fmtRatio = (n: number | null): string =>
   n === null ? '—' : n.toFixed(2);
+
+/**
+ * Format a duration in milliseconds as a short human-readable string for
+ * "time-until-reset" displays (e.g. the Quota screen). Granularity is
+ * minutes — residual seconds are discarded via `Math.floor`. Values below
+ * 60s collapse to `"agora"`; values at/above 7d cap to `"7d+"` (rolling
+ * week resets should never exceed 7d, so the cap guards against bug
+ * inputs).
+ *
+ * Examples: `43m`, `2h15m`, `2h`, `3d`, `5d12h`, `agora`, `7d+`.
+ */
+export const fmtDuration = (ms: number): string => {
+  if (ms <= 0 || ms < 60_000) return 'agora';
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
+  if (ms < 86_400_000) {
+    const h = Math.floor(ms / 3_600_000);
+    const m = Math.floor((ms % 3_600_000) / 60_000);
+    return m === 0 ? `${h}h` : `${h}h${m}m`;
+  }
+  if (ms < 604_800_000) {
+    const d = Math.floor(ms / 86_400_000);
+    const h = Math.floor((ms % 86_400_000) / 3_600_000);
+    return h === 0 ? `${d}d` : `${d}d${h}h`;
+  }
+  return '7d+';
+};

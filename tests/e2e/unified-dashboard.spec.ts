@@ -115,15 +115,14 @@ test.describe('unified dashboard', () => {
   test('TC-E2E-10: pressing "/" while another input is focused is ignored', async ({
     page,
   }) => {
-    // /sessions has other inputs via PaginationNav / filters? Use /quota
-    // which has the QuotaForm with 4 number inputs. Focus one of them and
-    // verify "/" doesn't steal focus.
-    await page.goto('/quota');
-    const firstInput = page.getByLabel('Tokens — janela 5h');
-    await firstInput.click();
-    await expect(firstInput).toBeFocused();
+    // Use /search which has a "Consulta" input — focus it and verify the
+    // "/" shortcut doesn't steal focus back to the header widget.
+    await page.goto('/search');
+    const formInput = page.getByRole('searchbox', { name: 'Consulta' });
+    await formInput.click();
+    await expect(formInput).toBeFocused();
     await page.keyboard.press('/');
-    await expect(firstInput).toBeFocused();
+    await expect(formInput).toBeFocused();
   });
 
   test('TC-E2E-11: Esc blurs the search input', async ({ page }) => {

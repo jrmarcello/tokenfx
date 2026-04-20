@@ -3,6 +3,7 @@ import {
   fmtCompact,
   fmtDate,
   fmtDateTime,
+  fmtDuration,
   fmtNum,
   fmtPct,
   fmtRating,
@@ -71,5 +72,29 @@ describe('fmt', () => {
     // fmtTime → HH:MM (24h)
     expect(fmtTime(ms)).toMatch(/^\d{2}:\d{2}$/);
     expect(fmtTime(ms)).not.toMatch(/AM|PM/i);
+  });
+});
+
+describe('fmtDuration', () => {
+  it.each([
+    // TC-U-08..16
+    { tc: 'TC-U-08', input: 43 * 60_000, expected: '43m' },
+    { tc: 'TC-U-09', input: 2 * 3_600_000 + 15 * 60_000, expected: '2h15m' },
+    { tc: 'TC-U-10', input: 2 * 3_600_000, expected: '2h' },
+    { tc: 'TC-U-11', input: 3 * 86_400_000, expected: '3d' },
+    { tc: 'TC-U-12', input: 5 * 86_400_000 + 12 * 3_600_000, expected: '5d12h' },
+    { tc: 'TC-U-13', input: 30_000, expected: 'agora' },
+    { tc: 'TC-U-14', input: 0, expected: 'agora' },
+    { tc: 'TC-U-15', input: -100_000, expected: 'agora' },
+    { tc: 'TC-U-16', input: 8 * 86_400_000, expected: '7d+' },
+    // Boundary cases
+    { tc: 'boundary: just under 60s', input: 59_999, expected: 'agora' },
+    { tc: 'boundary: exactly 60s', input: 60_000, expected: '1m' },
+    { tc: 'boundary: just under 60min', input: 3_599_999, expected: '59m' },
+    { tc: 'boundary: exactly 60min', input: 3_600_000, expected: '1h' },
+    { tc: 'boundary: exactly 24h', input: 86_400_000, expected: '1d' },
+    { tc: 'boundary: exactly 7d', input: 604_800_000, expected: '7d+' },
+  ])('$tc: fmtDuration($input) → $expected', ({ input, expected }) => {
+    expect(fmtDuration(input)).toBe(expected);
   });
 });

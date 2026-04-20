@@ -44,14 +44,17 @@ type Props = { cells: readonly QuotaHeatmapCell[] };
 export function QuotaHeatmap({ cells }: Props) {
   if (cells.length === 0) {
     return (
-      <div className="space-y-2">
+      <section
+        aria-label="Padrão de consumo"
+        className="space-y-3 rounded-lg border border-neutral-200 bg-white p-6 transition-colors hover:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700"
+      >
         <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
           Padrão de consumo (últimas 4 semanas)
         </h3>
         <p className="text-sm text-neutral-500">
           Sem dados nos últimos 28 dias — rode <code className="font-mono">pnpm ingest</code> pra ver o padrão aqui.
         </p>
-      </div>
+      </section>
     );
   }
 
@@ -61,10 +64,16 @@ export function QuotaHeatmap({ cells }: Props) {
   );
 
   return (
-    <div className="space-y-2">
+    <section
+      aria-label="Padrão de consumo"
+      className="space-y-3 rounded-lg border border-neutral-200 bg-white p-6 transition-colors hover:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700"
+    >
       <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
         Padrão de consumo (últimas 4 semanas)
       </h3>
+      {/* Inline-block shrinks the inner grid to its natural width (cells are
+          fixed at 12px). The outer <section> card takes the full column
+          width via CSS grid; the heatmap grid sits flush-left inside it. */}
       <div className="inline-block rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950 p-2">
         {/* Header: horas */}
         <div className="flex gap-0.5 text-[10px] text-neutral-500">
@@ -102,6 +111,6 @@ export function QuotaHeatmap({ cells }: Props) {
           </div>
         ))}
       </div>
-    </div>
+    </section>
   );
 }

@@ -169,5 +169,12 @@ CREATE TABLE IF NOT EXISTS user_settings (
   quota_tokens_7d INTEGER,
   quota_sessions_5h INTEGER,
   quota_sessions_7d INTEGER,
+  -- Calibração opcional dos resets (epoch ms): quando Claude.ai mostra
+  -- "Resets in X", usuário insere a data-hora alvo. `getQuotaResetEstimates`
+  -- usa esses valores como base; após o reset passar, auto-avança
+  -- (+5h ou +7d conforme a janela) indefinidamente. Mantém-se separado
+  -- dos thresholds pra não confundir o contrato do schema existente.
+  quota_5h_reset_at INTEGER,
+  quota_7d_reset_at INTEGER,
   updated_at INTEGER NOT NULL
 );

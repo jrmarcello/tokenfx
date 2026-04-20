@@ -35,6 +35,7 @@ export function migrate(db: DB): void {
     backfillTurnsSubagentType(db);
     backfillSessionsOtelCost(db);
     backfillTurnsCacheCreationSplit(db);
+    backfillUserSettings7dResetAt(db);
     const hasData = db
       .prepare('SELECT 1 FROM sessions LIMIT 1')
       .get() !== undefined;
@@ -168,6 +169,27 @@ function backfillTurnsCacheCreationSplit(db: DB): void {
     db.exec(
       "ALTER TABLE turns ADD COLUMN service_tier TEXT NOT NULL DEFAULT 'standard'",
     );
+  }
+}
+
+/**
+ * Older DB files predate the `quota_5h_reset_at` / `quota_7d_reset_at`
+ * columns on `user_settings`. Same shape as the other backfills: schema
+ * state drives the decision, never row values. Columns are nullable and
+ * store the user's self-calibrated reset timestamps (epoch ms) from
+ * Claude.ai's Account & Usage panel.
+ */
+function backfillUserSettings7dResetAt(db: DB): void {
+  const cols = db
+    .prepare('PRAGMA table_info(user_settings)')
+    .all() as Array<{ name: string }>;
+  const has5h = cols.some((c) => c.name === 'quota_5h_reset_at');
+  if (!has5h) {
+    db.exec('ALTER TABLE user_settings ADD COLUMN quota_5h_reset_at INTEGER');
+  }
+  const has7d = cols.some((c) => c.name === 'quota_7d_reset_at');
+  if (!has7d) {
+    db.exec('ALTER TABLE user_settings ADD COLUMN quota_7d_reset_at INTEGER');
   }
 }
 
