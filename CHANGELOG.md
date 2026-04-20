@@ -7,6 +7,23 @@ Commits seguem [Conventional Commits](https://www.conventionalcommits.org/).
 
 ---
 
+## [0.3.0] - 2026-04-20
+
+### Correções
+
+- **ingest**: Mitigate watcher flakes under vitest parallel load
+- **e2e**: Eliminate flakes — race, concurrency, WAL visibility, timeouts
+
+### Funcionalidades
+
+- **quota**: Thresholds dialog, resets calibráveis, block-aware usage, painel de estatísticas
+- **effectiveness**: Token breakdown tooltip + subagent delegation metric
+- **dashboard**: Unificar / + /effectiveness, search widget global, auditoria de componentes
+
+### Manutenção
+
+- **release**: V0.2.0 [skip ci]
+
 ## [0.2.0] - 2026-04-19
 
 ### Correções
