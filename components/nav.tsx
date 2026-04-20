@@ -6,9 +6,7 @@ import { cn } from '@/lib/cn';
 const links = [
   { href: '/', label: 'Visão geral' },
   { href: '/sessions', label: 'Sessões' },
-  { href: '/effectiveness', label: 'Efetividade' },
   { href: '/quota', label: 'Quota' },
-  { href: '/search', label: 'Busca' },
 ];
 
 export function Nav({ slot }: { slot?: React.ReactNode }) {

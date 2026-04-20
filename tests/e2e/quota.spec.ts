@@ -42,14 +42,18 @@ test.describe('max plan quota', () => {
     resetUserSettings();
   });
 
-  test('TC-E2E-01: nav has "Quota" link between Efetividade and Busca', async ({
+  test('TC-E2E-01: nav has "Quota" link alongside Visão geral and Sessões', async ({
     page,
   }) => {
+    // The unified-dashboard spec collapsed `/effectiveness` into `/` and moved
+    // search from a nav link into a header widget, leaving three nav links.
     await page.goto('/');
     const nav = page.locator('nav').first();
-    await expect(nav.getByRole('link', { name: 'Efetividade' })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Visão geral' })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Sessões' })).toBeVisible();
     await expect(nav.getByRole('link', { name: 'Quota' })).toBeVisible();
-    await expect(nav.getByRole('link', { name: 'Busca' })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Efetividade' })).toHaveCount(0);
+    await expect(nav.getByRole('link', { name: 'Busca' })).toHaveCount(0);
   });
 
   test('TC-E2E-02: /quota without settings shows H1 + CTA + empty form', async ({

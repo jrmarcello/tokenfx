@@ -348,3 +348,44 @@ export function getSessionScores(db: DB, days: number): SessionScore[] {
     return { sessionId: s.id, project: s.project, score };
   });
 }
+
+export type ScoreBucket = {
+  label: '0-20' | '20-40' | '40-60' | '60-80' | '80-100';
+  low: number;
+  high: number;
+  count: number;
+};
+
+const SCORE_BUCKET_LABELS = [
+  '0-20',
+  '20-40',
+  '40-60',
+  '60-80',
+  '80-100',
+] as const;
+
+/**
+ * Aggregate session scores into 5 buckets (0-20, 20-40, 40-60, 60-80, 80-100).
+ *
+ * Bucket boundaries are low-inclusive and high-exclusive, EXCEPT the top
+ * bucket which also includes 100 (clamped index 4). This matches the
+ * intuition that a score of exactly 20 belongs to "20-40" (improving
+ * category), not "0-20".
+ *
+ * Always returns all 5 buckets (count=0 when none fall in). Order: lowest
+ * score first (0-20) → highest (80-100).
+ */
+export function getSessionScoreDistribution(db: DB, days: number): ScoreBucket[] {
+  const scores = getSessionScores(db, days);
+  const counts = [0, 0, 0, 0, 0];
+  for (const s of scores) {
+    const idx = Math.min(4, Math.floor(s.score / 20));
+    counts[idx]++;
+  }
+  return SCORE_BUCKET_LABELS.map((label, i) => ({
+    label,
+    low: i * 20,
+    high: i === 4 ? 100 : (i + 1) * 20,
+    count: counts[i],
+  }));
+}

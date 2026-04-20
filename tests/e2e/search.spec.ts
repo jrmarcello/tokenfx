@@ -8,7 +8,13 @@ test.describe('transcript search', () => {
     await expect(
       page.getByRole('heading', { name: 'Busca' }),
     ).toBeVisible();
-    await expect(page.getByRole('searchbox')).toHaveValue('auth-marker');
+    // Scope by accessible name — there are now two searchboxes on the page
+    // (header widget + page form) so a bare `getByRole('searchbox')` is
+    // ambiguous. The form input gets its name from the <label>Consulta</label>
+    // wrapper; the widget uses aria-label="Buscar no transcript".
+    await expect(
+      page.getByRole('searchbox', { name: 'Consulta' }),
+    ).toHaveValue('auth-marker');
     // The seed for e2e-1 contains "auth-marker" in both prompt and response.
     const hitLink = page.getByRole('link', { name: /auth-marker/i }).first();
     await expect(hitLink).toBeVisible();
@@ -23,7 +29,9 @@ test.describe('transcript search', () => {
   }) => {
     await page.goto('/search');
     await expect(page.getByRole('heading', { name: 'Busca' })).toBeVisible();
-    await expect(page.getByRole('searchbox')).toHaveValue('');
+    await expect(
+      page.getByRole('searchbox', { name: 'Consulta' }),
+    ).toHaveValue('');
     await expect(
       page.getByText(/digite um termo/i),
     ).toBeVisible();

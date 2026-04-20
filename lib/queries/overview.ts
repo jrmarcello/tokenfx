@@ -231,3 +231,112 @@ export function getTopSessions(db: DB, limit: number, days: number): TopSession[
     costSource: r.cost_source as CostSource,
   }));
 }
+
+// --------------- Daily accept-rate (OTEL) ---------------
+
+export type DailyAcceptRatePoint = {
+  date: string; // local YYYY-MM-DD
+  acceptRate: number | null; // null when day had zero decisions
+};
+
+/**
+ * Per-day accept rate from `otel_scrapes.claude_code_code_edit_tool_decision_total`.
+ * Buckets by local date (strftime). Days with zero decisions get `null`
+ * (renders as a line gap in charts). Returns the last `days` days in
+ * chronological order (backfills empty dates with null).
+ */
+export function getDailyAcceptRate(
+  db: DB,
+  days: number,
+): DailyAcceptRatePoint[] {
+  const cutoff = Date.now() - days * DAY_MS;
+  const rows = db
+    .prepare(
+      `WITH daily AS (
+         SELECT
+           strftime('%Y-%m-%d', datetime(scraped_at/1000, 'unixepoch', 'localtime')) AS date,
+           SUM(CASE WHEN json_extract(labels_json, '$.decision') = 'accept' THEN value ELSE 0 END) AS accepts,
+           SUM(value) AS total
+         FROM otel_scrapes
+         WHERE metric_name = 'claude_code_code_edit_tool_decision_total'
+           AND scraped_at >= ?
+         GROUP BY date
+       )
+       SELECT date, accepts, total FROM daily`,
+    )
+    .all(cutoff) as Array<{ date: string; accepts: number; total: number }>;
+  const byDate = new Map<string, number | null>();
+  for (const r of rows) {
+    byDate.set(r.date, r.total > 0 ? r.accepts / r.total : null);
+  }
+  const out: DailyAcceptRatePoint[] = [];
+  const today = startOfTodayLocalMs();
+  for (let i = days - 1; i >= 0; i--) {
+    const ms = today - i * DAY_MS;
+    const key = formatLocalDate(ms);
+    out.push({ date: key, acceptRate: byDate.get(key) ?? null });
+  }
+  return out;
+}
+
+// --------------- Top sessions — alternative orderings ---------------
+
+/**
+ * Top-N sessions by score ascending (worst first — these are the most
+ * valuable to drill into: expensive but poorly rated). Pulls top-50
+ * scored sessions from `getSessionScores` and sorts by score asc, then
+ * takes `limit`. Reuses prepared query behind getTopSessions to map
+ * metadata.
+ */
+export function getTopSessionsByScore(
+  db: DB,
+  limit: number,
+  days: number,
+): TopSession[] {
+  // Lazy-import to avoid circular refs at module load (effectiveness imports
+  // from overview too in sibling files).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getSessionScores } = require('./effectiveness') as typeof import('./effectiveness');
+  const scored = getSessionScores(db, days);
+  if (scored.length === 0) return [];
+  const scoreById = new Map(scored.map((s) => [s.sessionId, s.score]));
+  // Pull a large candidate set by cost, then re-sort by score asc in-place.
+  const candidates = getTopSessions(db, Math.max(50, limit), days).filter((s) =>
+    scoreById.has(s.id),
+  );
+  candidates.sort((a, b) => (scoreById.get(a.id) ?? 0) - (scoreById.get(b.id) ?? 0));
+  return candidates.slice(0, limit);
+}
+
+/**
+ * Top-N sessions by turn count descending — "longest sessions" view.
+ */
+export function getTopSessionsByTurns(
+  db: DB,
+  limit: number,
+  days: number,
+): TopSession[] {
+  const cutoff = Date.now() - days * DAY_MS;
+  const rows = db
+    .prepare(
+      `SELECT id,
+              project,
+              started_at AS startedAt,
+              ${EFFECTIVE_COST_EXPR} AS totalCostUsd,
+              turn_count AS turnCount,
+              ${COST_SOURCE_EXPR} AS cost_source
+       FROM sessions
+       WHERE started_at >= ?
+       ORDER BY turn_count DESC
+       LIMIT ?`,
+    )
+    .all(cutoff, limit) as TopSessionRow[];
+  return rows.map((r) => ({
+    id: r.id,
+    project: r.project,
+    startedAt: r.startedAt,
+    totalCostUsd: r.totalCostUsd,
+    turnCount: r.turnCount,
+    costSource: r.cost_source as CostSource,
+  }));
+}

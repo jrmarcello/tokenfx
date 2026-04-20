@@ -4,6 +4,7 @@ import "./globals.css";
 import { Nav } from "@/components/nav";
 import { OtelStatusBadge } from "@/components/otel-status-badge";
 import { QuotaNavWidget } from "@/components/quota/quota-nav-widget";
+import { SearchWidget } from "@/components/search-widget";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 
@@ -43,6 +44,7 @@ export default function RootLayout({
           <Nav
             slot={
               <div className="flex items-center gap-3">
+                <SearchWidget />
                 <QuotaNavWidget />
                 <ThemeToggle />
                 <OtelStatusBadge />

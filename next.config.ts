@@ -9,6 +9,15 @@ const nextConfig: NextConfig = {
   // + trimmed `node_modules/`) so the Docker runtime image stays small.
   // No impact on `pnpm dev` — only `pnpm build` gains the emit step.
   output: 'standalone',
+  // `/effectiveness` foi consolidada em `/` (spec unified-dashboard). Redirect
+  // permanente preserva bookmarks + URLs em docs. Next emite 308 para
+  // `permanent: true` (spec-equivalente a 301).
+  async redirects() {
+    return [
+      { source: '/effectiveness', destination: '/', permanent: true },
+      { source: '/effectiveness/:path*', destination: '/:path*', permanent: true },
+    ];
+  },
 };
 
 export default nextConfig;

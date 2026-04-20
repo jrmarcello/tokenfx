@@ -50,16 +50,12 @@ test.describe('smoke', () => {
     ).toBeVisible();
   });
 
-  test('TC-E2E-11: /effectiveness renders "Fonte dos custos" section with calibration data', async ({ page }) => {
-    await page.goto('/effectiveness');
-    await expect(
-      page.getByRole('heading', { name: 'Fonte dos custos' }),
-    ).toBeVisible();
-    // Seed populates a 'global' row so the table body is non-empty.
-    await expect(page.getByText('Global (fallback)')).toBeVisible();
-  });
+  // TC-E2E-11 (legacy "Fonte dos custos" heading em /effectiveness) removido
+  // — CostSourcesBreakdown foi consolidado no tooltip do KPI Custo na home
+  // (spec unified-dashboard, REQ-17). TC-E2E-18 da unified-dashboard.spec.ts
+  // cobre a nova assertion.
 
-  test('TC-E2E-05: home page renders activity heatmap with at least one non-empty cell', async ({ page }) => {
+test('TC-E2E-05: home page renders activity heatmap with at least one non-empty cell', async ({ page }) => {
     await page.goto('/');
     await expect(
       page.getByRole('heading', { name: 'Atividade do último ano' }),
@@ -87,8 +83,9 @@ test.describe('smoke', () => {
     await expect(todayCell).toHaveCount(1);
     await todayCell.click();
     await expect(page).toHaveURL(new RegExp(`/sessions\\?date=${iso}$`));
+    // The /sessions date-filter summary reads "N encontrada(s) em YYYY-MM-DD".
     await expect(
-      page.getByText(`Sessões de ${iso}`, { exact: false }),
+      page.getByText(new RegExp(`encontrada[s]? em ${iso}`)),
     ).toBeVisible();
     await expect(page.getByText('e2e-project-today')).toBeVisible();
   });
@@ -102,10 +99,12 @@ test.describe('smoke', () => {
     await expect(page.getByText('e2e-project-alpha')).toBeVisible();
   });
 
-  test('TC-E2E-04: /effectiveness shows model breakdown section with mixed families', async ({ page }) => {
-    await page.goto('/effectiveness');
+  test('TC-E2E-04: / shows model breakdown section with mixed families', async ({ page }) => {
+    // /effectiveness foi consolidada em / (spec unified-dashboard). A seção
+    // nova usa ModelBreakdownBar com heading "Custo por família de modelo".
+    await page.goto('/');
     await expect(
-      page.getByRole('heading', { name: 'Distribuição de spend por modelo' }),
+      page.getByRole('heading', { name: 'Custo por família de modelo' }),
     ).toBeVisible();
     // Seed covers opus + sonnet + haiku; at least two family labels should appear.
     const families = page.getByText(/^(opus|sonnet|haiku)$/);

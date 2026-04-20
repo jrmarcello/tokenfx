@@ -1,10 +1,12 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('tool success trends', () => {
-  test('TC-E2E-01: /effectiveness shows chart when seed has ≥2 tools above threshold', async ({
+  test('TC-E2E-01: / shows chart when seed has ≥2 tools above threshold', async ({
     page,
   }) => {
-    await page.goto('/effectiveness');
+    // /effectiveness foi consolidada em / (spec unified-dashboard). A seção
+    // "Tendência de erro por ferramenta" vive agora no bloco #efetividade.
+    await page.goto('/');
 
     const heading = page.getByRole('heading', {
       name: 'Tendência de erro por ferramenta',
@@ -27,8 +29,8 @@ test.describe('tool success trends', () => {
   }) => {
     // TC-E2E-02 in the spec targets an empty-window scenario; our E2E env
     // always seeds tool calls, so we verify the other dimension of the hide
-    // rule: the trend section belongs to /effectiveness only, never to the
-    // per-session page. Session detail should NOT carry the heading.
+    // rule: the trend section belongs to the global dashboard only, never
+    // to the per-session page. Session detail should NOT carry the heading.
     await page.goto('/sessions/e2e-1');
     await expect(
       page.getByRole('heading', { name: 'Tendência de erro por ferramenta' }),
