@@ -168,7 +168,10 @@ const FIXED_SESSIONS: readonly SeedSession[] = [
         cacheCreation: 50,
         userPrompt: 'Kick off exploration',
         assistantText: 'I will delegate to Explore',
-        toolCalls: [],
+        // An `Agent` tool_call is what `getSubagentUsage` aggregates on (REQ-5
+        // of token-accounting-parity spec). Seed keeps 1+ Agent call so the
+        // "Delegação a subagents" card deterministically renders in E2E.
+        toolCalls: [{ name: 'Agent', isError: false }],
         subagentType: 'Explore',
       },
       {
@@ -180,7 +183,7 @@ const FIXED_SESSIONS: readonly SeedSession[] = [
         cacheCreation: 40,
         userPrompt: 'Now review',
         assistantText: 'Delegating to code-reviewer',
-        toolCalls: [],
+        toolCalls: [{ name: 'Agent', isError: false }],
         subagentType: 'code-reviewer',
       },
       {
@@ -292,6 +295,10 @@ const FIXED_SESSIONS: readonly SeedSession[] = [
 const DAY_MS = 86_400_000;
 
 export default async function globalSetup(): Promise<void> {
+  await seedE2EDatabase();
+}
+
+export async function seedE2EDatabase(): Promise<void> {
   const dbPath = path.resolve(__dirname, '../../data/e2e-test.db');
   if (fs.existsSync(dbPath)) fs.rmSync(dbPath);
   const walPath = `${dbPath}-wal`;
@@ -471,4 +478,22 @@ export default async function globalSetup(): Promise<void> {
   tx();
 
   db.close();
+}
+
+// When invoked directly (`pnpm tsx tests/e2e/global-setup.ts`), seed the DB
+// and exit. The Playwright webServer command chains this before starting
+// `next dev`, because Playwright's `globalSetup` hook races the `webServer`
+// (next dev boots and opens the DB before globalSetup finishes), leaving
+// the dev server holding an FD on the pre-seed inode that globalSetup
+// later deletes. Chaining via webServer command closes that race.
+const invokedDirectly =
+  import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith('global-setup.ts');
+if (invokedDirectly) {
+  seedE2EDatabase()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error('[global-setup] failed:', err);
+      process.exit(1);
+    });
 }

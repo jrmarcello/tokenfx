@@ -55,6 +55,5 @@ export async function POST(request: Request): Promise<NextResponse> {
     revalidatePath(`/sessions/${sessionId}`);
   }
   revalidatePath('/');
-  revalidatePath('/effectiveness');
   return NextResponse.json({ ok: true });
 }

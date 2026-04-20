@@ -63,23 +63,30 @@ describe('ensureFreshIngest — watcher coexistence', () => {
     expect(globalThis.__tokenfxWatcher).toBe(handle);
   });
 
-  it('TC-I-16 (REQ-11, edge): runs normally when watcher singleton is present but NOT running', async () => {
-    const stop = vi.fn(async () => {});
-    const handle: WatcherHandle = { running: false, stop };
-    globalThis.__tokenfxWatcher = handle;
+  // Extended timeout: the normal `ensureFreshIngest` path hits the filesystem
+  // (listTranscriptFiles + statSync walk of ~/.claude/projects). Under
+  // vitest parallel load that I/O can exceed the default 10s timeout.
+  it(
+    'TC-I-16 (REQ-11, edge): runs normally when watcher singleton is present but NOT running',
+    async () => {
+      const stop = vi.fn(async () => {});
+      const handle: WatcherHandle = { running: false, stop };
+      globalThis.__tokenfxWatcher = handle;
 
-    const getDbSpy = vi.spyOn(dbClient, 'getDb');
+      const getDbSpy = vi.spyOn(dbClient, 'getDb');
 
-    // Should not short-circuit on the watcher guard — the normal path must
-    // execute. With no matching JSONL files in the test env the run()
-    // coroutine resolves cleanly (its try/catch swallows infra errors).
-    await expect(ensureFreshIngest()).resolves.toBeUndefined();
+      // Should not short-circuit on the watcher guard — the normal path must
+      // execute. With no matching JSONL files in the test env the run()
+      // coroutine resolves cleanly (its try/catch swallows infra errors).
+      await expect(ensureFreshIngest()).resolves.toBeUndefined();
 
-    // Proof the normal path executed: getDb was called inside run().
-    expect(getDbSpy).toHaveBeenCalled();
+      // Proof the normal path executed: getDb was called inside run().
+      expect(getDbSpy).toHaveBeenCalled();
 
-    // Watcher state remained untouched.
-    expect(handle.running).toBe(false);
-    expect(stop).not.toHaveBeenCalled();
-  });
+      // Watcher state remained untouched.
+      expect(handle.running).toBe(false);
+      expect(stop).not.toHaveBeenCalled();
+    },
+    20_000,
+  );
 });

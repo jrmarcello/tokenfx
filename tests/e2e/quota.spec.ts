@@ -1,45 +1,62 @@
-import { test, expect } from '@playwright/test';
-import path from 'node:path';
-import Database from 'better-sqlite3';
+import { test, expect, type Page } from '@playwright/test';
 
-const dbPath = path.resolve(__dirname, '../../data/e2e-test.db');
+// QUOTA HELPERS — all mutations go through the form (Server Action) so
+// `revalidatePath('/', 'layout')` fires and the dev-server's long-lived
+// `better-sqlite3` singleton picks up the change on the next SELECT. A
+// direct DB write from this process races against the dev server's WAL
+// view cache and produced flakes under full-suite load; the form path is
+// deterministic.
 
-function resetUserSettings(): void {
-  const db = new Database(dbPath);
-  db.prepare('DELETE FROM user_settings WHERE id = 1').run();
-  db.close();
+const QUOTA_LABELS = [
+  'Tokens — janela 5h',
+  'Tokens — janela 7d',
+  'Sessões — janela 5h',
+  'Sessões — janela 7d',
+] as const;
+
+type QuotaFieldKey =
+  | 'quotaTokens5h'
+  | 'quotaTokens7d'
+  | 'quotaSessions5h'
+  | 'quotaSessions7d';
+
+const LABEL_BY_KEY: Record<QuotaFieldKey, (typeof QUOTA_LABELS)[number]> = {
+  quotaTokens5h: 'Tokens — janela 5h',
+  quotaTokens7d: 'Tokens — janela 7d',
+  quotaSessions5h: 'Sessões — janela 5h',
+  quotaSessions7d: 'Sessões — janela 7d',
+};
+
+async function resetUserSettings(page: Page): Promise<void> {
+  await page.goto('/quota');
+  for (const label of QUOTA_LABELS) {
+    await page.getByLabel(label).fill('');
+  }
+  await page.getByRole('button', { name: 'Salvar' }).click();
+  await expect(page.getByText('Salvo!')).toBeVisible();
 }
 
-function seedUserSettings(settings: {
-  quotaTokens5h: number | null;
-  quotaTokens7d: number | null;
-  quotaSessions5h: number | null;
-  quotaSessions7d: number | null;
-}): void {
-  const db = new Database(dbPath);
-  db.prepare(
-    `INSERT INTO user_settings
-       (id, quota_tokens_5h, quota_tokens_7d, quota_sessions_5h, quota_sessions_7d, updated_at)
-     VALUES (1, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET
-       quota_tokens_5h = excluded.quota_tokens_5h,
-       quota_tokens_7d = excluded.quota_tokens_7d,
-       quota_sessions_5h = excluded.quota_sessions_5h,
-       quota_sessions_7d = excluded.quota_sessions_7d,
-       updated_at = excluded.updated_at`,
-  ).run(
-    settings.quotaTokens5h,
-    settings.quotaTokens7d,
-    settings.quotaSessions5h,
-    settings.quotaSessions7d,
-    Date.now(),
-  );
-  db.close();
+async function seedUserSettings(
+  page: Page,
+  settings: {
+    quotaTokens5h: number | null;
+    quotaTokens7d: number | null;
+    quotaSessions5h: number | null;
+    quotaSessions7d: number | null;
+  },
+): Promise<void> {
+  await page.goto('/quota');
+  for (const key of Object.keys(LABEL_BY_KEY) as QuotaFieldKey[]) {
+    const value = settings[key];
+    await page.getByLabel(LABEL_BY_KEY[key]).fill(value === null ? '' : String(value));
+  }
+  await page.getByRole('button', { name: 'Salvar' }).click();
+  await expect(page.getByText('Salvo!')).toBeVisible();
 }
 
 test.describe('max plan quota', () => {
-  test.beforeEach(() => {
-    resetUserSettings();
+  test.beforeEach(async ({ page }) => {
+    await resetUserSettings(page);
   });
 
   test('TC-E2E-01: nav has "Quota" link alongside Visão geral and Sessões', async ({
@@ -126,13 +143,12 @@ test.describe('max plan quota', () => {
   test('TC-E2E-06: /quota with threshold and seeded turns renders heatmap title', async ({
     page,
   }) => {
-    seedUserSettings({
+    await seedUserSettings(page, {
       quotaTokens5h: 50000,
       quotaTokens7d: null,
       quotaSessions5h: null,
       quotaSessions7d: null,
     });
-    await page.goto('/quota');
     await expect(
       page.getByRole('heading', { name: 'Padrão de consumo (últimas 4 semanas)' }),
     ).toBeVisible();
@@ -141,13 +157,12 @@ test.describe('max plan quota', () => {
   test('TC-E2E-07: only one threshold set → exactly one KPI card rendered', async ({
     page,
   }) => {
-    seedUserSettings({
+    await seedUserSettings(page, {
       quotaTokens5h: 50000,
       quotaTokens7d: null,
       quotaSessions5h: null,
       quotaSessions7d: null,
     });
-    await page.goto('/quota');
     // The only KPI card in scope should be "Tokens 5h"; the other three titles
     // must NOT appear as KPI cards.
     await expect(page.getByRole('heading', { name: 'Tokens 5h' })).toHaveCount(
@@ -167,13 +182,12 @@ test.describe('max plan quota', () => {
   test('TC-E2E-08: KpiCard info tooltip contains rolling-window explanation', async ({
     page,
   }) => {
-    seedUserSettings({
+    await seedUserSettings(page, {
       quotaTokens5h: 50000,
       quotaTokens7d: null,
       quotaSessions5h: null,
       quotaSessions7d: null,
     });
-    await page.goto('/quota');
     const trigger = page.getByRole('button', { name: 'O que é Tokens 5h?' });
     await expect(trigger).toBeVisible();
     await trigger.hover();
