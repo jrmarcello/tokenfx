@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as dbClient from '@/lib/db/client';
 import { ensureFreshIngest } from './auto';
@@ -6,8 +5,16 @@ import type { WatcherHandle } from './watcher';
 
 /**
  * TASK-5 (REQ-11) — coexistence between the pull-based `ensureFreshIngest`
- * and the push-based chokidar watcher. When the watcher is running it's the
- * authoritative source, so the on-page auto-ingest must short-circuit.
+ * and the push-based chokidar watcher.
+ *
+ * Prior to v0.3.1 this module short-circuited when the watcher was running,
+ * on the assumption that the watcher would always catch JSONL changes.
+ * Field experience showed chokidar occasionally loses events under Next dev
+ * + HMR, so the DB drifts minutes behind the JSONL with no recovery on F5.
+ * The short-circuit was removed: pull now ALWAYS runs, self-skipping via
+ * the mtime-vs-lastIngest compare when the DB is already fresh. Watcher
+ * still provides real-time updates when it works; pull provides the safety
+ * net when it doesn't.
  */
 describe('ensureFreshIngest — watcher coexistence', () => {
   let savedWatcher: WatcherHandle | undefined;
@@ -42,26 +49,30 @@ describe('ensureFreshIngest — watcher coexistence', () => {
     vi.restoreAllMocks();
   });
 
-  it('TC-I-15 (REQ-11): short-circuits when watcher is running — no DB, no fs access', async () => {
-    const stop = vi.fn(async () => {});
-    const handle: WatcherHandle = { running: true, stop };
-    globalThis.__tokenfxWatcher = handle;
+  it(
+    'TC-I-15 (REQ-11): pull runs as safety net even when watcher is running',
+    async () => {
+      const stop = vi.fn(async () => {});
+      const handle: WatcherHandle = { running: true, stop };
+      globalThis.__tokenfxWatcher = handle;
 
-    const getDbSpy = vi.spyOn(dbClient, 'getDb');
-    const readdirSpy = vi.spyOn(fs.promises, 'readdir');
+      const getDbSpy = vi.spyOn(dbClient, 'getDb');
 
-    await expect(ensureFreshIngest()).resolves.toBeUndefined();
+      await expect(ensureFreshIngest()).resolves.toBeUndefined();
 
-    // Core assertion: the short-circuit prevented the ingest pipeline from
-    // spinning up AT ALL — no DB handle was acquired, no fs scan happened.
-    expect(getDbSpy).not.toHaveBeenCalled();
-    expect(readdirSpy).not.toHaveBeenCalled();
+      // New behaviour: pull runs regardless. The previous short-circuit
+      // was removed to recover from chokidar event-drop in dev mode.
+      // Pull self-skips the expensive ingest when JSONLs are fresh, so
+      // redundant runs alongside a healthy watcher are cheap.
+      expect(getDbSpy).toHaveBeenCalled();
 
-    // Watcher handle untouched (we didn't call stop / mutate running).
-    expect(handle.running).toBe(true);
-    expect(stop).not.toHaveBeenCalled();
-    expect(globalThis.__tokenfxWatcher).toBe(handle);
-  });
+      // Watcher handle untouched — pull doesn't interact with the watcher.
+      expect(handle.running).toBe(true);
+      expect(stop).not.toHaveBeenCalled();
+      expect(globalThis.__tokenfxWatcher).toBe(handle);
+    },
+    20_000,
+  );
 
   // Extended timeout: the normal `ensureFreshIngest` path hits the filesystem
   // (listTranscriptFiles + statSync walk of ~/.claude/projects). Under
