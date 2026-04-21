@@ -17,7 +17,12 @@
     "fresh": "rm -f data/dashboard.db data/dashboard.db-wal data/dashboard.db-shm && pnpm ingest",
     "validate": "pnpm typecheck && pnpm lint && pnpm test --run",
     "changelog": "git-cliff --output /dev/stdout",
-    "release": "bash scripts/release.sh"
+    "release": "bash scripts/release.sh",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f app",
+    "docker:restart": "docker compose up -d --build"
   },
   "dependencies": {
     "@radix-ui/react-dropdown-menu": "^2.1.16",
