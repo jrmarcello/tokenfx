@@ -23,6 +23,10 @@ services:
       # (see the volume mount above). The app's fs-paths.ts reads this env
       # to override its `~/.claude/projects` default.
       CLAUDE_PROJECTS_ROOT: /claude-projects
+      # Push-based ingestion: chokidar watches /claude-projects and ingests
+      # JSONL entries as Claude Code writes them — real-time session tracking
+      # without relying on the pull-on-page-load fallback.
+      TOKENFX_WATCH_MODE: "1"
     extra_hosts:
       # Claude Code on the host exports Prometheus on localhost:9464. Docker
       # Desktop (Mac/Windows) resolves host.docker.internal natively; Linux
