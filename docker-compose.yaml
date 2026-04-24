@@ -8,8 +8,15 @@ services:
     ports:
       - "3131:3131"
     volumes:
-      # SQLite DB persists on the host across `docker compose down`.
-      - ./data:/app/data
+      # SQLite DB lives in a NAMED VOLUME, not a host bind-mount. SQLite's
+      # WAL + locking semantics are unsafe across osxfs/virtiofs; bind-mounts
+      # to macOS hosts can silently corrupt the database. Named volumes use
+      # Docker's native Linux filesystem, which is safe.
+      #
+      # Access from the host:
+      #   docker compose exec app sqlite3 /app/data/dashboard.db "..."
+      #   docker compose cp tokenfx:/app/data/dashboard.db /tmp/snapshot.db
+      - tokenfx-data:/app/data
       # Transcripts live on the host (Claude Code writes there). Bind-mount
       # read-only so the container can ingest but never mutates them.
       # CLAUDE_PROJECTS_ROOT on the HOST overrides the default location.
@@ -27,6 +34,10 @@ services:
       # JSONL entries as Claude Code writes them — real-time session tracking
       # without relying on the pull-on-page-load fallback.
       TOKENFX_WATCH_MODE: "1"
+      # Claude Code exports Prometheus on the host's localhost:9464. Inside
+      # the container, `localhost` is the container itself — we have to go
+      # through the host gateway (mapped below in extra_hosts) to reach it.
+      OTEL_SCRAPE_URL: http://host.docker.internal:9464/metrics
     extra_hosts:
       # Claude Code on the host exports Prometheus on localhost:9464. Docker
       # Desktop (Mac/Windows) resolves host.docker.internal natively; Linux
@@ -49,3 +60,6 @@ services:
       # non-warm process + compiled better-sqlite3 = up to ~20s observed.
       start_period: 30s
     restart: unless-stopped
+
+volumes:
+  tokenfx-data:
