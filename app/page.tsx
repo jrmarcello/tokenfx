@@ -5,6 +5,7 @@ import { CostSourceBadge } from '@/components/cost-source-badge';
 import { ActivityHeatmap } from '@/components/overview/activity-heatmap';
 import { DailyConsumptionTrend } from '@/components/overview/daily-consumption-trend';
 import { OverviewEmptyState } from '@/components/overview/empty-state';
+import { OutcomesCard } from '@/components/overview/outcomes-card';
 import { TopSessions } from '@/components/overview/top-sessions';
 import { SortModeSchema, type SortMode } from '@/lib/top-sessions-sort';
 import { ScoreDistribution } from '@/components/effectiveness/score-distribution';
@@ -252,6 +253,9 @@ export default async function Home({
           </section>
         )}
       </section>
+
+      {/* ======================== #outcomes ======================== */}
+      <OutcomesCard />
 
       {/* ======================== #efetividade ======================== */}
       <section id="efetividade" className="space-y-6 scroll-mt-20">

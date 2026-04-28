@@ -161,6 +161,27 @@ SELECT
   COALESCE(s.total_cost_usd_otel, s.total_cost_usd) / NULLIF(s.turn_count, 0) AS cost_per_turn
 FROM sessions s;
 
+-- Per-session outcome signals derived from the session's working tree
+-- (commits, LOC churn, files touched, recent reverts, merged PRs). Populated
+-- by the outcome integration job; one row per evaluated session. `status`
+-- distinguishes "evaluated" rows from rows where evaluation was skipped
+-- because the cwd is missing, isn't a git repo, or no user.email is configured.
+-- `merged_pr_count` is nullable on purpose: NULL means "not evaluated", 0
+-- means "evaluated, no merged PRs".
+CREATE TABLE IF NOT EXISTS session_outcomes (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  commit_count INTEGER NOT NULL DEFAULT 0,
+  loc_added INTEGER NOT NULL DEFAULT 0,
+  loc_removed INTEGER NOT NULL DEFAULT 0,
+  files_changed INTEGER NOT NULL DEFAULT 0,
+  reverts_within_7d INTEGER NOT NULL DEFAULT 0,
+  merged_pr_count INTEGER,
+  status TEXT NOT NULL DEFAULT 'evaluated'
+    CHECK (status IN ('evaluated', 'cwd-missing', 'not-a-git-repo', 'no-user-email')),
+  last_evaluated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_outcomes_evaluated_at ON session_outcomes(last_evaluated_at);
+
 -- Singleton user settings: per-deployment config (thresholds for quota
 -- tracking, etc). `id = 1` enforced via CHECK so only one row can exist.
 CREATE TABLE IF NOT EXISTS user_settings (

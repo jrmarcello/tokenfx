@@ -4,12 +4,14 @@ import { ensureFreshIngest } from '@/lib/ingest/auto';
 import { getSession, getTurns } from '@/lib/queries/session';
 import { getSessionOtelStats } from '@/lib/queries/otel';
 import { getSubagentBreakdown } from '@/lib/queries/subagent';
+import { getSessionOutcome } from '@/lib/queries/outcomes';
 import { TranscriptViewer } from '@/components/transcript-viewer';
 import { SubagentBreakdown } from '@/components/subagent-breakdown';
 import { KpiCard } from '@/components/kpi-card';
 import { CostSourceBadge } from '@/components/cost-source-badge';
 import { BranchIcon } from '@/components/icons';
 import { ShareActions } from '@/components/session/share-actions';
+import { SessionOutcomePanel } from '@/components/session/session-outcome-panel';
 import {
   fmtUsd,
   fmtDateTime,
@@ -34,6 +36,7 @@ export default async function SessionPage({
   const turns = getTurns(db, id);
   const otel = getSessionOtelStats(db, id);
   const subagentBreakdown = getSubagentBreakdown(db, id);
+  const outcome = getSessionOutcome(db, id);
 
   const fmtDurationShort = (s: number): string => {
     if (s <= 0) return '0s';
@@ -154,6 +157,8 @@ export default async function SessionPage({
           )}
         </div>
       )}
+
+      <SessionOutcomePanel outcome={outcome} />
 
       <SubagentBreakdown items={subagentBreakdown} />
 

@@ -36,6 +36,7 @@ export function migrate(db: DB): void {
     backfillSessionsOtelCost(db);
     backfillTurnsCacheCreationSplit(db);
     backfillUserSettings7dResetAt(db);
+    backfillSessionOutcomesStatus(db);
     const hasData = db
       .prepare('SELECT 1 FROM sessions LIMIT 1')
       .get() !== undefined;
@@ -190,6 +191,38 @@ function backfillUserSettings7dResetAt(db: DB): void {
   const has7d = cols.some((c) => c.name === 'quota_7d_reset_at');
   if (!has7d) {
     db.exec('ALTER TABLE user_settings ADD COLUMN quota_7d_reset_at INTEGER');
+  }
+}
+
+/**
+ * Older DB files may have a `session_outcomes` table that predates the
+ * `status` column (REQ-15a). Same shape as `backfillTurnsCacheCreationSplit`:
+ * `PRAGMA table_info` to detect the column, ALTER TABLE only when missing.
+ *
+ * We bail early when the table itself doesn't exist — schema.sql replay
+ * already created it with the `status` column on this same migrate() call,
+ * so on a fresh DB this backfill is a structural no-op. The schema.sql
+ * `CREATE TABLE` includes the CHECK constraint enforcing the enum; the
+ * ALTER here only restates the DEFAULT so pre-existing rows acquire
+ * `'evaluated'` automatically. SQLite's `ALTER TABLE ... ADD COLUMN` cannot
+ * add a CHECK constraint, so the enum invariant is enforced going forward
+ * by application-level writers (and by future fresh-DB migrations).
+ */
+function backfillSessionOutcomesStatus(db: DB): void {
+  const tableRow = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='session_outcomes'",
+    )
+    .get() as { name: string } | undefined;
+  if (!tableRow) return;
+  const cols = db
+    .prepare('PRAGMA table_info(session_outcomes)')
+    .all() as Array<{ name: string }>;
+  const hasStatus = cols.some((c) => c.name === 'status');
+  if (!hasStatus) {
+    db.exec(
+      "ALTER TABLE session_outcomes ADD COLUMN status TEXT NOT NULL DEFAULT 'evaluated'",
+    );
   }
 }
 

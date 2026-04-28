@@ -15,6 +15,10 @@ import {
 } from '@/lib/queries/otel';
 import { recomputeCostCalibration } from '@/lib/queries/calibration';
 import { deriveProjectName, listTranscriptFiles } from '@/lib/fs-paths';
+import {
+  evaluateSessionOutcome,
+  type EvaluatorSession,
+} from '@/lib/ingest/git/evaluator';
 import { log } from '@/lib/logger';
 
 export type IngestSummary = {
@@ -394,6 +398,12 @@ export async function ingestAll(options?: {
   fetchFn?: typeof fetch;
   otelTimeoutMs?: number;
   otelOptional?: boolean;
+  /**
+   * When true, bypass the 30-day cutoff in the outcome sweep and re-evaluate
+   * EVERY session in the DB, regardless of `last_evaluated_at`. Wired from
+   * `pnpm ingest --force-outcomes` via `scripts/ingest.ts` (REQ-13).
+   */
+  forceOutcomes?: boolean;
 }): Promise<IngestSummary> {
   const db = options?.db ?? getDb();
   migrate(db);
@@ -469,9 +479,77 @@ export async function ingestAll(options?: {
   summary.calibrationFamiliesWritten = calib.familiesWritten;
   summary.calibrationSkipped = calib.skippedOutOfBounds;
 
+  // Outcome sweep — REQ-12. Re-evaluate sessions whose `last_evaluated_at`
+  // is missing OR older than the session's `ended_at`. By default the
+  // sweep is bounded to the last 30 days; `forceOutcomes` removes that
+  // guard so older sessions are re-checked too (REQ-13). Each evaluation
+  // runs in its own try/catch — a single session's git failure must not
+  // abort the sweep.
+  runOutcomeSweep(db, { forceOutcomes: options?.forceOutcomes ?? false });
+
   log.info(
     `[ingest] done: ${summary.filesProcessed} processed, ${skippedUnchanged} unchanged, ${summary.filesSkipped} skipped, ${summary.otelScrapes} otel rows, ${summary.otelCostsUpgraded} otel-cost upgrades, calibration ${summary.calibrationFamiliesWritten} families (${summary.calibrationSkipped} skipped), ${summary.errors.length} errors`,
   );
 
   return summary;
 }
+
+/**
+ * Execute the outcome sweep at the end of `ingestAll` (REQ-12). Selects
+ * sessions whose outcome row is stale or missing and runs the git evaluator
+ * for each. Failures are isolated per-session: an exception inside
+ * `evaluateSessionOutcome` is caught and logged so the sweep continues.
+ *
+ * - Default: only sessions with `ended_at >= now - 30d` are considered.
+ * - `forceOutcomes: true`: 30d guard removed; every stale/missing-outcome
+ *   session is re-evaluated regardless of age (REQ-13).
+ *
+ * The candidate predicate is identical in both modes:
+ *   `session_outcomes.last_evaluated_at IS NULL OR
+ *    session_outcomes.last_evaluated_at < sessions.ended_at`
+ * (a missing row is implicitly stale via the LEFT JOIN).
+ */
+const runOutcomeSweep = (
+  db: Database,
+  opts: { forceOutcomes: boolean },
+): void => {
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const sql = opts.forceOutcomes
+    ? `SELECT s.id AS id, s.cwd AS cwd, s.started_at AS started_at, s.ended_at AS ended_at
+       FROM sessions s
+       LEFT JOIN session_outcomes so ON so.session_id = s.id
+       WHERE so.last_evaluated_at IS NULL OR so.last_evaluated_at < s.ended_at`
+    : `SELECT s.id AS id, s.cwd AS cwd, s.started_at AS started_at, s.ended_at AS ended_at
+       FROM sessions s
+       LEFT JOIN session_outcomes so ON so.session_id = s.id
+       WHERE (so.last_evaluated_at IS NULL OR so.last_evaluated_at < s.ended_at)
+         AND s.ended_at >= ?`;
+
+  const stmt = db.prepare(sql);
+  const rows = (
+    opts.forceOutcomes ? stmt.all() : stmt.all(cutoff)
+  ) as ReadonlyArray<EvaluatorSession>;
+
+  let evaluated = 0;
+  let failed = 0;
+  for (const session of rows) {
+    try {
+      evaluateSessionOutcome(db, session);
+      evaluated += 1;
+    } catch (err) {
+      failed += 1;
+      // Per-session try/catch (REQ-12). Log session id only — never
+      // commit messages or diff bodies (REQ-17 PII rule).
+      log.warn('[outcome-sweep] failed', {
+        sessionId: session.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  log.info(
+    `[outcome-sweep] evaluated ${evaluated} session(s)${failed > 0 ? `, ${failed} failed` : ''}${
+      opts.forceOutcomes ? ' (force)' : ''
+    }`,
+  );
+};

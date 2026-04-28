@@ -28,6 +28,20 @@ function getPrepared(db: DB): Prepared {
 }
 
 /**
+ * Options for {@link ensureFreshIngest}. Currently the only exposed knob is
+ * `forceOutcomes` (REQ-13) — propagated to `ingestAll` so callers can opt
+ * into re-evaluating older sessions when a CLI trigger requests it.
+ */
+export interface EnsureFreshIngestOptions {
+  /**
+   * When true, propagate `forceOutcomes: true` into `ingestAll`. The outcome
+   * sweep then ignores the 30d guard and re-evaluates every session whose
+   * outcome row is stale or missing. Defaults to false (regular sweep).
+   */
+  readonly forceOutcomes?: boolean;
+}
+
+/**
  * Transparently re-ingest transcripts + OTEL metrics when the on-disk JSONL
  * files have been modified since the last successful ingest. Called at the
  * top of every Server Component page so the dashboard always reflects the
@@ -39,7 +53,9 @@ function getPrepared(db: DB): Prepared {
  * - OTEL is auto-detected with a 1s timeout; when the endpoint isn't
  *   reachable the ingest still succeeds (transcripts are the primary source).
  */
-export async function ensureFreshIngest(): Promise<void> {
+export async function ensureFreshIngest(
+  options?: EnsureFreshIngestOptions,
+): Promise<void> {
   // E2E / test harnesses set this to keep page renders fast and deterministic
   // (otherwise every SSR pulls ~/.claude/projects/ into the test DB).
   if (process.env.TOKENFX_DISABLE_AUTO_INGEST === '1') return;
@@ -54,7 +70,7 @@ export async function ensureFreshIngest(): Promise<void> {
     await inflight;
     return;
   }
-  inflight = run();
+  inflight = run({ forceOutcomes: options?.forceOutcomes ?? false });
   try {
     await inflight;
   } finally {
@@ -62,7 +78,9 @@ export async function ensureFreshIngest(): Promise<void> {
   }
 }
 
-async function run(): Promise<IngestSummary | null> {
+async function run(opts: {
+  forceOutcomes: boolean;
+}): Promise<IngestSummary | null> {
   try {
     const db = getDb();
     const files = await listTranscriptFiles();
@@ -90,6 +108,7 @@ async function run(): Promise<IngestSummary | null> {
       otelUrl,
       otelOptional: true,
       otelTimeoutMs: 1000,
+      forceOutcomes: opts.forceOutcomes,
     });
   } catch (err) {
     log.warn('[auto-ingest] skipped:', err);

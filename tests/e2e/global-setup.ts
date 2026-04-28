@@ -290,6 +290,118 @@ const FIXED_SESSIONS: readonly SeedSession[] = [
       },
     ],
   })),
+  // outcome-integration-git spec — TASK-SMOKE seeds (TC-E2E-01..05).
+  // Three sessions with deterministic ids covering the three rendering
+  // branches of <SessionOutcomePanel> + <OutcomesCard>:
+  //   - e2e-outcome-with-data → status='evaluated', commit_count=2,
+  //     loc_added=120, loc_removed=15 (drives TC-E2E-01 + the populated
+  //     OutcomesCard branch in TC-E2E-04)
+  //   - e2e-outcome-cwd-missing → status='cwd-missing', metrics=0
+  //     (drives TC-E2E-02)
+  //   - e2e-outcome-not-evaluated → no session_outcomes row
+  //     (drives TC-E2E-03; the helper for-loop below skips inserting an
+  //     outcome row for this id)
+  {
+    id: 'e2e-outcome-with-data',
+    project: 'e2e-project-outcome-data',
+    cwd: '/Users/e2e/outcome-data',
+    daysAgo: 1,
+    turns: [
+      {
+        seq: 1,
+        model: 'claude-sonnet-4-6',
+        input: 800,
+        output: 250,
+        cacheRead: 1500,
+        cacheCreation: 60,
+        userPrompt: 'Outcome data session prompt',
+        assistantText: 'Shipped 120 LOC, 2 commits',
+        toolCalls: [],
+        subagentType: null,
+      },
+    ],
+  },
+  {
+    id: 'e2e-outcome-cwd-missing',
+    project: 'e2e-project-outcome-cwd-missing',
+    cwd: '/Users/e2e/outcome-cwd-missing-does-not-exist',
+    daysAgo: 1,
+    turns: [
+      {
+        seq: 1,
+        model: 'claude-sonnet-4-6',
+        input: 600,
+        output: 200,
+        cacheRead: 1000,
+        cacheCreation: 40,
+        userPrompt: 'cwd-missing prompt',
+        assistantText: 'cwd was deleted before evaluation',
+        toolCalls: [],
+        subagentType: null,
+      },
+    ],
+  },
+  {
+    id: 'e2e-outcome-not-evaluated',
+    project: 'e2e-project-outcome-pending',
+    cwd: '/Users/e2e/outcome-pending',
+    daysAgo: 1,
+    turns: [
+      {
+        seq: 1,
+        model: 'claude-sonnet-4-6',
+        input: 500,
+        output: 150,
+        cacheRead: 800,
+        cacheCreation: 30,
+        userPrompt: 'pending prompt',
+        assistantText: 'no outcome row yet',
+        toolCalls: [],
+        subagentType: null,
+      },
+    ],
+  },
+];
+
+// Outcome rows seeded after the sessions are inserted. Keyed by session id.
+// `null` means "intentionally no row" (TC-E2E-03).
+type OutcomeSeed = {
+  commitCount: number;
+  locAdded: number;
+  locRemoved: number;
+  filesChanged: number;
+  revertsWithin7d: number;
+  mergedPrCount: number | null;
+  status: 'evaluated' | 'cwd-missing' | 'not-a-git-repo' | 'no-user-email';
+};
+
+const OUTCOME_SEEDS: ReadonlyArray<{ sessionId: string; outcome: OutcomeSeed }> = [
+  {
+    sessionId: 'e2e-outcome-with-data',
+    outcome: {
+      commitCount: 2,
+      locAdded: 120,
+      locRemoved: 15,
+      filesChanged: 3,
+      revertsWithin7d: 1,
+      mergedPrCount: null,
+      status: 'evaluated',
+    },
+  },
+  {
+    sessionId: 'e2e-outcome-cwd-missing',
+    outcome: {
+      commitCount: 0,
+      locAdded: 0,
+      locRemoved: 0,
+      filesChanged: 0,
+      revertsWithin7d: 0,
+      mergedPrCount: null,
+      status: 'cwd-missing',
+    },
+  },
+  // 'e2e-outcome-not-evaluated' deliberately absent — TC-E2E-03 asserts the
+  // null-row branch of <SessionOutcomePanel>.
 ];
 
 const DAY_MS = 86_400_000;
@@ -344,6 +456,15 @@ export async function seedE2EDatabase(): Promise<void> {
   const insertToolCall = db.prepare(
     `INSERT INTO tool_calls (id, turn_id, tool_name, input_json, result_json, result_is_error)
      VALUES (@id, @turn_id, @tool_name, @input_json, @result_json, @result_is_error)`
+  );
+  const insertOutcome = db.prepare(
+    `INSERT INTO session_outcomes (
+       session_id, commit_count, loc_added, loc_removed, files_changed,
+       reverts_within_7d, merged_pr_count, status, last_evaluated_at
+     ) VALUES (
+       @session_id, @commit_count, @loc_added, @loc_removed, @files_changed,
+       @reverts_within_7d, @merged_pr_count, @status, @last_evaluated_at
+     )`
   );
 
   const now = Date.now();
@@ -441,6 +562,25 @@ export async function seedE2EDatabase(): Promise<void> {
           });
         });
       }
+    }
+
+    // outcome-integration-git seeds — insert outcome rows for the two
+    // sessions that exercise the populated + cwd-missing branches. The third
+    // session ('e2e-outcome-not-evaluated') is intentionally NOT in
+    // OUTCOME_SEEDS so its detail page falls into the "Outcome not yet
+    // evaluated" branch.
+    for (const seed of OUTCOME_SEEDS) {
+      insertOutcome.run({
+        session_id: seed.sessionId,
+        commit_count: seed.outcome.commitCount,
+        loc_added: seed.outcome.locAdded,
+        loc_removed: seed.outcome.locRemoved,
+        files_changed: seed.outcome.filesChanged,
+        reverts_within_7d: seed.outcome.revertsWithin7d,
+        merged_pr_count: seed.outcome.mergedPrCount,
+        status: seed.outcome.status,
+        last_evaluated_at: now,
+      });
     }
 
     // Populate cost_calibration so the UI renders the "calibrated" badge for
