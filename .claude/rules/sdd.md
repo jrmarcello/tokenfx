@@ -4,190 +4,215 @@ applies-to: ".specs/**"
 
 # SDD Spec Rules
 
-## Execution Flow (review-then-execute-then-review)
+## Flow
 
-The SDD workflow follows a 7-step flow with **TWO mandatory user-approval pauses**. NEVER use Stop-hook iteration (no `.active.md`); the whole spec executes in one session.
+```text
+/spec <description>
+   ├─ Author: write .specs/<name>.md from TEMPLATE
+   ├─ Self-review: 3 agents in parallel (spec-reviewer, test-reviewer, code-reviewer)
+   ├─ Apply trivial fixes inline
+   └─ Present + wait for user approval (status DRAFT → APPROVED)
 
-1. **Cria spec** — `/spec` ou manual via `.specs/TEMPLATE.md`. Status: DRAFT.
-2. **Self-review da spec** — apply fixes for gaps, bugs, ambiguity, missing TCs, best-way-possible, convenção do projeto. Inline; present "findings resolved" note.
-3. **PAUSE 1 — Apresenta spec revisada com pontos de atenção; AGUARDA aprovação do usuário.** On approval, status → APPROVED.
-4. **Executa spec inteira** (`/ralph-loop` ou manual) — paralelizando batches via worktree-isolated agents num único tool message; merge + cleanup após cada batch. Status → IN_PROGRESS.
-5. **Self-review da implementação** — REQ-by-REQ (`✅/🟡/❌` com `file:line` + test name + SQL fragment); best-way-possible per REQ; live validation contra dados reais quando spec tem efeitos visíveis (dev server + curl + SQL).
-6. **PAUSE 2 — Apresenta resultado liderando com live validation; AGUARDA review do usuário.** Surface partial REQs, never hide.
-7. **Commit APENAS após aprovação explícita do usuário.** NÃO auto-commit. Status → DONE pós-commit.
+   (user approves)
 
-**Hard rules** (the user should NEVER need to ask "you committed already?"):
+/ralph-loop .specs/<name>.md
+   ├─ Validate: status APPROVED/IN_PROGRESS, batches present
+   ├─ Execute: per-batch parallel via worktrees (one Agent call per task in a single message)
+   ├─ Auto-rollback if any agent in a parallel batch fails — never merge a partial batch silently
+   ├─ Self-review: 3 agents in parallel (code-reviewer, test-reviewer, security-reviewer)
+   ├─ Apply trivial fixes inline + re-validate
+   ├─ Present + wait for user approval (status DONE pending commit)
+   ├─ On user "more changes" → apply changes + RE-RUN self-review from scratch + re-present
+   └─ Commit ONLY after explicit user approval — feat(scope) message linking to spec
+```
 
-- No commit antes da PAUSE 2 ter sido confirmada pelo usuário
-- No `.active.md` file (Stop hook iteration está desabilitada)
-- No "I'll commit and you can review" — commit é o último passo, não o primeiro
-- No saltar dos checkpoints (steps 2, 5a, 5b) — todos obrigatórios
+There is **no Stop-hook iteration**, no `.active.md` state files, no per-task pauses. The autonomy boundary is per-spec: one approval to author, one approval to commit.
 
 ## Spec File Integrity
 
-- Never modify the Requirements section during execution (only during DRAFT status)
-- Never remove tasks — mark them as `[x]` (done) or `BLOCKED`
-- Always append to Execution Log, never overwrite previous entries
-- Status transitions: DRAFT -> APPROVED -> IN_PROGRESS -> DONE | FAILED
+- Status transitions: `DRAFT → APPROVED → IN_PROGRESS → DONE | FAILED`.
+- During `IN_PROGRESS` and onwards, the **Requirements** and **Test Plan** sections are immutable. Tasks may be marked `[x]`, the Execution Log appended to. Nothing else.
+- Never remove tasks. Mark them `[x]` (done) or `BLOCKED`.
+- Always **append** to the Execution Log; never overwrite previous entries.
 
 ## Task Execution
 
-- Each task must be independently verifiable (`pnpm typecheck` should pass after each task)
-- Tasks are organized by feature/domain, not by layer
-- Order tasks logically for the feature
-- If a task is unclear, mark it `BLOCKED` with a reason and stop execution
-- **Mandatory review before testing**: after implementing a task, re-read the task description and verify ALL specified files, patterns, and behaviors were implemented. Check: all files listed in `files:` metadata were created/modified, all patterns from the Design section are followed, all error handling is complete, no implementation gap vs the spec. Only then proceed to tests. This is NEVER skipped.
+- Each task must be independently verifiable: `pnpm typecheck && pnpm test --run` should pass after each task is complete (unless RED phase is explicit and the next task is the GREEN companion).
+- Tasks are architecture-agnostic — no mandatory layer ordering.
+- Order tasks logically for the feature.
+- If a task is unclear: mark `BLOCKED` with a reason, leave the spec, surface to the user.
+- **Mandatory review before testing:** after implementing a task, re-read the task description and verify ALL specified files, patterns, and behaviors were touched. Only then run tests.
 
 ## Task Metadata
 
-- Every task MUST have a `files:` sub-item listing files it creates or modifies
-- Tasks with dependencies MUST have a `depends:` sub-item listing prerequisite TASK-N IDs
-- `depends:` must form a DAG (no circular dependencies)
-- Tasks that share files in their `files:` lists cannot be in the same parallel batch
-- Tasks with testable code MUST have a `tests:` sub-item listing TC-IDs from the Test Plan (triggers TDD cycle in ralph-loop)
-
-## Test Plan
-
-Every spec MUST include a `## Test Plan` section between Requirements and Design. The Test Plan contains tables grouped by layer:
-
-- **Unit Tests** (TC-U-NN): pure functions, parsers, scoring, pricing, value transforms
-- **Integration Tests** (TC-I-NN): DB writer, queries, API routes with real SQLite
-- **E2E Tests** (TC-E2E-NN): Playwright against a running Next.js app
-
-Each TC row has: `| TC-ID | REQ | Category | Description | Expected |`
-
-Categories: `happy`, `validation`, `business`, `edge`, `infra`, `idempotency`, `security`
-
-For non-code specs (config/docs only), the Test Plan may be `N/A` with a justification.
-
-### Coverage Rules
-
-Every spec MUST satisfy all of the following:
-
-- Every REQ has >= 1 TC (at minimum the happy path)
-- Every typed error surfaced by a module has >= 1 TC that triggers it
-- Every validated field (Zod schema) has boundary TCs: valid min, valid max, invalid min-1, invalid max+1
-- Every external dependency call (filesystem read, HTTP fetch, DB write) has >= 1 infra-failure TC
-- Every conditional branch in a function has TCs for both paths
-- Every new API route / Server Action has integration TCs: happy path (status + response shape), each distinct error status, field boundaries, idempotency
-- **Rigor check**: error/edge TCs should outnumber happy-path TCs — review the complete Test Plan and verify no business rule untested, no error path missing, no boundary unchecked
-
-### Mutability
-
-- TCs may be **added** during IN_PROGRESS (new edge cases discovered during implementation)
-- TCs may NEVER be **removed** — if a TC is no longer applicable, mark it as `SKIPPED` with a reason
-- REQ references in TCs must remain valid
-
-### E2E Tests (Playwright)
-
-- TC-E2E-* are validated by running `pnpm test:e2e`
-- E2E tests are executed by `TASK-SMOKE` — a dedicated task at the end of the spec
-- E2E tests do NOT follow the TDD RED/GREEN cycle (they are executed directly)
-- If the app is not running, log `E2E: DEFERRED` in the Execution Log
-- E2E file convention: `tests/e2e/<feature>.spec.ts`
-
-## TDD Execution
-
-When a task has `tests:` metadata, the ralph-loop follows the TDD cycle:
-
-### RED Phase
-
-1. Write the test file FIRST (before the production code)
-2. Tests reference the function/type that will be implemented
-3. Run `pnpm test --run <file>` — tests MUST fail (compile/import failure counts as valid RED)
-4. If tests pass before implementation: the test is not testing the right thing — fix it
-
-### GREEN Phase
-
-1. Write the MINIMUM production code to make tests pass
-2. Follow existing patterns: hand-written stubs colocated in the test file, table-driven cases
-3. Run `pnpm test --run <file>` — all tests listed in `tests:` MUST pass
-4. If other tests break: fix immediately before proceeding
-
-### REFACTOR Phase
-
-1. Clean up production code: remove duplication, improve naming, extract helpers
-2. Run `pnpm test --run` again — all tests MUST still pass
-3. Run `pnpm typecheck` — must compile cleanly
-
-### Execution Log Format
-
-When a task follows TDD, the Execution Log entry includes:
-
-```text
-TDD: RED(N failing) -> GREEN(N passing) -> REFACTOR(clean)
-```
-
-### Exceptions
-
-- **E2E tests** (TC-E2E-*): executed directly via Playwright, not via TDD cycle
-- **Non-code tasks** (docs, config): no TDD — normal execution
-- **Tasks without `tests:` metadata**: normal execution (no TDD cycle required)
+- Every task MUST have `files:` listing concrete paths.
+- Tasks producing testable code MUST have `tests:` with TC-IDs from the Test Plan (triggers TDD cycle in `/ralph-loop`).
+- Tasks with prerequisites MUST have `depends:`.
+- `depends:` must form a DAG (no cycles).
+- Tasks sharing files in `files:` cannot be in the same parallel batch.
 
 ## Parallel Batches
 
-- The Parallel Batches section is auto-generated by `/spec` based on dependency and file analysis
-- Batches are sequential: Batch N+1 starts only after all tasks in Batch N complete
-- Tasks within a batch are independent: no shared files, no inter-dependencies
+- The Parallel Batches section is auto-generated by `/spec` from `files:` and `depends:`.
+- Batches are sequential: Batch N+1 starts only after all tasks in Batch N complete.
+- Tasks within a batch are independent: no shared files, no inter-dependencies.
 - Shared files are classified as:
   - **exclusive** — only one task touches it (safe for parallel)
-  - **shared-additive** — multiple tasks add to it (candidate for sequential batches)
+  - **shared-additive** — multiple tasks add to it (e.g. `app/page.tsx` registering a new section, `lib/db/schema.sql` adding a new table) — accumulator pattern (see below)
   - **shared-mutative** — multiple tasks modify existing code (must serialize)
 
-## Merge Strategy
+`/ralph-loop` parallelizes a batch by spawning one `Agent` call per task in **a single message** with `isolation: "worktree"`. Worktrees are merged back after all agents return.
 
-When parallel tasks share additive files (e.g. `app/layout.tsx` shell vs content):
+## Merge Strategy (accumulator pattern)
 
-- Prefer sequencing additive edits across batches rather than concurrent edits within a batch
-- If unavoidable, each parallel task emits a fragment under `.specs/fragments/` and a dedicated merge task applies them sequentially
-- Shared-mutative files always serialize — never run in parallel
+When parallel tasks share **additive** files (e.g. `app/page.tsx` adding a new dashboard section, `lib/db/schema.sql` adding tables, `lib/queries/index.ts` re-exporting query modules), the parallel tasks must **not** edit the shared file directly. They produce **wiring fragments** that a follow-up `TASK-MERGE-*` applies sequentially in the main working tree.
+
+### Fragment file path
+
+```text
+.specs/wiring/<spec-slug>/<task-id>.<target-slug>.fragment.md
+```
+
+Examples:
+
+- `.specs/wiring/effectiveness-personal-v2/TASK-3.schema.fragment.md`
+- `.specs/wiring/effectiveness-personal-v2/TASK-7.page.fragment.md`
+
+The `<spec-slug>` is the spec filename without `.md`. The `<target-slug>` is the basename of the target file without extension.
+
+### Fragment file format
+
+````markdown
+# Fragment: <TASK-ID> -> <full target path>
+
+## Intent
+
+<one sentence: what to add and why>
+
+## Target
+
+`<absolute-from-repo-root path to the shared file>`
+
+## Imports
+
+```ts
+import { getCompactionEventCount } from '@/lib/queries/effectiveness-v2';
+```
+
+(omit this section if no new imports are needed)
+
+## Additions
+
+### Section: <named anchor in the target file>
+
+<one sentence describing where in the file>
+
+```ts
+{ key: 'compaction', label: 'Compaction events', value: compactionCount }
+```
+
+(repeat the `### Section: ...` block for every distinct insertion site)
+
+## Notes
+
+- <optional: known conflicts with other fragments, ordering hints, etc.>
+````
+
+The `Section:` anchor is a **named region** that exists in the target file, not a line number. Examples: `KPI grid items`, `query exports`, `route registration`, `end of file`. The TASK-MERGE handler is responsible for finding the named anchor and inserting at the right place.
+
+### TASK-MERGE conventions
+
+- The TASK-MERGE task name MUST start with `TASK-MERGE-` (e.g. `TASK-MERGE-1`, `TASK-MERGE-PAGE`).
+- It runs **after** every parallel task it depends on completes.
+- It runs in the **main working tree** (not a worktree).
+- It must include all parallel tasks in `depends:` so it lands in a strictly later batch than they do.
+- It receives no `tests:` of its own unless the wiring itself needs verification (typically a quick integration test that the dispatch map / schema / route list contains every expected key).
+- The handler reads every fragment under `.specs/wiring/<spec-slug>/`, groups by `Target`, deduplicates imports, applies additions in fragment-name order (alphabetical sort of `<task-id>`), and writes the resulting file.
+- If two fragments target the same `Section:` with the same content, the duplicate is dropped (idempotent merge).
+- If two fragments contradict each other (different code at the same anchor), the merge fails loudly; the spec author has to clarify intent in the spec.
+
+### Shared-mutative files always serialize
+
+Files where multiple tasks need to modify **existing** code (refactors, behavior changes) are not amenable to fragments. They must run in a single task in a sequential batch — never in parallel.
+
+## Test Plan
+
+- The Test Plan is **MANDATORY** for every spec — no spec can be APPROVED without it (or an explicit `N/A` justification for pure docs/config specs).
+- Lives between Requirements and Design.
+- Format: tables grouped by layer (Unit Tests, Integration Tests, E2E Tests).
+- Each TC has: TC-ID, REQ reference, Category, Description, Expected.
+- TC-ID format: `TC-U-NN` (unit), `TC-I-NN` (integration), `TC-E2E-NN` (e2e).
+- Categories: `happy`, `validation`, `business`, `edge`, `infra`, `idempotency`, `security`.
+
+### Coverage rules (non-negotiable)
+
+- Every REQ has ≥ 1 TC (at minimum the happy path).
+- Every typed error surfaced by a module has ≥ 1 TC that triggers it.
+- Every validated field (Zod schema) has boundary TCs (valid min, valid max, invalid min-1, invalid max+1).
+- Every external dependency call (filesystem read, HTTP fetch, DB write) has ≥ 1 failure-mode TC.
+- Every conditional branch has TCs for both paths.
+- Every new API route / Server Action has integration TCs: happy path, each error status, field boundaries, idempotency.
+- **Rigor check:** error/edge TCs should outnumber happy-path TCs.
+
+### Mutability
+
+- TCs can be ADDED during IN_PROGRESS (implementation may reveal missing scenarios).
+- TCs can NEVER be removed during IN_PROGRESS — only during DRAFT (and then status reverts to DRAFT).
+- Never modify Requirements and Test Plan in the same change — one at a time.
+
+### E2E Tests (Playwright)
+
+- TC-E2E-* are validated by running `pnpm test:e2e`.
+- E2E tests are executed by `TASK-SMOKE` — a dedicated task at the end of the spec.
+- E2E tests do NOT follow the TDD RED/GREEN cycle (they're executed directly).
+- If the app is not running, log `E2E: DEFERRED` in the Execution Log.
+- E2E file convention: `tests/e2e/<feature>.spec.ts`.
+
+## TDD Execution
+
+Tasks with `tests:` follow RED → GREEN → REFACTOR.
+
+- **RED:** write the test file (`*.test.ts`) FIRST with all listed TCs as `it.each` entries.
+  - Compilation failure when production types don't exist yet = valid RED.
+  - Tests passing before implementation = investigate (the test isn't testing the right thing).
+- **GREEN:** implement until all tests pass.
+- **REFACTOR:** optional cleanup, keep tests green.
+
+Test file is created BEFORE the corresponding production file. Test names use natural English (`'parses BOM-prefixed file'`), NOT TC-IDs. Each TC-ID maps to exactly one entry in an `it.each` table or a single `it` call.
+
+Execution Log entries include TDD status: `TDD: RED(N failing) → GREEN(N passing)`.
+
+## Self-review (BLOCKING in both /spec and /ralph-loop)
+
+Both skills run a self-review pass before handing off to the user. The pass spawns three reviewers in parallel:
+
+- **/spec self-review:** `spec-reviewer` (gaps, ambiguity, rule violations) + `test-reviewer` (test plan coverage) + `code-reviewer` (Design adherence to project conventions).
+- **/ralph-loop self-review:** `code-reviewer` (rule adherence + spec compliance) + `test-reviewer` (test completeness, no `.only`/`.skip`, hand-written stubs) + `security-reviewer` (privacy, prepared statements, path traversal, no PII in logs).
+
+Findings are aggregated. **Trivial fixes are applied inline.** Anything requiring judgment (architectural pushback, scope changes, refactoring suggestions, privacy CRITICAL findings) is escalated to the user as "Pontos de atenção" before approval.
+
+### Re-review on user feedback (BLOCKING)
+
+After the skill presents results to the user:
+
+- **User approves:** advance (to `APPROVED` for `/spec`, to commit for `/ralph-loop`).
+- **User requests changes:** apply the changes, **then re-run the self-review pass from scratch** (same 3 reviewers, in parallel), **then re-present**. Loop until the user approves or rejects.
+- **User rejects:** mark the spec accordingly (DRAFT → discarded for `/spec`, IN_PROGRESS → FAILED for `/ralph-loop`). Stop.
+
+Re-running the review on every iteration is mandatory. A correction is itself code that can introduce regressions; skipping the audit on round 2+ silently erodes the safety net. The runtime cost is small (seconds per pass) compared to the cost of merging a flawed correction.
+
+## Failure semantics in /ralph-loop
+
+When a parallel batch has a partial failure:
+
+- **Default behavior:** auto-rollback. **Do not merge any worktree from the failed batch.** Surface the failure to the user with three options:
+  - (a) merge successful + skip failed (mark failed task `[ ]` with explicit BLOCKED note in Execution Log)
+  - (b) discard everything and re-run the batch (typical when the failure is structural)
+  - (c) stop for manual investigation
+- **Never merge a partial batch silently.** Even if the failure is in an "independent" task, dependencies between tasks may not be fully visible from `depends:` alone (shared imports, shared types, shared test fixtures).
+- The user's choice is recorded in the Execution Log so the spec history shows what happened.
 
 ## Naming
 
-- Spec files: lowercase, hyphen-separated: `dashboard-mvp.md`, `effectiveness-scoring.md`
-- No active-state files (`.active.md`) — the current flow runs in single session without Stop-hook iteration
-
-## Discipline Checkpoints (non-negotiable)
-
-Three checkpoints gate the "done" of any spec. Skipping any is a regression — the user should never have to ask "você validou?" nor "you committed already?".
-
-### Checkpoint 1 — Self-review against the spec (REQ-by-REQ)
-
-After the last task is marked `[x]` and before reporting:
-
-- Walk **every REQ** in the Requirements section and confirm it is satisfied by concrete evidence (`file:line`, test name, SQL fragment). Build an internal `REQ-1..N` checklist with `✅ / 🟡 partial / ❌ blocked` status.
-- For each partial/blocked REQ, surface it in the final report — never hide it behind "tests pass".
-- **Best-way-possible check**: for each REQ, ask "was this implemented the best way?" — right primitive (Server Action vs API route, SQL aggregation vs JS loop), no duplicated logic, reuses existing helpers, follows project conventions (named exports, Zod at boundaries, prepared statements, Result pattern, colocated tests). "Works" is not the bar — "works + would survive code review" is.
-- Re-check every `decisões já travadas` / `decisions locked` entry in the Context: each must have a corresponding code artifact.
-- Re-check every task's REVIEW step was genuinely executed (all `files:` touched, patterns from Design followed, no implementation gap).
-- If the self-review surfaces any gap, fix it before moving to Checkpoint 2.
-
-### Checkpoint 2 — Live validation with real data (when applicable)
-
-If the spec has user-visible effects (UI changes, new queries, new metrics, CLI scripts, migrations), validate against a **real** environment — not just test fixtures:
-
-- Start the dev server in background (`pnpm dev`) and curl the affected routes — confirm HTTP 200 and that expected aria-labels / headings / data-attributes / badges appear in the HTML (grep the response body).
-- For CLI tools (`pnpm ingest`, `pnpm recompute-costs`, `pnpm seed-dev`), run against the live DB and inspect both the CLI output and raw SQL (`sqlite3 data/dashboard.db "SELECT ..."`) — values must match across layers.
-- For new UI states (badges, empty states, divergence hints), trigger the state via seed data or by hand and confirm via HTML grep.
-- For E2E tests that were flaky in the batch run (port collisions, timing), re-run in isolation to confirm they actually pass.
-- Stop the dev server when done. A `SIGTERM (exit 143)` from explicitly killing the server is expected — mention it so the user doesn't think something crashed.
-
-Skip Checkpoint 2 **only** when the spec is truly internal (pure refactor, no observable behavior change) — and say so explicitly in the report.
-
-### Reporting discipline
-
-- **Lead** with what was validated against real data, not with "tests pass". Example: "Spend 30d: \$9,749 (list) → \$1,956 (calibrated), ratio 0.20 — matches Max plan".
-- Include a table of REQs with status (✅ / 🟡 / ❌). That table is the proof Checkpoint 1 happened.
-- List new tests and the delta (`399 → 429, +30`).
-- Partial items get explicit "follow-up" notes — never swept under the rug.
-
-### Checkpoint 3 — MANDATORY PAUSE for user review (no commit yet)
-
-After Checkpoints 1 + 2 are clean and the report is composed:
-
-- **STOP**. Present the report to the user. Status remains `IN_PROGRESS` (NOT `DONE` yet).
-- **AGUARDA explicit user feedback or approval to commit.** No auto-commit. No "I committed and here's what changed" — commit is the user's decision, not the agent's.
-- If the user requests changes, apply them, re-run the relevant validation, present again, wait again.
-- Only after the user explicitly approves AND requests/permits commit: stage + commit (per `feedback_commit_style` — no Co-Authored-By trailer), set status `DONE`, update Execution Log with the commit SHA.
-
-**Why this checkpoint exists**: the user explicitly defined the SDD flow with a pause before commit (2026-04-28). Auto-committing after a green pipeline removes the user's review opportunity and conflates "code works" with "code is what the user wanted to ship".
+- Spec files: lowercase, hyphen-separated. Descriptive, no numeric prefix needed (`roadmap.md` is the index): `outcome-integration-git.md`, `effectiveness-personal-v2.md`. For non-roadmap items use a verb prefix (`fix-bom-strip-edge-case.md`, `refactor-cost-calibration.md`).
+- No `.active.md` state files (current flow doesn't use Stop-hook iteration).
