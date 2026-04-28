@@ -2,7 +2,15 @@
 # Stop — Ralph Loop continuation hook
 # Checks if a ralph-loop session is active and determines whether to loop.
 # Returns exit 2 to continue looping, exit 0 to let stop-validate.sh run normally.
+#
+# NOTE: the current SDD flow (see CLAUDE.md directive 5) does NOT create
+# `.active.md` files — this hook is inert by default and passes through.
+# Kept here for compatibility / safety net only.
 set -uo pipefail
+
+# Subshells from Claude Code hooks don't inherit interactive shell rc, so
+# Node version managers (asdf/mise/volta/fnm) aren't on PATH.
+export PATH="$HOME/.asdf/shims:$HOME/.local/share/mise/shims:$HOME/.volta/bin:$HOME/.fnm:$PATH"
 
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')

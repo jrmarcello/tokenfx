@@ -6,6 +6,11 @@
 #   3rd+ attempt → pass (avoid infinite loop)
 set -uo pipefail
 
+# Subshells from Claude Code hooks don't inherit interactive shell rc, so
+# Node version managers (asdf/mise/volta/fnm) aren't on PATH. Prepend the
+# common shim locations so `pnpm` resolves the same way it does interactively.
+export PATH="$HOME/.asdf/shims:$HOME/.local/share/mise/shims:$HOME/.volta/bin:$HOME/.fnm:$PATH"
+
 INPUT=$(cat)
 STOP_HOOK_ACTIVE=$(echo "$INPUT" | jq -r '.stop_hook_active // false')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')

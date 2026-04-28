@@ -2,6 +2,11 @@
 # PostToolUse[Edit|Write] — Lint TypeScript/JavaScript file via ESLint
 set -uo pipefail
 
+# Subshells from Claude Code hooks don't inherit interactive shell rc, so
+# Node version managers (asdf/mise/volta/fnm) aren't on PATH. Prepend the
+# common shim locations so `pnpm`/`eslint` resolve the same way they do interactively.
+export PATH="$HOME/.asdf/shims:$HOME/.local/share/mise/shims:$HOME/.volta/bin:$HOME/.fnm:$PATH"
+
 INPUT=$(cat)
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 

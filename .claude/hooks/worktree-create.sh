@@ -3,6 +3,11 @@
 # Replaces default git worktree behavior. Must print worktree path to stdout.
 set -euo pipefail
 
+# Subshells from Claude Code hooks don't inherit interactive shell rc, so
+# Node version managers (asdf/mise/volta/fnm) aren't on PATH. Prepend the
+# common shim locations so `pnpm` resolves the same way it does interactively.
+export PATH="$HOME/.asdf/shims:$HOME/.local/share/mise/shims:$HOME/.volta/bin:$HOME/.fnm:$PATH"
+
 INPUT=$(cat)
 NAME=$(echo "$INPUT" | jq -r '.name')
 
