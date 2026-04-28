@@ -122,13 +122,16 @@ File overlap analysis:
 
 **If you find gaps, apply the fixes to the spec in place BEFORE showing it to the user.** Present a "9 findings resolved / spec updated" note alongside the final DRAFT — the user shouldn't have to catch the same issue you could have caught yourself.
 
-### 7. Present for Approval
+### 7. Present for Approval (MANDATORY PAUSE 1)
 
-- Display the spec to the user, highlighting the **Test Plan** and **Parallel Batches** sections
-- Set status to `DRAFT`
-- Ask: "Review this spec. Edit anything you want, then approve to begin implementation."
-- If parallel batches exist, note: "Batches with multiple tasks can run in parallel via worktree agents or sequentially via `/ralph-loop`."
-- On approval, set status to `APPROVED`
+This is **PAUSE 1 of the SDD flow** — the spec is ready, the agent must wait for explicit user approval before any execution begins.
+
+- Display the spec to the user, highlighting the **Test Plan** and **Parallel Batches** sections.
+- Set status to `DRAFT`.
+- Ask: "Review this spec. Pontos de atenção: <key risks/decisions>. Aprovado? Edits?"
+- If the user requests edits, apply them, re-run self-review (step 6), and present again — re-pause.
+- **AGUARDA aprovação explícita do usuário.** Do NOT call `/ralph-loop` proactively from inside this skill — `/ralph-loop` is the user's next step after approval.
+- On approval: set status to `APPROVED`. The user invokes `/ralph-loop .specs/<name>.md` separately to start execution.
 
 ## Rules
 

@@ -1,235 +1,200 @@
 ---
 name: ralph-loop
-description: Autonomous task-by-task execution loop from an SDD spec file (Stop hook-based iteration)
+description: Single-session SDD spec execution with worktree-based parallel batches, mandatory user-review pause before commit
 argument-hint: "<spec-file-path>"
 user-invocable: true
 ---
 
 # /ralph-loop <spec-file>
 
-Executes tasks from a spec file autonomously, one task per iteration. Uses the Stop hook (exit code 2) to continue in the same session after each task.
+Executes an APPROVED SDD spec end-to-end **in a single session** using worktree-based parallel batches. Self-reviews after the last task. **PAUSES** for the user to review before any commit. **Never auto-commits.**
+
+This skill assumes the spec's Steps 1-3 (create + self-review + user approval) already happened — see `.claude/rules/sdd.md` "Execution Flow". The skill handles Steps 4-5 (execute + self-review) and pauses at Step 6 (user review). Step 7 (commit) only happens after the user explicitly approves.
 
 ## Example
 
 ```text
-/ralph-loop .specs/ingest-jsonl.md
+/ralph-loop .specs/effectiveness-personal-v2.md
 ```
 
-## Mechanism
+## Flow (what this skill does)
 
-The loop uses the Stop hook pattern:
+```text
+INPUT: spec status = APPROVED
+  │
+  ├── Set status → IN_PROGRESS
+  │
+  ├── Step 4: Execute all batches in order
+  │     │
+  │     └── Per batch:
+  │           ├── 1 task    → Execute directly (TDD cycle if `tests:` present)
+  │           └── 2+ tasks  → Parallel agents in worktrees (single tool message);
+  │                            merge worktrees + cleanup MANUALLY after batch.
+  │
+  ├── Step 5: Self-review
+  │     ├── Checkpoint 1: REQ-by-REQ checklist with concrete evidence
+  │     ├── Checkpoint 2: live validation with real data (when applicable)
+  │     └── Best-way-possible per REQ
+  │
+  └── Step 6: MANDATORY PAUSE — present results, wait for user review.
+        Status remains IN_PROGRESS. NO commit yet.
 
-1. You execute ONE task from the spec
-2. When you finish (try to stop), the `ralph-loop.sh` Stop hook fires
-3. If tasks remain: hook returns exit 2 (continue) — you receive a stderr message with progress
-4. If all tasks done: hook returns exit 0 — `stop-validate.sh` runs final validation
-5. Each iteration adds context to the same session — be focused and concise
+OUTPUT: report to user; await review. Step 7 (commit) is user-driven.
+```
 
 ## Startup
 
-1. Read the spec file path from argument
-2. Validate the spec exists and has status `APPROVED` or `IN_PROGRESS`
-3. Verify no other ralph-loop is active (no other `.active.md` files in `.specs/`)
-4. Set status to `IN_PROGRESS` if not already
-5. Create state file: `.specs/<name>.active.md` containing the spec file path (this signals the Stop hook)
-6. Check the **Parallel Batches** section to determine execution order:
-   - If batches exist: follow batch order (Batch 1 -> Batch 2 -> ...)
-   - Within a batch: check if parallel execution applies (see below)
-   - If no batches section: fall back to sequential `TASK-N` order
-7. Identify the next uncompleted `- [ ] TASK-N:` entry respecting batch order
+1. Read the spec file path from argument.
+2. Validate the spec exists and has status `APPROVED` or `IN_PROGRESS`.
+3. **Do NOT create `.active.md`** — Stop-hook iteration is disabled in this flow.
+4. Set status to `IN_PROGRESS` if currently `APPROVED`.
+5. Read the **Parallel Batches** section to determine execution order. Sequential fallback if absent.
+6. Read each task's `files:`, `depends:`, `tests:` metadata.
 
-## Parallel Execution (multi-task batches)
+## Parallel Batch Execution
 
-When a batch contains 2+ tasks, evaluate whether to parallelize:
-
-### Decision Flow
+Per batch:
 
 ```text
-Read next batch from spec
+batch tasks count
   │
-  ├── 1 uncompleted task  → Execute sequentially (normal iteration)
+  ├── 1 uncompleted task     → Execute directly in main session
   │
   └── 2+ uncompleted tasks
         │
-        ├── All files exclusive → Launch parallel agents in worktrees
+        ├── All files exclusive  → Launch parallel agents (worktrees)
         │
-        └── Shared files exist  → Execute sequentially within batch
+        └── Shared files exist   → Sequential within batch
 ```
 
-### How to Parallelize
+### How to parallelize
 
-1. Identify all uncompleted tasks in the current batch
-2. For each task, launch an Agent call with `isolation: "worktree"` — ALL Agent calls MUST be in a single message (this ensures real parallelism)
-3. Wait for all agents to complete
-4. Collect results — each agent returns its worktree path (if changes were made)
-5. Merge worktrees sequentially into main working directory (use `cp` from worktree paths)
-6. **Cleanup worktrees MANUALLY** (CRITICAL — the runtime does NOT auto-cleanup Agent worktrees when changes were made):
+1. For each task in the batch, launch an `Agent` call with `isolation: "worktree"`. **ALL Agent calls in a SINGLE tool message** — that's what produces real parallelism.
+2. Wait for all agents to complete.
+3. Each agent returns a worktree path (if changes were made) plus a report.
+4. Merge worktrees sequentially into main: `cp -R <worktreePath>/<changed-files> .` (or use targeted file copies based on the agent's report).
+5. **Cleanup worktrees MANUALLY** after each merge — the runtime does NOT auto-cleanup when the agent made changes:
 
    ```bash
    git worktree remove <worktreePath> --force
    git worktree prune
    ```
 
-   Run this for EACH worktree immediately after merging its files. Orphan worktrees pile up fast (one per Agent call). The `WorktreeRemove` hook only fires on explicit removal, not on Agent completion.
+   Orphan worktrees pile up fast and break IDE tooling.
 
-7. Verify: `pnpm typecheck` and `pnpm test --run` pass after merge
-8. Mark all completed tasks as `[x]` in the spec
-9. Log all tasks in a single Execution Log entry
+6. After merging the batch, run `pnpm typecheck && pnpm test --run` against main to verify.
+7. Mark all completed tasks `[x]` in the spec; append a single Execution Log entry for the batch.
 
-### Agent Prompt Template
+### Agent prompt template
 
 Each parallel agent receives a self-contained prompt with:
 
-- **Task**: full task description from spec
-- **Files**: the `files:` list — only these files should be created/modified
-- **Test Plan**: TC-IDs from `tests:` metadata with descriptions from the Test Plan section
-- **TDD Cycle**: if `tests:` present, follow RED -> GREEN -> REFACTOR
-- **Conventions**: TS strict, Result pattern at boundaries, hand-written stubs in `*.test.ts`, table-driven tests
-- **REVIEW**: "Re-read the Task and Files sections. Verify all files created/modified, all patterns followed, all mappings complete. This is mandatory before running tests."
-- **Report**: return summary of what was done, files changed, TDD results
+- **Task**: full task description from spec (verbatim).
+- **Files**: the `files:` metadata — only these may be created/modified.
+- **Test Plan**: the TC-IDs from `tests:` with each TC's full row from the Test Plan table.
+- **TDD Cycle**: if `tests:` present, follow RED → GREEN → REFACTOR.
+- **Conventions**: TS strict, Result pattern at boundaries, Zod at boundaries, named exports, prepared statements, hand-written stubs colocated in `*.test.ts` (no mocking framework), table-driven tests.
+- **REVIEW step**: "Re-read the Task and Files sections before reporting. Verify all files created/modified, all patterns followed, all error mappings complete. This is mandatory."
+- **Report format**: files changed, TDD result, deviations + justification, open questions, worktree path.
 
-### When NOT to Parallelize
+### When NOT to parallelize
 
-- Tasks share **mutative** files (both modify existing code in the same file)
-- Worktree isolation is unavailable
-- Tasks are trivial (< 1 minute each) — overhead of worktrees outweighs benefit
-- Fewer than 2 tasks in the batch
+- Tasks share **mutative** files (both modify existing code in the same file).
+- Worktree isolation is unavailable.
+- Tasks are trivial (< 1 minute each) — overhead outweighs benefit.
+- Fewer than 2 tasks in the batch.
 
-### Merge Strategy
+## TDD Cycle (per task with `tests:` metadata)
 
-- **All succeeded**: merge worktrees sequentially, verify typecheck + tests
-- **Some failed**: merge successful ones, leave failed tasks unchecked, log failures
-- **Merge conflicts**: resolve manually, verify typecheck + tests after resolution
+**RED:**
 
-## Per-Iteration Execution
+1. Write test file FIRST (`foo.test.ts` next to `foo.ts`).
+2. Tests reference the symbol/type to be implemented.
+3. `pnpm test --run <file>` MUST fail (compile/import failure counts).
 
-**CRITICAL: Execute exactly ONE task per iteration (unless parallelizing a batch).**
+**GREEN:**
 
-For each task:
+1. Minimum production code to make tests pass.
+2. Hand-written stubs colocated in the test file. Table-driven cases.
+3. `pnpm test --run <file>` — all listed TCs pass.
+4. Other tests breaking → fix immediately.
 
-1. **Read the spec file** to find the current task (first unchecked `- [ ] TASK-N:`)
-2. **Read relevant code** referenced in the spec's Design section
-3. **Check `tests:` metadata** on the task to determine execution mode:
+**REFACTOR:**
 
-### If task has `tests:` -> TDD Cycle
+1. Clean up: dedupe, rename, extract.
+2. `pnpm test --run` + `pnpm typecheck` — must pass.
 
-**RED Phase:**
+Tasks without `tests:` execute normally (verify `pnpm typecheck`).
 
-1. Write the test file FIRST (before production code) — `foo.test.ts` next to `foo.ts`
-2. Tests reference the function/type to be implemented
-3. Run `pnpm test --run <file>` — tests MUST fail (compilation/import failure = valid RED)
+## After Last Task — Self-Review (Checkpoints 1 + 2)
 
-**GREEN Phase:**
+**Do NOT rush to report. NEVER commit before the pause.** Walk these in order:
 
-1. Write MINIMUM production code to make tests pass
-2. Follow existing patterns: hand-written stubs colocated in `*.test.ts`, table-driven tests
-3. Run `pnpm test --run <file>` — all TCs in `tests:` MUST pass
+### Checkpoint 1 — REQ-by-REQ
 
-**REFACTOR Phase:**
+- Walk every REQ in the spec's Requirements section.
+- For each: cite concrete evidence (`file:line`, test name, SQL fragment).
+- Status: `✅ full` / `🟡 partial` / `❌ blocked`.
+- **Best-way-possible per REQ**: right primitive (Server Action vs API route, SQL aggregation vs JS loop), no duplicated logic, reuses existing helpers, follows project conventions (named exports, Zod at boundaries, prepared statements, Result pattern). "Works" is not the bar — "works + would survive a review" is.
+- Re-check every `decisões já travadas` / `decisions locked` entry has a corresponding code artifact.
+- Re-check each task's REVIEW step was genuinely executed (`files:` touched, patterns followed, no implementation gap).
+- If gaps surface → fix them, re-test, then proceed.
 
-1. Clean up: remove duplication, improve naming, extract helpers
-2. Run `pnpm test --run` + `pnpm typecheck` — must pass
+### Checkpoint 2 — Live validation with real data (when applicable)
 
-### If task has no `tests:` -> Normal Execution
+If the spec has user-visible effects (UI, queries, metrics, CLI, migration):
 
-1. Execute the task as described
-2. Verify: `pnpm typecheck`
+- `pnpm dev` in background; curl affected routes; grep HTML for expected aria-labels / headings / data-attributes / badges.
+- For CLI tools: run against the live DB; cross-check raw SQL (`sqlite3 data/dashboard.db "SELECT ..."`).
+- For new UI states (badges, empty states, divergence hints): trigger via seed and confirm via HTML grep.
+- Stop the dev server when done. `SIGTERM (exit 143)` is expected — say so explicitly.
 
-### After execution (all modes)
+Skip only when the spec is truly internal (pure refactor, no observable behavior change) — and say so explicitly in the report.
 
-1. **Mandatory review** (NEVER skip): re-read task description and verify: all files listed in `files:` were created/modified, all patterns from the Design section are followed, all error mappings/wrapping are complete, no implementation gap vs the spec
-2. **Mark complete**: change `- [ ] TASK-N:` to `- [x] TASK-N:`
-3. **Log**: append to Execution Log:
+### Reporting (preparing for the pause)
 
-```markdown
-### Iteration N — TASK-N (YYYY-MM-DD HH:MM)
+- **Lead** with what was validated against real data, not "tests pass". Example: "30d spend: \$9,749 list → \$1,956 calibrated, 5× closer to actual Max usage."
+- REQ table with status (✅ / 🟡 / ❌) — the proof Checkpoint 1 happened.
+- New tests and delta (`399 → 429, +30`).
+- Any `[SIGTERM]` exit codes from dev-server kills explained.
+- Partial REQs flagged with explicit "follow-up" notes — never hidden.
 
-<1-2 sentence summary>
-TDD: RED(N failing) -> GREEN(N passing) -> REFACTOR(clean)  <!-- if TDD -->
-```
+## Checkpoint 3 — MANDATORY PAUSE for user review
 
-1. **Stop** — let the hook decide whether to continue or finish
+**STOP HERE.** Present the report and **wait for explicit user feedback**.
 
-## TDD Edge Cases
+- Status remains `IN_PROGRESS` (NOT `DONE`).
+- **NO commit. NO `git add`. NO staging.** The user reviews the diff in their IDE / via `git diff`.
+- If the user asks for changes, apply them, re-run the relevant validation, present again, wait again.
+- Only after the user explicitly approves AND requests/permits commit:
+  1. Stage + commit per `feedback_commit_style` (no Co-Authored-By trailer).
+  2. Set spec status → `DONE`.
+  3. Append the commit SHA to the Execution Log.
 
-- **Compilation/import failure counts as valid RED** — the test file exists but the imported symbol doesn't exist yet
-- **Test file before production file** — always create `*.test.ts` before the implementation file
-- **Stubs**: hand-written stubs colocated in the same `*.test.ts` (no mocking frameworks)
-- **Existing tests break**: fix immediately before proceeding to GREEN
-- **Multiple TCs in one task**: all TCs must pass in GREEN phase
-
-## On Final Task
-
-After marking the last task complete, **do NOT rush to report back**. Five steps in order:
-
-### 1. Full validation pipeline
-
-- The Stop hook detects all tasks done, returns exit 0
-- `stop-validate.sh` runs full validation (typecheck + lint + tests)
-- If validation fails: fix issues (stop-validate retries up to 3 times)
-
-### 2. Self-review against the spec (mandatory)
-
-Re-read the spec's Requirements section and walk **every REQ** individually:
-
-- Is the REQ satisfied by something concrete you can cite (file:line, test name, SQL fragment)?
-- Is it **fully** satisfied, or partially? Partial = flag explicitly, don't hide it.
-- **Was it implemented the best way possible?** Check: uses the right primitive (Server Action vs API route, SQL aggregation vs JS loop, existing helper vs new regex), no duplicated logic, follows project conventions (named exports, Zod at boundaries, prepared statements, Result pattern, colocated tests), no shortcut you'd lose an argument over in code review. "Works" is not the bar — "works + would survive a review" is.
-- Did you skip the spec's explicit decisions (`decisões já travadas`) anywhere?
-- Is the REVIEW step from each task genuinely done (all `files:` touched, patterns followed, no implementation gap)?
-
-Build a checklist (REQ-1..N) in your internal notes with status per REQ. Any ⚠️ or 🟡 items get surfaced in the report — never swept.
-
-### 3. Live validation with real data (when applicable)
-
-If the feature has user-visible effects (UI changes, new queries, new metrics, script behavior), validate against a **real** database or environment, not just test fixtures:
-
-- Start the dev server (`pnpm dev` in background) and curl the affected routes — confirm HTTP 200 and that the new content appears in the rendered HTML (grep the response for key aria-labels, headings, badges, data-attributes).
-- For new CLI tools (`pnpm recompute-costs`, `pnpm ingest`, `pnpm seed-dev`), run against the live DB and inspect the output. Cross-check with raw SQL (`sqlite3 data/dashboard.db "SELECT ..."`) that the expected rows/values appear.
-- For new UI states (badges, empty states, divergence hints), trigger the state via seed data or by hand and visually confirm via HTML grep.
-- For E2E tests that were flaky in the batch run (port collisions, timing), re-run in isolation to confirm they actually pass.
-- Stop the dev server when done.
-
-Skip only when the feature is truly internal (pure refactor, no observable behavior change).
-
-### 4. Spec status and cleanup
-
-- If validation + self-review pass cleanly: set spec status to `DONE`, remove the `.active.md` state file.
-- If partial: set status to `DONE` and flag the partial REQs in the final report with a clear "follow-up" note — don't leave them invisible.
-
-### 5. Report back
-
-- Lead with **what was validated against real data** (not just "tests pass"). Example: "30-day spend KPI: \$9,749 list → \$1,956 calibrated, 5× closer to actual Max usage."
-- Table of REQs with status (✅ / 🟡 partial / ❌ blocked) — this is your proof the spec was followed.
-- List of new tests and the delta (`399 → 429, +30`).
-- Any `[SIGTERM]` exit codes from dev-server kills: explain them; don't leave the user thinking something crashed.
-- Suggest: "Run `/spec-review .specs/<name>.md` for a formal review against requirements" **only if** the self-review surfaced anything worth a second pair of eyes.
+**Why this pause exists**: the user explicitly defined the SDD flow with a review pause before commit (2026-04-28). Auto-committing after a green pipeline conflates "code works" with "code is what the user wanted to ship".
 
 ## Resume After Interruption
 
-If a loop was interrupted (Ctrl+C, crash, etc.):
+If the session was interrupted before completing all batches:
 
-1. The `.active.md` state file remains on disk
-2. Running `/ralph-loop .specs/<name>.md` again picks up from the first unchecked task
-3. No work is lost — completed tasks are already marked `[x]`
+1. Re-running `/ralph-loop <spec>` re-reads the spec.
+2. Picks up from the first `- [ ] TASK-N:` entry.
+3. Already-completed tasks are marked `[x]` and skipped.
+4. No `.active.md` to manage — there is none.
 
-## Rules
+## Rules (non-negotiable)
 
-- **ONE task per iteration** — unless parallelizing a batch (then all batch tasks in one iteration)
-- **Parallel batches launch multiple agents** in a single message with `isolation: "worktree"`
-- **Read the spec file first** every iteration — it is the single source of truth
-- Never modify the spec's Requirements or Design sections during execution
-- If a task is unclear or blocked, mark it `BLOCKED` in the spec, remove the `.active.md` file, and stop
-- Follow project conventions: TS strict, Result pattern at boundaries, colocated tests
-- Be concise in responses — context accumulates across iterations
-- For features with many tasks (15+), consider splitting into smaller specs
+- **NEVER auto-commit.** Wait for explicit user approval (Checkpoint 3 / Step 7).
+- **NEVER use Stop-hook iteration** (no `.active.md` file).
+- **NEVER skip self-review** (Checkpoint 1 always; Checkpoint 2 when applicable).
+- **NEVER skip the pause** (Checkpoint 3) — even when validation is green.
+- Worktree cleanup is MANUAL after merge — see CLAUDE.md directive 7.
+- Spec status: APPROVED → IN_PROGRESS → DONE (only after the user-approved commit).
+- Read the spec file fresh at the start of each batch — it is the single source of truth.
+- Never modify the spec's Requirements or Design sections during execution.
+- If a task is unclear or blocked: mark it `BLOCKED` in the spec, surface in the pause, do NOT silently skip.
+- For features with many tasks (15+), consider splitting into smaller specs.
 
 ## Emergency Stop
 
-To stop the loop at any time:
-
-```bash
-rm .specs/*.active.md
-```
-
-This removes the state file. The Stop hook will see no active loop and pass through normally.
+To abort mid-execution: just stop. There is no `.active.md` to clean up. Re-running `/ralph-loop <spec>` will resume from the first unchecked task.

@@ -4,6 +4,25 @@ applies-to: ".specs/**"
 
 # SDD Spec Rules
 
+## Execution Flow (review-then-execute-then-review)
+
+The SDD workflow follows a 7-step flow with **TWO mandatory user-approval pauses**. NEVER use Stop-hook iteration (no `.active.md`); the whole spec executes in one session.
+
+1. **Cria spec** — `/spec` ou manual via `.specs/TEMPLATE.md`. Status: DRAFT.
+2. **Self-review da spec** — apply fixes for gaps, bugs, ambiguity, missing TCs, best-way-possible, convenção do projeto. Inline; present "findings resolved" note.
+3. **PAUSE 1 — Apresenta spec revisada com pontos de atenção; AGUARDA aprovação do usuário.** On approval, status → APPROVED.
+4. **Executa spec inteira** (`/ralph-loop` ou manual) — paralelizando batches via worktree-isolated agents num único tool message; merge + cleanup após cada batch. Status → IN_PROGRESS.
+5. **Self-review da implementação** — REQ-by-REQ (`✅/🟡/❌` com `file:line` + test name + SQL fragment); best-way-possible per REQ; live validation contra dados reais quando spec tem efeitos visíveis (dev server + curl + SQL).
+6. **PAUSE 2 — Apresenta resultado liderando com live validation; AGUARDA review do usuário.** Surface partial REQs, never hide.
+7. **Commit APENAS após aprovação explícita do usuário.** NÃO auto-commit. Status → DONE pós-commit.
+
+**Hard rules** (the user should NEVER need to ask "you committed already?"):
+
+- No commit antes da PAUSE 2 ter sido confirmada pelo usuário
+- No `.active.md` file (Stop hook iteration está desabilitada)
+- No "I'll commit and you can review" — commit é o último passo, não o primeiro
+- No saltar dos checkpoints (steps 2, 5a, 5b) — todos obrigatórios
+
 ## Spec File Integrity
 
 - Never modify the Requirements section during execution (only during DRAFT status)
@@ -126,11 +145,11 @@ When parallel tasks share additive files (e.g. `app/layout.tsx` shell vs content
 ## Naming
 
 - Spec files: lowercase, hyphen-separated: `dashboard-mvp.md`, `effectiveness-scoring.md`
-- Active state files: `<name>.active.md` (auto-created by ralph-loop, do not edit manually)
+- No active-state files (`.active.md`) — the current flow runs in single session without Stop-hook iteration
 
 ## Discipline Checkpoints (non-negotiable)
 
-Two checkpoints gate the "done" of any spec. Skipping either is a regression — the user should never have to ask "você validou?".
+Three checkpoints gate the "done" of any spec. Skipping any is a regression — the user should never have to ask "você validou?" nor "you committed already?".
 
 ### Checkpoint 1 — Self-review against the spec (REQ-by-REQ)
 
@@ -161,3 +180,14 @@ Skip Checkpoint 2 **only** when the spec is truly internal (pure refactor, no ob
 - Include a table of REQs with status (✅ / 🟡 / ❌). That table is the proof Checkpoint 1 happened.
 - List new tests and the delta (`399 → 429, +30`).
 - Partial items get explicit "follow-up" notes — never swept under the rug.
+
+### Checkpoint 3 — MANDATORY PAUSE for user review (no commit yet)
+
+After Checkpoints 1 + 2 are clean and the report is composed:
+
+- **STOP**. Present the report to the user. Status remains `IN_PROGRESS` (NOT `DONE` yet).
+- **AGUARDA explicit user feedback or approval to commit.** No auto-commit. No "I committed and here's what changed" — commit is the user's decision, not the agent's.
+- If the user requests changes, apply them, re-run the relevant validation, present again, wait again.
+- Only after the user explicitly approves AND requests/permits commit: stage + commit (per `feedback_commit_style` — no Co-Authored-By trailer), set status `DONE`, update Execution Log with the commit SHA.
+
+**Why this checkpoint exists**: the user explicitly defined the SDD flow with a pause before commit (2026-04-28). Auto-committing after a green pipeline removes the user's review opportunity and conflates "code works" with "code is what the user wanted to ship".

@@ -104,8 +104,8 @@ Delegate with "use a subagent to..." or launch a team via `/full-review-team`.
 
 - **PreToolUse[Bash]** — `guard-bash.sh`: blocks `.env` staging, `git add -A/.`, `DROP` statements, `--no-verify`.
 - **PostToolUse[Edit|Write]** — `lint-ts-file.sh`: ESLint on every TS/JS file edit.
-- **Stop** — `ralph-loop.sh`: checks spec task progress, returns exit 2 to continue autonomous execution (transparent when no loop active).
-- **Stop** — `stop-validate.sh`: typecheck + lint + tests gate with tiered validation; skipped during active ralph-loop.
+- **Stop** — `ralph-loop.sh`: legacy iteration mechanism kept inert by current flow. Fires on Stop, looks for `.specs/*.active.md`, finds none (the new SDD flow does NOT create that file — see CLAUDE.md directive 5), passes through with exit 0. Can be safely removed in a future cleanup.
+- **Stop** — `stop-validate.sh`: typecheck + lint + tests gate with tiered validation. Always runs (no longer gated by ralph-loop state).
 - **WorktreeCreate/Remove** — automated git worktree setup and cleanup.
 
 ### Execution Directives
@@ -114,10 +114,22 @@ Delegate with "use a subagent to..." or launch a team via `/full-review-team`.
 2. **Mandatory cycle** for non-trivial tasks: **Plan** → **Implement** → **Review** → **Test** → **Validate**. Do not finish without concrete validation evidence.
 3. **The Review step is MANDATORY and AUTOMATIC** — after implementing, re-read the plan/spec and diff what was implemented vs what was specified (files, patterns, mappings). Verify: all files listed in `files:` metadata were created/modified, all patterns from the Design section are followed, all error mappings are complete, no implementation gap vs the spec. Only then proceed to tests. This is NEVER skipped.
 4. **Post-implementation validation** — enforced automatically by the **Stop hook** (typecheck + lint + tests). The hook blocks completion until validation passes. For the full pipeline including Playwright e2e, run `/validate` explicitly.
-5. **SDD workflow** for complex features: `/spec` → approve → `/ralph-loop` → `/spec-review`. Specs live in `.specs/`. The ralph-loop uses the Stop hook (exit code 2) to iterate task-by-task within the same session. Three checkpoints gate the "done" of any spec — skipping any is a regression (see `.claude/skills/spec/SKILL.md` "Self-Review the Spec" + `.claude/rules/sdd.md` "Discipline Checkpoints"):
-   - **MANDATORY — Self-review the spec before presenting DRAFT**: after writing the spec and before showing it to the user, critically review it for alignment with the proposal, requirement clarity, ambiguity, missing TCs, architectural soundness, and — crucially — whether it solves the problem **the best way possible** (no shortcut hurting correctness/ergonomics, reuses existing helpers, follows project conventions). Apply the fixes in place; present with a "findings resolved" note.
-   - **MANDATORY — Self-review REQ-by-REQ + best-way-possible check**: after the last task is marked `[x]`, walk every REQ with concrete evidence (`file:line`, test name, SQL fragment) and build a `✅ / 🟡 / ❌` checklist before reporting. For each REQ, also ask "was this implemented the best way possible, following project conventions?" — not just "works". Partial/blocked REQs surfaced in the report, never hidden.
-   - **MANDATORY — Live validation with real data (when applicable)**: when the spec has user-visible effects (UI, queries, metrics, CLI, migration), start the dev server / run the CLI against the real DB, curl routes + grep HTML, cross-check SQL, and **lead** the final report with what was validated against real data — not with "tests pass". Skip only for pure refactors with no observable behavior change, and say so explicitly.
+5. **SDD workflow** for complex features follows a **review-then-execute-then-review** loop with TWO mandatory user-approval pauses. Specs live in `.specs/`. NEVER use Stop-hook iteration (no `.active.md`); the whole spec executes in one session via parallel-batch worktrees.
+
+   The 7-step flow:
+
+   1. **Cria spec** via `/spec` (ou manual seguindo `.specs/TEMPLATE.md`).
+   2. **Self-review da spec** (gaps, bugs, ambiguidade, TCs faltando, best-way-possible, convenções). Aplica fixes in place.
+   3. **MANDATORY PAUSE 1** — Apresenta spec revisada com pontos de atenção. **AGUARDA aprovação explícita do usuário.** Status → APPROVED.
+   4. **Executa spec inteira** via `/ralph-loop`. Status → IN_PROGRESS. Parallel batches via Agent calls com `isolation: "worktree"` num único tool message; merge + cleanup após cada batch (directive 7).
+   5. **Self-review da implementação** — REQ-by-REQ checklist (`✅ / 🟡 / ❌`) com evidência concreta (`file:line`, test name, SQL fragment); best-way-possible per REQ; **live validation contra dados reais** (dev server + curl + SQL) quando spec tem efeitos visíveis ao usuário.
+   6. **MANDATORY PAUSE 2** — Apresenta resultado liderando com o que foi validado em produção (não "tests pass"). Surface partial REQs explicitamente. **AGUARDA review do usuário.**
+   7. **Commit APENAS após aprovação explícita do usuário.** NÃO auto-commit ao final da execução. Status → DONE pós-commit.
+
+   Three discipline checkpoints inside the flow (skipping any is a regression — see `.claude/skills/spec/SKILL.md` + `.claude/rules/sdd.md`):
+   - **Step 2** Self-review da spec antes de apresentar DRAFT
+   - **Step 5a** REQ-by-REQ check com best-way-possible
+   - **Step 5b** Live validation com dados reais quando aplicável
 6. **Parallelism** — Three types: (a) **Intra-spec**: `/spec` auto-generates Parallel Batches from task `files:` and `depends:` metadata; ralph-loop launches parallel agents with `isolation: "worktree"` for multi-task batches. (b) **Inter-spec**: independent specs run in separate worktrees. (c) Shared files classified as exclusive, shared-additive (sequential batches), or shared-mutative (must serialize).
 7. **Agent worktree cleanup is MANUAL** — when launching `Agent` with `isolation: "worktree"`, the runtime does NOT auto-cleanup worktrees if the agent made changes. After merging files from a worktree, ALWAYS run `git worktree remove <path> --force && git worktree prune`. Orphan worktrees accumulate fast and break IDE tooling. The `WorktreeRemove` hook only fires on explicit removal.
 
