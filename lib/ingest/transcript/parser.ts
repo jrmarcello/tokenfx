@@ -6,6 +6,7 @@ import {
   AssistantMessageSchema,
   TranscriptLineSchema,
   UserMessageSchema,
+  type CompactionEvent,
   type ParsedSession,
   type ParsedToolCall,
   type ParsedTurn,
@@ -59,6 +60,8 @@ export function parseTranscriptString(
   const warn = onWarn;
   const rawLines = content.split('\n');
   const entries: TranscriptLine[] = [];
+  const compactionEvents: CompactionEvent[] = [];
+  let compactionIdx = 0;
 
   for (let i = 0; i < rawLines.length; i++) {
     const raw = rawLines[i].trim();
@@ -75,7 +78,36 @@ export function parseTranscriptString(
       continue;
     }
 
-    const typeField = (parsed as { type?: unknown } | null)?.type;
+    // Observe compact_boundary entries BEFORE the CONSUMED_TYPES filter so
+    // they aren't dropped along with other infra event types. We don't push
+    // these onto `entries` (downstream turn building only expects
+    // user/assistant) — they go onto a parallel `compactionEvents` list.
+    const obj = parsed as
+      | {
+          type?: unknown;
+          subtype?: unknown;
+          timestamp?: unknown;
+          compactMetadata?: {
+            trigger?: unknown;
+            preTokens?: unknown;
+            postTokens?: unknown;
+          };
+        }
+      | null;
+    if (obj?.type === 'system' && obj.subtype === 'compact_boundary') {
+      const meta = obj.compactMetadata;
+      const tsRaw = typeof obj.timestamp === 'string' ? Date.parse(obj.timestamp) : NaN;
+      compactionEvents.push({
+        sequence_in_file: compactionIdx++,
+        trigger: typeof meta?.trigger === 'string' ? meta.trigger : null,
+        pre_tokens: typeof meta?.preTokens === 'number' ? meta.preTokens : null,
+        post_tokens: typeof meta?.postTokens === 'number' ? meta.postTokens : null,
+        ts: Number.isFinite(tsRaw) ? tsRaw : Date.now(),
+      });
+      continue;
+    }
+
+    const typeField = obj?.type;
     if (typeof typeField !== 'string' || !CONSUMED_TYPES.has(typeField)) {
       continue;
     }
@@ -267,6 +299,7 @@ export function parseTranscriptString(
       startedAt,
       endedAt,
       turns,
+      compactionEvents,
     },
   };
 }

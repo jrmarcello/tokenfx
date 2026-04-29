@@ -200,6 +200,190 @@ describe('parseTranscriptString', () => {
   });
 });
 
+function compactBoundaryLine(
+  ts: string,
+  metadata?: { trigger?: string; preTokens?: number; postTokens?: number },
+) {
+  const compactMetadata: Record<string, unknown> = {};
+  if (metadata?.trigger !== undefined) compactMetadata.trigger = metadata.trigger;
+  if (metadata?.preTokens !== undefined) compactMetadata.preTokens = metadata.preTokens;
+  if (metadata?.postTokens !== undefined) compactMetadata.postTokens = metadata.postTokens;
+  return line({
+    type: 'system',
+    subtype: 'compact_boundary',
+    compactMetadata,
+    timestamp: ts,
+  });
+}
+
+describe('parseTranscriptString — compaction events', () => {
+  it('TC-U-15: REQ-1 happy — JSONL with 2 compact_boundary lines + user/assistant entries', () => {
+    const content = [
+      userLine('u1', null, 'first ask', '2026-04-15T12:00:00.000Z'),
+      assistantLine('a1', 'u1', {
+        text: 'first reply',
+        ts: '2026-04-15T12:00:01.000Z',
+        inputTokens: 10,
+        outputTokens: 5,
+      }),
+      compactBoundaryLine('2026-04-15T12:34:56.789Z', {
+        trigger: 'auto',
+        preTokens: 968559,
+        postTokens: 16672,
+      }),
+      userLine('u2', 'a1', 'second ask', '2026-04-15T12:35:00.000Z'),
+      assistantLine('a2', 'u2', {
+        text: 'second reply',
+        ts: '2026-04-15T12:35:01.000Z',
+        inputTokens: 8,
+        outputTokens: 4,
+      }),
+      compactBoundaryLine('2026-04-15T13:00:00.000Z', {
+        trigger: 'manual',
+        preTokens: 500000,
+        postTokens: 12000,
+      }),
+      userLine('u3', 'a2', 'third ask', '2026-04-15T13:00:30.000Z'),
+      assistantLine('a3', 'u3', {
+        text: 'third reply',
+        ts: '2026-04-15T13:00:31.000Z',
+        inputTokens: 6,
+        outputTokens: 3,
+      }),
+    ].join('\n');
+
+    const res = parseTranscriptString(content);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.compactionEvents).toHaveLength(2);
+    expect(res.value.compactionEvents[0]).toEqual({
+      sequence_in_file: 0,
+      trigger: 'auto',
+      pre_tokens: 968559,
+      post_tokens: 16672,
+      ts: Date.parse('2026-04-15T12:34:56.789Z'),
+    });
+    expect(res.value.compactionEvents[1]).toEqual({
+      sequence_in_file: 1,
+      trigger: 'manual',
+      pre_tokens: 500000,
+      post_tokens: 12000,
+      ts: Date.parse('2026-04-15T13:00:00.000Z'),
+    });
+    // user/assistant turns still parsed normally
+    expect(res.value.turns).toHaveLength(3);
+  });
+
+  it('TC-U-16: REQ-1 edge — JSONL with NO compact_boundary returns empty array', () => {
+    const content = [
+      userLine('u1', null, 'hello', '2026-04-18T10:00:00.000Z'),
+      assistantLine('a1', 'u1', {
+        text: 'hi',
+        ts: '2026-04-18T10:00:05.000Z',
+        inputTokens: 10,
+        outputTokens: 5,
+      }),
+    ].join('\n');
+    const res = parseTranscriptString(content);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.compactionEvents).toEqual([]);
+  });
+
+  it('TC-U-17: REQ-2 validation — type:"system" without subtype is not counted', () => {
+    const content = [
+      userLine('u1', null, 'hi', '2026-04-18T10:00:00.000Z'),
+      line({ type: 'system', timestamp: '2026-04-18T10:00:01.000Z' }),
+      assistantLine('a1', 'u1', {
+        text: 'hi',
+        ts: '2026-04-18T10:00:05.000Z',
+        inputTokens: 1,
+        outputTokens: 1,
+      }),
+    ].join('\n');
+    const res = parseTranscriptString(content);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.compactionEvents).toHaveLength(0);
+  });
+
+  it('TC-U-18: REQ-2 validation — type:"system" subtype:"info" is not counted', () => {
+    const content = [
+      userLine('u1', null, 'hi', '2026-04-18T10:00:00.000Z'),
+      line({
+        type: 'system',
+        subtype: 'info',
+        timestamp: '2026-04-18T10:00:01.000Z',
+      }),
+      assistantLine('a1', 'u1', {
+        text: 'hi',
+        ts: '2026-04-18T10:00:05.000Z',
+        inputTokens: 1,
+        outputTokens: 1,
+      }),
+    ].join('\n');
+    const res = parseTranscriptString(content);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.compactionEvents).toHaveLength(0);
+  });
+
+  it('TC-U-19: REQ-2 validation — type:"system" subtype:42 (number) is not counted', () => {
+    const content = [
+      userLine('u1', null, 'hi', '2026-04-18T10:00:00.000Z'),
+      line({
+        type: 'system',
+        subtype: 42,
+        timestamp: '2026-04-18T10:00:01.000Z',
+      }),
+      assistantLine('a1', 'u1', {
+        text: 'hi',
+        ts: '2026-04-18T10:00:05.000Z',
+        inputTokens: 1,
+        outputTokens: 1,
+      }),
+    ].join('\n');
+    const res = parseTranscriptString(content);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.compactionEvents).toHaveLength(0);
+  });
+
+  it('TC-U-20: REQ-1 edge — malformed JSONL line where compact_boundary should be → warn + counter not incremented', () => {
+    const warnings: string[] = [];
+    const content = [
+      userLine('u1', null, 'hi', '2026-04-18T10:00:00.000Z'),
+      compactBoundaryLine('2026-04-18T10:00:01.000Z', {
+        trigger: 'auto',
+        preTokens: 100,
+        postTokens: 10,
+      }),
+      '{not valid json for compact_boundary',
+      compactBoundaryLine('2026-04-18T10:00:03.000Z', {
+        trigger: 'auto',
+        preTokens: 200,
+        postTokens: 20,
+      }),
+      assistantLine('a1', 'u1', {
+        text: 'hi',
+        ts: '2026-04-18T10:00:05.000Z',
+        inputTokens: 1,
+        outputTokens: 1,
+      }),
+    ].join('\n');
+    const res = parseTranscriptString(content, undefined, (m) => warnings.push(m));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // Two valid boundary entries; the malformed line in between is skipped
+    // and does NOT increment the counter — sequences are 0 and 1, not 0 and 2.
+    expect(res.value.compactionEvents).toHaveLength(2);
+    expect(res.value.compactionEvents[0].sequence_in_file).toBe(0);
+    expect(res.value.compactionEvents[1].sequence_in_file).toBe(1);
+    // A warn was emitted for the malformed line
+    expect(warnings.some((w) => w.toLowerCase().includes('invalid json'))).toBe(true);
+  });
+});
+
 describe('detectCorrectionPenalty (TC-U-05)', () => {
   function buildTurns(userPrompts: Array<string | null>): ParsedTurn[] {
     return userPrompts.map((p, i) => ({

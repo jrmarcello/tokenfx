@@ -1,6 +1,6 @@
 # Spec: Personal Effectiveness v2 — métricas de uso de IA, não só consumo
 
-## Status: DRAFT
+## Status: DONE
 
 ## Context
 
@@ -446,61 +446,61 @@ SQLite `json_extract` (já em uso em `lib/queries/otel.ts`).
 
 ## Tasks
 
-- [ ] **TASK-1**: Helper puro `lib/analytics/regression.ts` — `linearRegression(points: Array<{x:number,y:number}>): LinearFit | null` com least-squares, proteção contra `n<3`, `Σ(x - x̄)² === 0` (vertical), NaN/Infinity. Testes TC-U-01..06.
+- [x] **TASK-1**: Helper puro `lib/analytics/regression.ts` — `linearRegression(points: Array<{x:number,y:number}>): LinearFit | null` com least-squares, proteção contra `n<3`, `Σ(x - x̄)² === 0` (vertical), NaN/Infinity. Testes TC-U-01..06.
   - files: lib/analytics/regression.ts, lib/analytics/regression.test.ts
   - tests: TC-U-01, TC-U-02, TC-U-03, TC-U-04, TC-U-05, TC-U-06
 
-- [ ] **TASK-2**: Helpers e constantes em `lib/analytics/effectiveness-v2.ts` — `LOW_TOOL_ERROR_RATE_THRESHOLD = 0.1`, `MIN_FUNNEL_SESSIONS = 5`, `EFFECTIVENESS_PALETTE` (5 cores hex em ordem L0..L4), `effectivenessLevelFor(score: number | null): 0 | 1 | 2 | 3 | 4`, `computeMedian(values: number[]): number | null`, `formatInsightLine(metric: 'tokensUntilFirstEdit'|'readsToEditsRatio'|'toolErrorRate'|'cacheHitRatio', top: number | null, bottom: number | null): string`. Testes TC-U-07..14.
+- [x] **TASK-2**: Helpers e constantes em `lib/analytics/effectiveness-v2.ts` — `LOW_TOOL_ERROR_RATE_THRESHOLD = 0.1`, `MIN_FUNNEL_SESSIONS = 5`, `EFFECTIVENESS_PALETTE` (5 cores hex em ordem L0..L4), `effectivenessLevelFor(score: number | null): 0 | 1 | 2 | 3 | 4`, `computeMedian(values: number[]): number | null`, `formatInsightLine(metric: 'tokensUntilFirstEdit'|'readsToEditsRatio'|'toolErrorRate'|'cacheHitRatio', top: number | null, bottom: number | null): string`. Testes TC-U-07..14.
   - files: lib/analytics/effectiveness-v2.ts, lib/analytics/effectiveness-v2.test.ts
   - tests: TC-U-07, TC-U-08, TC-U-09, TC-U-10, TC-U-11, TC-U-12, TC-U-13, TC-U-14
 
-- [ ] **TASK-3**: Schema — adicionar `CREATE TABLE IF NOT EXISTS compaction_events (…)` + índice em `lib/db/schema.sql` (DDL completo no REQ-3). Nenhuma coluna nova em `sessions`. Migração é trivial: `CREATE TABLE IF NOT EXISTS` cobre tanto fresh DB quanto legacy. Sem `backfill*` adicional. Tests: TC-I-01 (tabela existe após migrate em DB fresh), TC-I-02 (legacy DB ganha tabela; segunda execução é no-op).
+- [x] **TASK-3**: Schema — adicionar `CREATE TABLE IF NOT EXISTS compaction_events (…)` + índice em `lib/db/schema.sql` (DDL completo no REQ-3). Nenhuma coluna nova em `sessions`. Migração é trivial: `CREATE TABLE IF NOT EXISTS` cobre tanto fresh DB quanto legacy. Sem `backfill*` adicional. Tests: TC-I-01 (tabela existe após migrate em DB fresh), TC-I-02 (legacy DB ganha tabela; segunda execução é no-op).
   - files: lib/db/schema.sql, lib/db/migrate.test.ts
   - tests: TC-I-01, TC-I-02
 
-- [ ] **TASK-4**: Parser de compaction — adicionar tipo `CompactionEvent` e campo `compactionEvents: CompactionEvent[]` em `ParsedSession` (`lib/ingest/transcript/types.ts`). Em `lib/ingest/transcript/parser.ts`: ANTES do filtro `CONSUMED_TYPES`, observar linhas com `type === 'system' && subtype === 'compact_boundary'`; manter contador local `let compactionIdx = 0` e push `{ sequence_in_file: compactionIdx++, trigger: line.compactMetadata?.trigger ?? null, pre_tokens: line.compactMetadata?.preTokens ?? null, post_tokens: line.compactMetadata?.postTokens ?? null, ts: Date.parse(line.timestamp) || Date.now() }`. Retornar `compactionEvents` no `value`. Tests TC-U-15..20. Fixture `tests/fixtures/sample-with-compaction.jsonl` com 2 user/assistant + 2 compact_boundary entries (shape real do Context).
+- [x] **TASK-4**: Parser de compaction — adicionar tipo `CompactionEvent` e campo `compactionEvents: CompactionEvent[]` em `ParsedSession` (`lib/ingest/transcript/types.ts`). Em `lib/ingest/transcript/parser.ts`: ANTES do filtro `CONSUMED_TYPES`, observar linhas com `type === 'system' && subtype === 'compact_boundary'`; manter contador local `let compactionIdx = 0` e push `{ sequence_in_file: compactionIdx++, trigger: line.compactMetadata?.trigger ?? null, pre_tokens: line.compactMetadata?.preTokens ?? null, post_tokens: line.compactMetadata?.postTokens ?? null, ts: Date.parse(line.timestamp) || Date.now() }`. Retornar `compactionEvents` no `value`. Tests TC-U-15..20. Fixture `tests/fixtures/sample-with-compaction.jsonl` com 2 user/assistant + 2 compact_boundary entries (shape real do Context).
   - files: lib/ingest/transcript/types.ts, lib/ingest/transcript/parser.ts, lib/ingest/transcript/parser.test.ts, tests/fixtures/sample-with-compaction.jsonl
   - depends: TASK-3
   - tests: TC-U-15, TC-U-16, TC-U-17, TC-U-18, TC-U-19, TC-U-20
 
-- [ ] **TASK-5**: Writer — em `lib/ingest/writer.ts`, dentro da transação de `writeSession`, iterar `parsed.compactionEvents` e fazer INSERT em `compaction_events` com `ON CONFLICT(session_id, source_file, sequence_in_file) DO UPDATE SET trigger=excluded.trigger, pre_tokens=excluded.pre_tokens, post_tokens=excluded.post_tokens, ts=excluded.ts`. Statement preparado uma vez no construtor de stmts (mesmo padrão dos outros). **Importante**: NENHUMA mudança no INSERT de `sessions` (nada novo lá). Tests TC-I-03..06, TC-I-07a..c.
+- [x] **TASK-5**: Writer — em `lib/ingest/writer.ts`, dentro da transação de `writeSession`, iterar `parsed.compactionEvents` e fazer INSERT em `compaction_events` com `ON CONFLICT(session_id, source_file, sequence_in_file) DO UPDATE SET trigger=excluded.trigger, pre_tokens=excluded.pre_tokens, post_tokens=excluded.post_tokens, ts=excluded.ts`. Statement preparado uma vez no construtor de stmts (mesmo padrão dos outros). **Importante**: NENHUMA mudança no INSERT de `sessions` (nada novo lá). Tests TC-I-03..06, TC-I-07a..c.
   - files: lib/ingest/writer.ts, lib/ingest/writer.test.ts
   - depends: TASK-3, TASK-4
   - tests: TC-I-03, TC-I-04, TC-I-05, TC-I-06, TC-I-07a, TC-I-07b, TC-I-07c
 
-- [ ] **TASK-6**: Query module `lib/queries/effectiveness-v2.ts` — implementar todas as queries derivadas (REQ-6..14, REQ-15, REQ-16, REQ-18, REQ-20, REQ-23). Padrão: `PreparedSet` + WeakMap como em `effectiveness.ts`. SQL concretas no Design §4-6. `getPersonalEffectivenessSession` usa **2 prepared stmts** para tokensUntilFirstEdit (Design §4: `getFirstEditSeq` + `getTokensBeforeSeq`, fast-path JS pra distinguir null vs 0). `compactionEventCount` via `SELECT COUNT(*) FROM compaction_events WHERE session_id=?` (REQ-12). `getCostRatingScatter` retorna colunas brutas + chama `effectiveCostForSession` no JS (REQ-16) — calibração carregada uma vez por chamada via `getCostCalibration(db)` (referência: `app/api/sessions/[id]/share/route.ts:54`); NÃO duplicar a cascata em SQL. Funnel reusa stmt próprio para counts; mediana em JS via `computeMedian` (TASK-2). `getQuartileComparison` reusa `getSessionScores`. `getDailyEffectivenessHeatmap` espelha bucketing local-time de `getDailySpend`. Tests TC-I-07..39.
+- [x] **TASK-6**: Query module `lib/queries/effectiveness-v2.ts` — implementar todas as queries derivadas (REQ-6..14, REQ-15, REQ-16, REQ-18, REQ-20, REQ-23). Padrão: `PreparedSet` + WeakMap como em `effectiveness.ts`. SQL concretas no Design §4-6. `getPersonalEffectivenessSession` usa **2 prepared stmts** para tokensUntilFirstEdit (Design §4: `getFirstEditSeq` + `getTokensBeforeSeq`, fast-path JS pra distinguir null vs 0). `compactionEventCount` via `SELECT COUNT(*) FROM compaction_events WHERE session_id=?` (REQ-12). `getCostRatingScatter` retorna colunas brutas + chama `effectiveCostForSession` no JS (REQ-16) — calibração carregada uma vez por chamada via `getCostCalibration(db)` (referência: `app/api/sessions/[id]/share/route.ts:54`); NÃO duplicar a cascata em SQL. Funnel reusa stmt próprio para counts; mediana em JS via `computeMedian` (TASK-2). `getQuartileComparison` reusa `getSessionScores`. `getDailyEffectivenessHeatmap` espelha bucketing local-time de `getDailySpend`. Tests TC-I-07..39.
   - files: lib/queries/effectiveness-v2.ts, lib/queries/effectiveness-v2.test.ts
   - depends: TASK-2, TASK-3, TASK-5
   - tests: TC-I-07, TC-I-08, TC-I-09, TC-I-10, TC-I-11, TC-I-12, TC-I-13, TC-I-14, TC-I-15, TC-I-16, TC-I-17, TC-I-18, TC-I-19, TC-I-20, TC-I-21, TC-I-22, TC-I-23, TC-I-24, TC-I-25, TC-I-26, TC-I-27, TC-I-28, TC-I-29, TC-I-30, TC-I-31, TC-I-32, TC-I-33, TC-I-34, TC-I-35, TC-I-36, TC-I-37, TC-I-38, TC-I-39
 
-- [ ] **TASK-7**: Refatorar `components/overview/activity-heatmap.tsx` — adicionar prop opcional `colorScheme: 'spend' | 'effectiveness'` (default `'spend'`). Importa `EFFECTIVENESS_PALETTE` (TASK-2) e `EMERALD_PALETTE` (extraído de hardcoded para `lib/analytics/heatmap.ts` como named export — backward compatible). Tooltip text também adapta por scheme. Cuidar pra não quebrar uso atual em `app/page.tsx`. Não tem TC dedicado — a integridade é coberta pelos E2E existentes do heatmap (TC-E2E-05/06/07 do session-timeline-heatmap continuam verdes) e novo TC-E2E-05 (effectiveness scheme).
+- [x] **TASK-7**: Refatorar `components/overview/activity-heatmap.tsx` — adicionar prop opcional `colorScheme: 'spend' | 'effectiveness'` (default `'spend'`). Importa `EFFECTIVENESS_PALETTE` (TASK-2) e `EMERALD_PALETTE` (extraído de hardcoded para `lib/analytics/heatmap.ts` como named export — backward compatible). Tooltip text também adapta por scheme. Cuidar pra não quebrar uso atual em `app/page.tsx`. Não tem TC dedicado — a integridade é coberta pelos E2E existentes do heatmap (TC-E2E-05/06/07 do session-timeline-heatmap continuam verdes) e novo TC-E2E-05 (effectiveness scheme).
   - files: components/overview/activity-heatmap.tsx, lib/analytics/heatmap.ts
   - depends: TASK-2
 
-- [ ] **TASK-8**: Componente `components/effectiveness-v2/cost-rating-scatter.tsx` (Client Component, Recharts `ScatterChart`). Props: `data: Array<{ sessionId, cost, rating }>`. Renderiza `null` quando `data.length < 3`. Usa `linearRegression` (TASK-1) sobre `(cost, rating)` para desenhar a reta. Wrapper `role="img"` + `aria-label`. Tooltip por ponto: sessionId truncado + `$cost` + `rating`.
+- [x] **TASK-8**: Componente `components/effectiveness-v2/cost-rating-scatter.tsx` (Client Component, Recharts `ScatterChart`). Props: `data: Array<{ sessionId, cost, rating }>`. Renderiza `null` quando `data.length < 3`. Usa `linearRegression` (TASK-1) sobre `(cost, rating)` para desenhar a reta. Wrapper `role="img"` + `aria-label`. Tooltip por ponto: sessionId truncado + `$cost` + `rating`.
   - files: components/effectiveness-v2/cost-rating-scatter.tsx
   - depends: TASK-1
 
-- [ ] **TASK-9**: Componente `components/effectiveness-v2/effectiveness-funnel.tsx` (Server Component, CSS bars). Props: `data: Array<{stage, count}>`. Retorna `null` em `data.length === 0`. Cada barra com width proporcional ao maior count, label do estágio + count + % do anterior. `<title>` para tooltip.
+- [x] **TASK-9**: Componente `components/effectiveness-v2/effectiveness-funnel.tsx` (Server Component, CSS bars). Props: `data: Array<{stage, count}>`. Retorna `null` em `data.length === 0`. Cada barra com width proporcional ao maior count, label do estágio + count + % do anterior. `<title>` para tooltip.
   - files: components/effectiveness-v2/effectiveness-funnel.tsx
 
-- [ ] **TASK-10**: Componente `components/effectiveness-v2/effectiveness-insight-panel.tsx` (Server Component, `<table>`). Props: `quartiles: { topQuartile, bottomQuartile } | null`. Retorna `null` quando `quartiles === null`. Linha por métrica (cache, tokensUntilFirstEdit, readsToEdits, toolErrorRate) usando `formatInsightLine` (TASK-2). `<caption class="sr-only">` + `<th scope="col">`.
+- [x] **TASK-10**: Componente `components/effectiveness-v2/effectiveness-insight-panel.tsx` (Server Component, `<table>`). Props: `quartiles: { topQuartile, bottomQuartile } | null`. Retorna `null` quando `quartiles === null`. Linha por métrica (cache, tokensUntilFirstEdit, readsToEdits, toolErrorRate) usando `formatInsightLine` (TASK-2). `<caption class="sr-only">` + `<th scope="col">`.
   - files: components/effectiveness-v2/effectiveness-insight-panel.tsx
   - depends: TASK-2
 
-- [ ] **TASK-11**: Wrapper `components/effectiveness-v2/effectiveness-heatmap.tsx` — passa `colorScheme="effectiveness"` para `<ActivityHeatmap />` (TASK-7). Props simples: `data: Array<{date, score, sessionCount}>`. Recebe a forma da query e converte para o shape que `ActivityHeatmap` consome (talvez precise de `score → spend`-like field para reuso; alternativa documentada no Design §14: o componente já consome um campo "value" abstrato).
+- [x] **TASK-11**: Wrapper `components/effectiveness-v2/effectiveness-heatmap.tsx` — passa `colorScheme="effectiveness"` para `<ActivityHeatmap />` (TASK-7). Props simples: `data: Array<{date, score, sessionCount}>`. Recebe a forma da query e converte para o shape que `ActivityHeatmap` consome (talvez precise de `score → spend`-like field para reuso; alternativa documentada no Design §14: o componente já consome um campo "value" abstrato).
   - files: components/effectiveness-v2/effectiveness-heatmap.tsx
   - depends: TASK-6, TASK-7
 
-- [ ] **TASK-12**: Página `app/effectiveness/page.tsx` (Server Component) + `app/effectiveness/loading.tsx`. Layout em REQ-26: KPIs (reuso `getEffectivenessKpis`), heatmap, funnel, scatter, insight panel, score distribution (reuso `<ScoreDistribution />` de `components/effectiveness/score-distribution.tsx`), tool success trend (reuso `<ToolSuccessTrend />` de `components/effectiveness/tool-success-trend.tsx`), e **`<SubagentUsageCard />` novo (inline nesta task — Q2 LOCKED)**: arquivo `components/effectiveness-v2/subagent-usage-card.tsx` (Server Component simples), recebe `usage` de `getSubagentUsage(db, days)`, mostra: "Sub-agents usados em **N** de **M** sessões (**P%**)" + mini-tooltip explicando que sub-agents indicam paralelismo / delegação. Empty state global via `<OverviewEmptyState />` quando `totalSessions === 0`. `export const dynamic = 'force-dynamic'`, `runtime = 'nodejs'` (consistente com `/`).
+- [x] **TASK-12**: Página `app/effectiveness/page.tsx` (Server Component) + `app/effectiveness/loading.tsx`. Layout em REQ-26: KPIs (reuso `getEffectivenessKpis`), heatmap, funnel, scatter, insight panel, score distribution (reuso `<ScoreDistribution />` de `components/effectiveness/score-distribution.tsx`), tool success trend (reuso `<ToolSuccessTrend />` de `components/effectiveness/tool-success-trend.tsx`), e **`<SubagentUsageCard />` novo (inline nesta task — Q2 LOCKED)**: arquivo `components/effectiveness-v2/subagent-usage-card.tsx` (Server Component simples), recebe `usage` de `getSubagentUsage(db, days)`, mostra: "Sub-agents usados em **N** de **M** sessões (**P%**)" + mini-tooltip explicando que sub-agents indicam paralelismo / delegação. Empty state global via `<OverviewEmptyState />` quando `totalSessions === 0`. `export const dynamic = 'force-dynamic'`, `runtime = 'nodejs'` (consistente com `/`).
   - files: app/effectiveness/page.tsx, app/effectiveness/loading.tsx, components/effectiveness-v2/subagent-usage-card.tsx
   - depends: TASK-6, TASK-8, TASK-9, TASK-10, TASK-11
 
-- [ ] **TASK-13**: Link discreto em `app/page.tsx` — adicionar "Ver análise profunda →" no header de KPIs (`/` → `/effectiveness`). Sem mudar nada além do link.
+- [x] **TASK-13**: Link discreto em `app/page.tsx` — adicionar "Ver análise profunda →" no header de KPIs (`/` → `/effectiveness`). Sem mudar nada além do link.
   - files: app/page.tsx
   - depends: TASK-12
 
-- [ ] **TASK-SMOKE**: E2E `tests/e2e/effectiveness-v2.spec.ts` cobrindo TC-E2E-01..07. Exige que `tests/e2e/global-setup.ts` tenha seed com: ≥4 sessões com ratings (pra scatter), ≥5 sessões com Edit (pra funnel), ≥1 sessão com ≥1 row em `compaction_events`. Auditar setup atual; adicionar seed se faltar (sessão `e2e-effectiveness-v2` com SQL direto + INSERT na nova tabela). Manter outras specs verdes.
+- [x] **TASK-SMOKE**: E2E `tests/e2e/effectiveness-v2.spec.ts` cobrindo TC-E2E-01..07. Exige que `tests/e2e/global-setup.ts` tenha seed com: ≥4 sessões com ratings (pra scatter), ≥5 sessões com Edit (pra funnel), ≥1 sessão com ≥1 row em `compaction_events`. Auditar setup atual; adicionar seed se faltar (sessão `e2e-effectiveness-v2` com SQL direto + INSERT na nova tabela). Manter outras specs verdes.
   - files: tests/e2e/effectiveness-v2.spec.ts, tests/e2e/global-setup.ts
   - depends: TASK-13
   - tests: TC-E2E-01, TC-E2E-02, TC-E2E-03, TC-E2E-04, TC-E2E-05, TC-E2E-06, TC-E2E-07

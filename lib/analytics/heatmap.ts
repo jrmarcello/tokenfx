@@ -5,6 +5,25 @@
  * The UI layer consumes these shapes to render a 52x7 Sunday-first grid.
  */
 
+/**
+ * Spend-heatmap palette (GitHub-contributions style — single-hue intensity
+ * ramp). Resolved at paint time by CSS — `:root` defines the light ramp,
+ * `.dark` defines the original dark ramp (see `app/globals.css`). Using
+ * `var()` at the SVG `fill` attribute level is theme-aware and avoids
+ * hydration-mismatch from theme-aware JS.
+ *
+ * Indexed by level L0..L4. Source of truth for the spend `<ActivityHeatmap>`
+ * — the bipolar effectiveness palette lives in
+ * `lib/analytics/effectiveness-v2.ts` as `EFFECTIVENESS_PALETTE`.
+ */
+export const EMERALD_PALETTE = [
+  'var(--heatmap-0)',
+  'var(--heatmap-1)',
+  'var(--heatmap-2)',
+  'var(--heatmap-3)',
+  'var(--heatmap-4)',
+] as const;
+
 export type HeatmapCell = {
   date: string; // YYYY-MM-DD
   spend: number;

@@ -41,6 +41,7 @@ type Prepared = {
   insertSession: Statement;
   insertTurn: Statement;
   insertToolCall: Statement;
+  insertCompactionEvent: Statement;
   insertOtel: Statement;
   lookupIngestedFile: Statement<[string]>;
   upsertIngestedFile: Statement<[string, number, number]>;
@@ -135,6 +136,24 @@ function getStatements(db: Database): Prepared {
       result_is_error = excluded.result_is_error
   `);
 
+  // Compaction events are stored as ROWS (not as a counter on `sessions`) so
+  // re-ingest of any single source_file is naturally idempotent via the PK
+  // (session_id, source_file, sequence_in_file). Multi-file sessions sum
+  // correctly; re-ingest of an older rotated file does NOT double-count or
+  // touch other files' rows. ON CONFLICT refreshes the mutable fields only.
+  const insertCompactionEvent = db.prepare(`
+    INSERT INTO compaction_events (
+      session_id, source_file, sequence_in_file, trigger, pre_tokens, post_tokens, ts
+    ) VALUES (
+      @session_id, @source_file, @sequence_in_file, @trigger, @pre_tokens, @post_tokens, @ts
+    )
+    ON CONFLICT(session_id, source_file, sequence_in_file) DO UPDATE SET
+      trigger = excluded.trigger,
+      pre_tokens = excluded.pre_tokens,
+      post_tokens = excluded.post_tokens,
+      ts = excluded.ts
+  `);
+
   // Dedup natural key is (metric_name, labels_json, scraped_at). Repeated
   // ingests of the same Prometheus scrape otherwise accumulate duplicate
   // rows — the MAX aggregation in queries masks them, but the table grows.
@@ -168,6 +187,7 @@ function getStatements(db: Database): Prepared {
     insertSession,
     insertTurn,
     insertToolCall,
+    insertCompactionEvent,
     insertOtel,
     lookupIngestedFile,
     upsertIngestedFile,
@@ -280,6 +300,19 @@ export function writeSession(
     }
     for (const row of toolCallRows) {
       stmts.insertToolCall.run(row);
+    }
+    // Compaction events are part of the same session-level transaction so a
+    // failure anywhere rolls back the whole upsert (no half-written session).
+    for (const event of parsed.compactionEvents) {
+      stmts.insertCompactionEvent.run({
+        session_id: parsed.id,
+        source_file: sourceFile,
+        sequence_in_file: event.sequence_in_file,
+        trigger: event.trigger,
+        pre_tokens: event.pre_tokens,
+        post_tokens: event.post_tokens,
+        ts: event.ts,
+      });
     }
   });
   tx();

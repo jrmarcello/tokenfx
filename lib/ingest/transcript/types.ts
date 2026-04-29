@@ -106,6 +106,19 @@ export type ParsedTurn = {
   toolCalls: ParsedToolCall[];
 };
 
+export type CompactionEvent = {
+  /** 0-based index of compact_boundary occurrence in this transcript file. */
+  sequence_in_file: number;
+  /** From compactMetadata.trigger; null when absent. */
+  trigger: string | null;
+  /** From compactMetadata.preTokens; null when absent. */
+  pre_tokens: number | null;
+  /** From compactMetadata.postTokens; null when absent. */
+  post_tokens: number | null;
+  /** Date.parse(line.timestamp) || Date.now() — ms since epoch. */
+  ts: number;
+};
+
 export type ParsedSession = {
   id: string;
   cwd: string;
@@ -115,4 +128,6 @@ export type ParsedSession = {
   startedAt: number;
   endedAt: number;
   turns: ParsedTurn[];
+  /** compact_boundary system events observed in file order; empty when none. */
+  compactionEvents: CompactionEvent[];
 };

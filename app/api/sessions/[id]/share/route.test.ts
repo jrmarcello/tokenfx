@@ -45,6 +45,7 @@ function makeSession(overrides: Partial<ParsedSession> = {}): ParsedSession {
         ],
       },
     ],
+    compactionEvents: [],
     ...overrides,
   };
 }

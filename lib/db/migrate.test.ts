@@ -225,6 +225,7 @@ describe('migrate — FTS5 turns_fts', () => {
           toolCalls: [],
         },
       ],
+      compactionEvents: [],
     };
     writeSession(db, parsed, '/tmp/file.jsonl');
     const hits = db

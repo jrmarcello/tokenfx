@@ -102,6 +102,7 @@ const makeParsedSession = (id: string): ParsedSession => ({
       toolCalls: [],
     },
   ],
+  compactionEvents: [],
 });
 
 describe('writer — OTEL cost authority (TASK-3)', () => {

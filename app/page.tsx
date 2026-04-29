@@ -259,7 +259,15 @@ export default async function Home({
 
       {/* ======================== #efetividade ======================== */}
       <section id="efetividade" className="space-y-6 scroll-mt-20">
-        <h2 className="text-xl font-semibold tracking-tight">Efetividade</h2>
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-xl font-semibold tracking-tight">Efetividade</h2>
+          <a
+            href="/effectiveness"
+            className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+          >
+            Ver análise profunda →
+          </a>
+        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <KpiCard

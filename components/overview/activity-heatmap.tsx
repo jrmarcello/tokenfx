@@ -2,14 +2,33 @@
 
 import { useRouter } from 'next/navigation';
 import {
+  EMERALD_PALETTE,
   arrangeWeeks,
   monthLabels,
   type Week,
 } from '@/lib/analytics/heatmap';
+import {
+  EFFECTIVENESS_PALETTE,
+  effectivenessLevelFor,
+} from '@/lib/analytics/effectiveness-v2';
 import type { DailyPoint } from '@/lib/queries/overview';
 import { fmtUsd } from '@/lib/fmt';
 
-type Props = { data: DailyPoint[] };
+type ColorScheme = 'spend' | 'effectiveness';
+
+/**
+ * Per-day point consumed by the heatmap. The `spend` field doubles as the
+ * generic "value" channel — when `colorScheme === 'effectiveness'` callers
+ * pass the score (0..100) in `score` and a non-zero `spend` to mark the day
+ * as active (drives empty-state detection + click-through). `score` is
+ * ignored under the default `'spend'` scheme.
+ */
+type HeatmapDataPoint = DailyPoint & { score?: number | null };
+
+type Props = {
+  data: HeatmapDataPoint[];
+  colorScheme?: ColorScheme;
+};
 
 const CELL = 12;
 const GAP = 2;
@@ -18,24 +37,13 @@ const LEFT_LABEL_W = 28;
 const TOP_LABEL_H = 16;
 const LEGEND_GAP = 12;
 
-// Resolved at paint time by CSS — `:root` has the light ramp, `.dark` has the
-// original dark ramp (see app/globals.css). Using `var()` at attribute level
-// is SVG-friendly and avoids hydration-mismatch from theme-aware JS.
-const LEVEL_FILL: Record<0 | 1 | 2 | 3 | 4, string> = {
-  0: 'var(--heatmap-0)',
-  1: 'var(--heatmap-1)',
-  2: 'var(--heatmap-2)',
-  3: 'var(--heatmap-3)',
-  4: 'var(--heatmap-4)',
-};
-
 const DAY_LABELS: Array<{ row: number; text: string }> = [
   { row: 1, text: 'Mon' },
   { row: 3, text: 'Wed' },
   { row: 5, text: 'Fri' },
 ];
 
-const cellTitle = (
+const spendCellTitle = (
   date: string,
   spend: number,
   sessionCount: number,
@@ -45,7 +53,19 @@ const cellTitle = (
   return `${date} — ${fmtUsd(spend)} (${sessionCount} ${noun})`;
 };
 
-export function ActivityHeatmap({ data }: Props) {
+const effectivenessCellTitle = (
+  date: string,
+  score: number | null | undefined,
+  sessionCount: number,
+): string => {
+  if (score === null || score === undefined) {
+    return `${date} — sem atividade`;
+  }
+  const noun = sessionCount === 1 ? 'sessão' : 'sessões';
+  return `${date} — score ${Math.round(score)}/100 (${sessionCount} ${noun})`;
+};
+
+export function ActivityHeatmap({ data, colorScheme = 'spend' }: Props) {
   const router = useRouter();
 
   if (data.length === 0 || data.every((d) => d.spend === 0)) {
@@ -55,6 +75,17 @@ export function ActivityHeatmap({ data }: Props) {
       </div>
     );
   }
+
+  // Index input by date so we can recover the score (effectiveness scheme)
+  // for cells that `arrangeWeeks` produces — `arrangeWeeks` only knows about
+  // the `spend`/`sessionCount` channels by design.
+  const scoreByDate = new Map<string, number | null | undefined>();
+  if (colorScheme === 'effectiveness') {
+    for (const d of data) scoreByDate.set(d.date, d.score);
+  }
+
+  const palette =
+    colorScheme === 'effectiveness' ? EFFECTIVENESS_PALETTE : EMERALD_PALETTE;
 
   const endDate = data[data.length - 1].date;
   const allWeeks: Week[] = arrangeWeeks(data, endDate);
@@ -153,11 +184,29 @@ export function ActivityHeatmap({ data }: Props) {
                     />
                   );
                 }
-                const title = cellTitle(
-                  cell.date,
-                  cell.spend,
-                  cell.sessionCount,
-                );
+                // Resolve the level + tooltip per scheme. For effectiveness
+                // we override the max-relative `cell.level` from
+                // `arrangeWeeks` with the absolute 0..100 mapping so a score
+                // of 30 always renders as L2 regardless of weekly maxima
+                // (REQ-24).
+                let level: 0 | 1 | 2 | 3 | 4;
+                let title: string;
+                if (colorScheme === 'effectiveness') {
+                  const score = scoreByDate.get(cell.date) ?? null;
+                  level = effectivenessLevelFor(score);
+                  title = effectivenessCellTitle(
+                    cell.date,
+                    score,
+                    cell.sessionCount,
+                  );
+                } else {
+                  level = cell.level;
+                  title = spendCellTitle(
+                    cell.date,
+                    cell.spend,
+                    cell.sessionCount,
+                  );
+                }
                 const clickable = cell.spend > 0;
                 return (
                   <rect
@@ -167,9 +216,10 @@ export function ActivityHeatmap({ data }: Props) {
                     width={CELL}
                     height={CELL}
                     rx={2}
-                    fill={LEVEL_FILL[cell.level]}
+                    fill={palette[level]}
                     data-date={cell.date}
                     data-spend={cell.spend}
+                    data-level={level}
                     role="gridcell"
                     aria-label={title}
                     tabIndex={clickable ? 0 : -1}
@@ -204,7 +254,7 @@ export function ActivityHeatmap({ data }: Props) {
             style={{
               width: CELL,
               height: CELL,
-              backgroundColor: LEVEL_FILL[lvl],
+              backgroundColor: palette[lvl],
             }}
           />
         ))}

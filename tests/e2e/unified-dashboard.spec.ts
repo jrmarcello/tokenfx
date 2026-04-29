@@ -36,11 +36,22 @@ test.describe('unified dashboard', () => {
 
   // --------------------------- Redirect ---------------------------
 
-  test('TC-E2E-03: /effectiveness redirects to /', async ({ page }) => {
+  // SUPERSEDED by effectiveness-personal-v2 (TASK-12 + TASK-SMOKE):
+  // `/effectiveness` was re-introduced as a dedicated deep-analysis page
+  // and the redirect to `/` was removed from `next.config.ts`. The original
+  // unified-dashboard TC-E2E-03 asserted the redirect; we now invert the
+  // assertion so `/effectiveness` resolves to its own page (covered in
+  // depth by `tests/e2e/effectiveness-v2.spec.ts` TC-E2E-01..06).
+  test('TC-E2E-03: /effectiveness now serves its own deep-analysis page (was: redirect to /)', async ({
+    page,
+  }) => {
     await page.goto('/effectiveness');
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/effectiveness$/);
     await expect(
-      page.getByRole('heading', { level: 1, name: 'Visão geral' }),
+      page.getByRole('heading', {
+        level: 1,
+        name: /Efetividade pessoal/,
+      }),
     ).toBeVisible();
   });
 

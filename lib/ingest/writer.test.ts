@@ -11,7 +11,10 @@ import {
   ingestAll,
   ingestSingleFile,
 } from './writer';
-import type { ParsedSession } from './transcript/types';
+import type {
+  CompactionEvent,
+  ParsedSession,
+} from './transcript/types';
 import type { OtelScrape } from './otel/parser';
 
 function makeSession(overrides?: Partial<ParsedSession>): ParsedSession {
@@ -23,6 +26,7 @@ function makeSession(overrides?: Partial<ParsedSession>): ParsedSession {
     ccVersion: '2.0.0',
     startedAt: 1_700_000_000_000,
     endedAt: 1_700_000_100_000,
+    compactionEvents: [],
     turns: [
       {
         id: 'a1',
@@ -211,6 +215,293 @@ describe('writer', () => {
       db.prepare('SELECT COUNT(*) as c FROM otel_scrapes').get() as { c: number }
     ).c;
     expect(count2).toBe(6);
+  });
+
+  // ---- compaction_events (TASK-5) -----------------------------------------
+
+  function compactionEvent(
+    overrides: Partial<CompactionEvent> & { sequence_in_file: number },
+  ): CompactionEvent {
+    return {
+      sequence_in_file: overrides.sequence_in_file,
+      trigger: 'trigger' in overrides ? overrides.trigger ?? null : 'auto',
+      pre_tokens:
+        'pre_tokens' in overrides ? overrides.pre_tokens ?? null : 950_000,
+      post_tokens:
+        'post_tokens' in overrides ? overrides.post_tokens ?? null : 18_000,
+      ts: 'ts' in overrides ? overrides.ts ?? 1_700_000_080_000 : 1_700_000_080_000,
+    };
+  }
+
+  it('TC-I-03: writes compaction_events rows from parsed.compactionEvents', () => {
+    const parsed = makeSession({
+      compactionEvents: [
+        compactionEvent({
+          sequence_in_file: 0,
+          trigger: 'auto',
+          pre_tokens: 900_000,
+          post_tokens: 16_000,
+          ts: 1_700_000_020_000,
+        }),
+        compactionEvent({
+          sequence_in_file: 1,
+          trigger: 'manual',
+          pre_tokens: 750_000,
+          post_tokens: 18_000,
+          ts: 1_700_000_050_000,
+        }),
+        compactionEvent({
+          sequence_in_file: 2,
+          trigger: null,
+          pre_tokens: null,
+          post_tokens: null,
+          ts: 1_700_000_080_000,
+        }),
+      ],
+    });
+    writeSession(db, parsed, '/tmp/source.jsonl');
+
+    const rows = db
+      .prepare(
+        `SELECT sequence_in_file, trigger, pre_tokens, post_tokens, ts, source_file
+         FROM compaction_events WHERE session_id = ? ORDER BY sequence_in_file`,
+      )
+      .all('sess-test-001') as Array<{
+      sequence_in_file: number;
+      trigger: string | null;
+      pre_tokens: number | null;
+      post_tokens: number | null;
+      ts: number;
+      source_file: string;
+    }>;
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toEqual({
+      sequence_in_file: 0,
+      trigger: 'auto',
+      pre_tokens: 900_000,
+      post_tokens: 16_000,
+      ts: 1_700_000_020_000,
+      source_file: '/tmp/source.jsonl',
+    });
+    expect(rows[1].trigger).toBe('manual');
+    expect(rows[1].pre_tokens).toBe(750_000);
+    expect(rows[1].post_tokens).toBe(18_000);
+    expect(rows[2]).toEqual({
+      sequence_in_file: 2,
+      trigger: null,
+      pre_tokens: null,
+      post_tokens: null,
+      ts: 1_700_000_080_000,
+      source_file: '/tmp/source.jsonl',
+    });
+  });
+
+  it('TC-I-04: re-ingest of same source_file is idempotent and updates non-pk fields', () => {
+    const first = makeSession({
+      compactionEvents: [
+        compactionEvent({
+          sequence_in_file: 0,
+          trigger: 'auto',
+          pre_tokens: 900_000,
+          post_tokens: 16_000,
+        }),
+        compactionEvent({
+          sequence_in_file: 1,
+          trigger: 'auto',
+          pre_tokens: 800_000,
+          post_tokens: 17_000,
+        }),
+      ],
+    });
+    writeSession(db, first, '/tmp/source.jsonl');
+
+    // Same path, same PKs, but trigger flipped + token counts revised.
+    const second = makeSession({
+      compactionEvents: [
+        compactionEvent({
+          sequence_in_file: 0,
+          trigger: 'manual',
+          pre_tokens: 910_000,
+          post_tokens: 16_500,
+        }),
+        compactionEvent({
+          sequence_in_file: 1,
+          trigger: 'manual',
+          pre_tokens: 810_000,
+          post_tokens: 17_500,
+        }),
+      ],
+    });
+    writeSession(db, second, '/tmp/source.jsonl');
+
+    const count = (
+      db
+        .prepare(
+          'SELECT COUNT(*) AS c FROM compaction_events WHERE session_id = ?',
+        )
+        .get('sess-test-001') as { c: number }
+    ).c;
+    expect(count).toBe(2);
+
+    const rows = db
+      .prepare(
+        `SELECT sequence_in_file, trigger, pre_tokens, post_tokens
+         FROM compaction_events WHERE session_id = ? ORDER BY sequence_in_file`,
+      )
+      .all('sess-test-001') as Array<{
+      sequence_in_file: number;
+      trigger: string | null;
+      pre_tokens: number | null;
+      post_tokens: number | null;
+    }>;
+    expect(rows[0].trigger).toBe('manual');
+    expect(rows[0].pre_tokens).toBe(910_000);
+    expect(rows[0].post_tokens).toBe(16_500);
+    expect(rows[1].trigger).toBe('manual');
+    expect(rows[1].pre_tokens).toBe(810_000);
+    expect(rows[1].post_tokens).toBe(17_500);
+  });
+
+  it('TC-I-05: two source_files for same session keep separate rows (multi-file)', () => {
+    const a = makeSession({
+      compactionEvents: [
+        compactionEvent({ sequence_in_file: 0, trigger: 'auto' }),
+        compactionEvent({ sequence_in_file: 1, trigger: 'auto' }),
+      ],
+    });
+    writeSession(db, a, '/tmp/file-A.jsonl');
+
+    const b = makeSession({
+      compactionEvents: [compactionEvent({ sequence_in_file: 0, trigger: 'manual' })],
+    });
+    writeSession(db, b, '/tmp/file-B.jsonl');
+
+    const total = (
+      db
+        .prepare(
+          'SELECT COUNT(*) AS c FROM compaction_events WHERE session_id = ?',
+        )
+        .get('sess-test-001') as { c: number }
+    ).c;
+    expect(total).toBe(3);
+
+    const perFile = db
+      .prepare(
+        `SELECT source_file, COUNT(*) AS c
+         FROM compaction_events WHERE session_id = ?
+         GROUP BY source_file ORDER BY source_file`,
+      )
+      .all('sess-test-001') as Array<{ source_file: string; c: number }>;
+    expect(perFile).toEqual([
+      { source_file: '/tmp/file-A.jsonl', c: 2 },
+      { source_file: '/tmp/file-B.jsonl', c: 1 },
+    ]);
+  });
+
+  it('TC-I-06: regression — re-ingest of A after B does not duplicate or affect B rows', () => {
+    // This is THE regression test that motivated the compaction_events table:
+    // a per-session counter would double-count when an older source_file was
+    // re-ingested; the composite-PK table must stay stable.
+    const a = makeSession({
+      compactionEvents: [
+        compactionEvent({ sequence_in_file: 0, trigger: 'auto' }),
+        compactionEvent({ sequence_in_file: 1, trigger: 'auto' }),
+      ],
+    });
+    writeSession(db, a, '/tmp/file-A.jsonl');
+
+    const b = makeSession({
+      compactionEvents: [compactionEvent({ sequence_in_file: 0, trigger: 'manual' })],
+    });
+    writeSession(db, b, '/tmp/file-B.jsonl');
+
+    // Re-ingest A — same content. Total must remain 3.
+    writeSession(db, a, '/tmp/file-A.jsonl');
+
+    const total = (
+      db
+        .prepare(
+          'SELECT COUNT(*) AS c FROM compaction_events WHERE session_id = ?',
+        )
+        .get('sess-test-001') as { c: number }
+    ).c;
+    expect(total).toBe(3);
+
+    // B's row is untouched (trigger still 'manual').
+    const bRow = db
+      .prepare(
+        `SELECT trigger FROM compaction_events
+         WHERE session_id = ? AND source_file = ? AND sequence_in_file = ?`,
+      )
+      .get('sess-test-001', '/tmp/file-B.jsonl', 0) as { trigger: string };
+    expect(bRow.trigger).toBe('manual');
+  });
+
+  it('TC-I-07a: end-to-end ingest of sample-with-compaction.jsonl populates rows', () => {
+    const filePath = path.resolve(
+      process.cwd(),
+      'tests/fixtures/sample-with-compaction.jsonl',
+    );
+    const outcome = ingestSingleFile(db, filePath);
+    expect(outcome.kind).toBe('processed');
+
+    const rows = db
+      .prepare(
+        `SELECT sequence_in_file, trigger, pre_tokens, post_tokens
+         FROM compaction_events ORDER BY sequence_in_file`,
+      )
+      .all() as Array<{
+      sequence_in_file: number;
+      trigger: string | null;
+      pre_tokens: number | null;
+      post_tokens: number | null;
+    }>;
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual({
+      sequence_in_file: 0,
+      trigger: 'auto',
+      pre_tokens: 968_559,
+      post_tokens: 16_672,
+    });
+    expect(rows[1]).toEqual({
+      sequence_in_file: 1,
+      trigger: 'manual',
+      pre_tokens: 712_044,
+      post_tokens: 18_120,
+    });
+  });
+
+  it('TC-I-07b: session with compactionEvents=[] writes zero rows', () => {
+    writeSession(db, makeSession(), '/tmp/source.jsonl');
+    const count = (
+      db
+        .prepare(
+          'SELECT COUNT(*) AS c FROM compaction_events WHERE session_id = ?',
+        )
+        .get('sess-test-001') as { c: number }
+    ).c;
+    expect(count).toBe(0);
+  });
+
+  it('TC-I-07c: ON DELETE CASCADE — deleting the session removes its compaction_events rows', () => {
+    const parsed = makeSession({
+      compactionEvents: [
+        compactionEvent({ sequence_in_file: 0 }),
+        compactionEvent({ sequence_in_file: 1 }),
+      ],
+    });
+    writeSession(db, parsed, '/tmp/source.jsonl');
+
+    db.prepare('DELETE FROM sessions WHERE id = ?').run('sess-test-001');
+
+    const count = (
+      db
+        .prepare(
+          'SELECT COUNT(*) AS c FROM compaction_events WHERE session_id = ?',
+        )
+        .get('sess-test-001') as { c: number }
+    ).c;
+    expect(count).toBe(0);
   });
 });
 

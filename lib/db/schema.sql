@@ -199,3 +199,22 @@ CREATE TABLE IF NOT EXISTS user_settings (
   quota_7d_reset_at INTEGER,
   updated_at INTEGER NOT NULL
 );
+
+-- Compaction events from Claude Code transcripts (`{"type":"system",
+-- "subtype":"compact_boundary",…}` lines). Stored as ROWS keyed by
+-- (session_id, source_file, sequence_in_file) so re-ingest of any single
+-- source_file is naturally idempotent and multi-file rotation never
+-- double-counts. The composite PK is the entire correctness story.
+-- See `.specs/effectiveness-personal-v2.md` Design §2 for the rejection
+-- of an alternative `sessions.compaction_event_count` accumulator column.
+CREATE TABLE IF NOT EXISTS compaction_events (
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  source_file TEXT NOT NULL,
+  sequence_in_file INTEGER NOT NULL,
+  trigger TEXT,
+  pre_tokens INTEGER,
+  post_tokens INTEGER,
+  ts INTEGER NOT NULL,
+  PRIMARY KEY (session_id, source_file, sequence_in_file)
+);
+CREATE INDEX IF NOT EXISTS idx_compaction_events_session ON compaction_events(session_id);
