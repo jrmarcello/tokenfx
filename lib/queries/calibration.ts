@@ -7,30 +7,48 @@ import {
   type CalibrationFamily,
 } from '@/lib/analytics/cost-calibration';
 
+// Prepared-statement cache (per-DB) so callers that hit this in tight loops
+// (e.g. `getCostRatingScatter` over many sessions) don't re-prepare the same
+// SELECT every time. Behavior is identical to a plain `db.prepare(...)`; only
+// the prepare cost is amortized.
+import type { Statement } from 'better-sqlite3';
+type CalibrationRow = {
+  family: string;
+  rate: number;
+  sampleSessionCount: number;
+  sumOtelCost: number;
+  sumLocalCost: number;
+  lastUpdatedAt: number;
+};
+const stmtCache = new WeakMap<DB, Statement<[]>>();
+const getStmt = (db: DB): Statement<[]> => {
+  let stmt = stmtCache.get(db);
+  if (stmt) return stmt;
+  stmt = db.prepare<[]>(
+    `SELECT family,
+            effective_rate       AS rate,
+            sample_session_count AS sampleSessionCount,
+            sum_otel_cost        AS sumOtelCost,
+            sum_local_cost       AS sumLocalCost,
+            last_updated_at      AS lastUpdatedAt
+     FROM cost_calibration`,
+  );
+  stmtCache.set(db, stmt);
+  return stmt;
+};
+
 /**
  * Read the current calibration table into an in-memory Map keyed by family.
  * Rows whose `family` column is not a recognised `CalibrationFamily` value
  * are ignored — defense-in-depth against a future, unrelated schema change.
+ *
+ * The underlying prepared statement is cached per-DB via WeakMap so callers
+ * (e.g. `lib/queries/effectiveness-v2.ts`) don't need a local copy. This is
+ * the **single source of truth** for the cost calibration cascade — no SQL
+ * duplicate of `effectiveCostForSession`'s logic should exist anywhere.
  */
 export const getCostCalibration = (db: DB): Calibration => {
-  const rows = db
-    .prepare(
-      `SELECT family,
-              effective_rate       AS rate,
-              sample_session_count AS sampleSessionCount,
-              sum_otel_cost        AS sumOtelCost,
-              sum_local_cost       AS sumLocalCost,
-              last_updated_at      AS lastUpdatedAt
-       FROM cost_calibration`,
-    )
-    .all() as ReadonlyArray<{
-    family: string;
-    rate: number;
-    sampleSessionCount: number;
-    sumOtelCost: number;
-    sumLocalCost: number;
-    lastUpdatedAt: number;
-  }>;
+  const rows = getStmt(db).all() as ReadonlyArray<CalibrationRow>;
 
   const result: Calibration = new Map();
   for (const row of rows) {
