@@ -9,10 +9,14 @@
  *            Per-item rejections collected in `errors[]`; valid siblings
  *            still ingest. Status remains 200.
  *
- * Auth: HMAC-SHA256 over the canonical JSON of `payload`. The server stores
- * the plaintext HMAC secret in `user_machines.secret_hash` (column name kept
- * for migration stability — see DEVIATION note below). Verification recomputes
- * the signature and compares with `timingSafeEqual` via `verify` helper.
+ * Auth (central-server-onboarding REQ-6): `Authorization: Bearer <secret>`.
+ * The server stores `bcrypt(secret)` in `user_machines.secret_hash`. On the
+ * first push from a given `key_id` we run `bcrypt.compare` (cost 10, ~25ms)
+ * and cache the plaintext secret in process memory with a 60s TTL. Subsequent
+ * pushes within the TTL do a constant-time string compare against the cached
+ * plaintext and skip bcrypt entirely (the ingest hot-path can sustain
+ * thousands of pushes/min/core that way). Cache is per-process — never
+ * persisted, never logged.
  *
  * Idempotency: per-session SHA-256 hash of canonical JSON. If a row already
  * has the same hash, the item is skipped.
@@ -31,7 +35,7 @@ import { createHash } from 'node:crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
-import { canonicalJSON, verify } from '@root/reporter/signer';
+import { canonicalJSON } from '@root/reporter/canonical-json';
 import { SanitizedSessionPayload } from '@/lib/ingest/sanitizer-shared';
 import { getDb } from '@/lib/db/client';
 import {
@@ -42,6 +46,11 @@ import {
   userMachines,
 } from '@/lib/db/schema';
 import { recomputePerUserCalibration } from '@/lib/queries/calibration';
+import {
+  parseBearerAuthorization,
+  verifyKeySecret,
+  __resetIngestAuthCache as resetSharedAuthCache,
+} from '@/lib/auth/bearer-auth';
 
 // --- Rate limiter (in-memory, per-machine, per-minute) ------------------------
 const RATE_LIMIT = 100;
@@ -84,17 +93,29 @@ const Envelope = z
     version: z.literal(1),
     key_id: z.string().min(1),
     machine_id: z.string().uuid(),
-    signature: z.string().regex(/^[0-9a-f]{64}$/),
     payload: z.array(z.unknown()).max(50),
   })
   .strict();
 
 type RejectedItem = { session_id: string; reason: string };
 
-const errorBody = (message: string, code?: string): { error: { message: string; code?: string } } =>
+const errorBody = (
+  message: string,
+  code?: string,
+): { error: { message: string; code?: string } } =>
   code ? { error: { message, code } } : { error: { message } };
 
 export const POST = async (req: NextRequest): Promise<NextResponse> => {
+  // Auth header parse FIRST. We don't even read the body if the bearer is
+  // missing/malformed — saves work on probing attackers and avoids leaking
+  // request shape via differential timing.
+  const bearer = parseBearerAuthorization(req.headers.get('authorization'));
+  if (!bearer.ok) {
+    return NextResponse.json(errorBody('unauthorized', 'unauthorized'), {
+      status: 401,
+    });
+  }
+
   // Parse JSON body. Malformed JSON → 400.
   let body: unknown;
   try {
@@ -110,7 +131,10 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
       {
         error: {
           message: 'envelope validation failed',
-          issues: env.error.issues.map((i) => ({ path: i.path, message: i.message })),
+          issues: env.error.issues.map((i) => ({
+            path: i.path,
+            message: i.message,
+          })),
         },
       },
       { status: 400 },
@@ -141,14 +165,23 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
     .limit(1);
 
   if (!machine || machine.revokedAt !== null) {
-    return NextResponse.json(errorBody('unknown or revoked key', 'unauthorized'), { status: 401 });
+    return NextResponse.json(
+      errorBody('unknown or revoked key', 'unauthorized'),
+      { status: 401 },
+    );
   }
 
-  // Verify HMAC over the payload array. The plaintext HMAC secret is stored
-  // in `secret_hash` (see DEVIATION note in module header).
-  const sigOk = verify(env.data.payload, env.data.signature, machine.secretHash);
-  if (!sigOk) {
-    return NextResponse.json(errorBody('signature mismatch', 'unauthorized'), { status: 401 });
+  // bcrypt.compare (with 60s plaintext cache) — central-server-onboarding REQ-6.
+  const credOk = await verifyKeySecret(
+    env.data.key_id,
+    bearer.value,
+    machine.secretHash,
+  );
+  if (!credOk) {
+    return NextResponse.json(
+      errorBody('invalid credentials', 'unauthorized'),
+      { status: 401 },
+    );
   }
 
   // Level 2: per-item validation (REQ-25 defense-in-depth)
@@ -159,7 +192,9 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
     const parsed = SanitizedSessionPayload.safeParse(item);
     if (!parsed.success) {
       const sessionId =
-        typeof item === 'object' && item !== null && 'session_id' in item &&
+        typeof item === 'object' &&
+        item !== null &&
+        'session_id' in item &&
         typeof (item as { session_id?: unknown }).session_id === 'string'
           ? (item as { session_id: string }).session_id
           : '<unknown>';
@@ -217,15 +252,22 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
           totalCacheCreationTokens: p.total_cache_creation_tokens,
           totalCostUsd: p.total_cost_usd.toString(),
           totalCostUsdOtel:
-            p.total_cost_usd_otel !== null ? p.total_cost_usd_otel.toString() : null,
+            p.total_cost_usd_otel !== null
+              ? p.total_cost_usd_otel.toString()
+              : null,
           turnCount: p.turn_count,
           toolCallCount: p.tool_call_count,
           avgRating: p.avg_rating !== null ? p.avg_rating.toString() : null,
-          cacheHitRatio: p.cache_hit_ratio !== null ? p.cache_hit_ratio.toString() : null,
+          cacheHitRatio:
+            p.cache_hit_ratio !== null ? p.cache_hit_ratio.toString() : null,
           outputInputRatio:
-            p.output_input_ratio !== null ? p.output_input_ratio.toString() : null,
+            p.output_input_ratio !== null
+              ? p.output_input_ratio.toString()
+              : null,
           subagentUsageRatio:
-            p.subagent_usage_ratio !== null ? p.subagent_usage_ratio.toString() : null,
+            p.subagent_usage_ratio !== null
+              ? p.subagent_usage_ratio.toString()
+              : null,
         };
 
         await tx
@@ -246,16 +288,24 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
               totalCacheCreationTokens: p.total_cache_creation_tokens,
               totalCostUsd: p.total_cost_usd.toString(),
               totalCostUsdOtel:
-                p.total_cost_usd_otel !== null ? p.total_cost_usd_otel.toString() : null,
+                p.total_cost_usd_otel !== null
+                  ? p.total_cost_usd_otel.toString()
+                  : null,
               turnCount: p.turn_count,
               toolCallCount: p.tool_call_count,
               avgRating: p.avg_rating !== null ? p.avg_rating.toString() : null,
               cacheHitRatio:
-                p.cache_hit_ratio !== null ? p.cache_hit_ratio.toString() : null,
+                p.cache_hit_ratio !== null
+                  ? p.cache_hit_ratio.toString()
+                  : null,
               outputInputRatio:
-                p.output_input_ratio !== null ? p.output_input_ratio.toString() : null,
+                p.output_input_ratio !== null
+                  ? p.output_input_ratio.toString()
+                  : null,
               subagentUsageRatio:
-                p.subagent_usage_ratio !== null ? p.subagent_usage_ratio.toString() : null,
+                p.subagent_usage_ratio !== null
+                  ? p.subagent_usage_ratio.toString()
+                  : null,
             },
           });
 
@@ -336,7 +386,10 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
     });
   } catch (err) {
     // Sanitize error message (security rule). Don't echo DB internals.
-    const code = err instanceof Error && 'code' in err ? String((err as { code: unknown }).code) : undefined;
+    const code =
+      err instanceof Error && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined;
     return NextResponse.json(
       errorBody('ingestion failed', code ?? 'internal_error'),
       { status: 500 },
@@ -354,4 +407,14 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
 // Test-only export to clear in-memory rate limiter between tests.
 export const __resetRateLimiter = (): void => {
   rateLimitBuckets.clear();
+};
+
+/**
+ * Test-only export: clears the bcrypt verification cache so successive tests
+ * don't share auth state. Re-exports the shared cache reset from
+ * `lib/auth/bearer-auth` (the cache lives there because it is shared with
+ * `/api/health`'s credential-validation mode).
+ */
+export const __resetIngestAuthCache = (): void => {
+  resetSharedAuthCache();
 };

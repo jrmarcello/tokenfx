@@ -6,8 +6,8 @@ import Database from 'better-sqlite3';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { runReporter } from './runner';
 import { readConfig, type ReporterConfig } from './config';
-import type { SignedEnvelope } from './client';
-import { canonicalJSON } from './signer';
+import type { IngestEnvelope } from './client';
+import { canonicalJSON } from './canonical-json';
 import { createHash } from 'node:crypto';
 
 // ---------- Fixtures ----------
@@ -208,11 +208,16 @@ describe('reporter runner', () => {
       });
 
       expect(calls).toHaveLength(1);
-      const envelope = JSON.parse((calls[0].init.body as string)) as SignedEnvelope;
+      const envelope = JSON.parse((calls[0].init.body as string)) as IngestEnvelope;
       expect(envelope.payload).toHaveLength(30);
       expect(envelope.key_id).toBe(SAMPLE_CONFIG.key_id);
       expect(envelope.machine_id).toBe(SAMPLE_CONFIG.machine_id);
-      expect(envelope.signature).toMatch(/^[0-9a-f]{64}$/);
+      // Bearer auth: the wire envelope no longer carries a `signature`.
+      // The Authorization header is asserted in client.test.ts.
+      expect((envelope as unknown as { signature?: unknown }).signature).toBeUndefined();
+      // The Authorization: Bearer <secret> header is set on the request.
+      const headers = (calls[0].init.headers as Record<string, string>);
+      expect(headers.authorization).toBe(`Bearer ${SAMPLE_CONFIG.secret}`);
       // Each payload is sanitized — no user_prompt etc.
       expect(JSON.stringify(envelope.payload)).not.toContain('user_prompt');
 
@@ -363,9 +368,9 @@ describe('reporter runner', () => {
       const { db, seed } = openSeededDb();
       seed(1);
 
-      let capturedEnvelope: SignedEnvelope | null = null;
+      let capturedEnvelope: IngestEnvelope | null = null;
       const { fn: fetchFn } = makeFetchStub((call) => {
-        capturedEnvelope = JSON.parse(call.init.body as string) as SignedEnvelope;
+        capturedEnvelope = JSON.parse(call.init.body as string) as IngestEnvelope;
         return okResponse({ accepted: 1, skipped: 0, rejected: 0, errors: [] });
       });
 

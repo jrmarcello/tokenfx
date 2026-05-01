@@ -9,6 +9,21 @@ user-invocable: true
 
 Executes an approved spec **end-to-end in a single run** — no Stop-hook iteration, no per-task pauses, no `.active.md` state files. Parallelizes whatever the Parallel Batches section allows (one worktree per parallel task), then self-reviews the diff before handing back to the user. Commits only after explicit user approval.
 
+## North Star — Quality > Velocity > Cost
+
+**Trade-off ranking não-negociável**: qualidade primeiro, velocidade segundo, custo terceiro. Em todas as fases (Validate, Execute, Self-review, Present, Commit), pergunte antes de decidir:
+
+> "Esta é a MELHOR opção possível, ou só a mais rápida/barata?"
+
+Concretamente:
+
+- **Phase 2 (Execute)**: se um agente bate em problema arquitetural durante implementação, NÃO patch local. Volta na spec, corrige o requisito/design, re-aprova com o usuário se mudar contrato.
+- **Phase 3 (Self-review)**: jamais skip "porque já self-reviewamos a spec". Re-revisão de implementação é obrigatória — código de implementação pode ter regredido em relação à intenção da spec.
+- **Phase 4 (Present)**: lidere com o que foi validado em produção (live data via curl + SQL + dev server), não com "tests pass". Tests são gate, validação ao vivo é evidência.
+- **Phase 5 (Commit)**: jamais commitar antes de tudo green (typecheck + lint + test + e2e). "Preservar trabalho" não é justificativa.
+
+Se a sessão fica longa, continua com mesmo rigor — auto-compaction lida com contexto. Skip só se o usuário pedir explicitamente. Ver `.claude/rules/sdd.md` (seção "North Star") + `CLAUDE.md` Execution Directive #0.
+
 ## Example
 
 ```text

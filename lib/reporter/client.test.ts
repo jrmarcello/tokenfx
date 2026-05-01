@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { pushBatch, type PushBatchInput } from './client';
+import { createHash } from 'node:crypto';
+import { pushBatch, type IngestEnvelope, type PushBatchInput } from './client';
+import { canonicalJSON } from './canonical-json';
 import type { SanitizedSessionPayload } from './types';
 
 // ---------- helpers (hand-written stubs, no mocking framework) ----------
@@ -90,12 +92,22 @@ const samplePayload = (): SanitizedSessionPayload => ({
   subagent_usage_ratio: null,
 });
 
-const sampleEnvelope = (): PushBatchInput['signedEnvelope'] => ({
+const sampleEnvelope = (): IngestEnvelope => ({
   version: 1,
   key_id: 'key-abc',
   machine_id: '00000000-0000-0000-0000-000000000000',
-  signature: 'a'.repeat(64),
   payload: [samplePayload()],
+});
+
+const SAMPLE_SECRET = 'sample-secret-32bytes-hex-or-whatever';
+
+const callInputs = (
+  overrides: Partial<PushBatchInput> = {},
+): PushBatchInput => ({
+  centralUrl: 'https://central.example.com',
+  envelope: sampleEnvelope(),
+  secret: SAMPLE_SECRET,
+  ...overrides,
 });
 
 // ---------- tests ----------
@@ -114,12 +126,7 @@ describe('pushBatch — TC-I-03 — REQ-8 — retries 5xx then succeeds', () => 
     ]);
     const { sleepFn, delays } = makeSleepStub();
 
-    const result = await pushBatch({
-      centralUrl: 'https://central.example.com',
-      signedEnvelope: sampleEnvelope(),
-      fetchFn,
-      sleepFn,
-    });
+    const result = await pushBatch(callInputs({ fetchFn, sleepFn }));
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -131,11 +138,15 @@ describe('pushBatch — TC-I-03 — REQ-8 — retries 5xx then succeeds', () => 
     expect(delays).toEqual([1000]);
     // URL is centralUrl + /api/ingest, no double-slash
     expect(calls[0]?.url).toBe('https://central.example.com/api/ingest');
-    // POST + content-type + idempotency-key headers + JSON body
+    // POST + content-type + Bearer + idempotency-key headers + JSON body
     expect(calls[0]?.init?.method).toBe('POST');
     const headers0 = calls[0]?.init?.headers as Record<string, string>;
     expect(headers0['content-type']).toBe('application/json');
+    expect(headers0['authorization']).toBe(`Bearer ${SAMPLE_SECRET}`);
     expect(headers0['idempotency-key']).toBeTruthy();
+    // Wire envelope no longer contains a signature.
+    const sentBody = JSON.parse(calls[0]?.init?.body as string) as Record<string, unknown>;
+    expect(sentBody.signature).toBeUndefined();
   });
 
   it('retries on network error then succeeds', async () => {
@@ -151,12 +162,7 @@ describe('pushBatch — TC-I-03 — REQ-8 — retries 5xx then succeeds', () => 
     ]);
     const { sleepFn, delays } = makeSleepStub();
 
-    const result = await pushBatch({
-      centralUrl: 'https://central.example.com',
-      signedEnvelope: sampleEnvelope(),
-      fetchFn,
-      sleepFn,
-    });
+    const result = await pushBatch(callInputs({ fetchFn, sleepFn }));
 
     expect(result.ok).toBe(true);
     expect(calls).toHaveLength(2);
@@ -171,12 +177,7 @@ describe('pushBatch — TC-I-03 — REQ-8 — retries 5xx then succeeds', () => 
     const { fetchFn, calls } = makeFetchStub(responses);
     const { sleepFn, delays } = makeSleepStub();
 
-    const result = await pushBatch({
-      centralUrl: 'https://central.example.com',
-      signedEnvelope: sampleEnvelope(),
-      fetchFn,
-      sleepFn,
-    });
+    const result = await pushBatch(callInputs({ fetchFn, sleepFn }));
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -201,12 +202,7 @@ describe('pushBatch — TC-I-04 — REQ-8 — 4xx no retry', () => {
     ]);
     const { sleepFn, delays } = makeSleepStub();
 
-    const result = await pushBatch({
-      centralUrl: 'https://central.example.com',
-      signedEnvelope: sampleEnvelope(),
-      fetchFn,
-      sleepFn,
-    });
+    const result = await pushBatch(callInputs({ fetchFn, sleepFn }));
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -226,12 +222,7 @@ describe('pushBatch — TC-I-04 — REQ-8 — 4xx no retry', () => {
     ]);
     const { sleepFn, delays } = makeSleepStub();
 
-    const result = await pushBatch({
-      centralUrl: 'https://central.example.com',
-      signedEnvelope: sampleEnvelope(),
-      fetchFn,
-      sleepFn,
-    });
+    const result = await pushBatch(callInputs({ fetchFn, sleepFn }));
 
     expect(result.ok).toBe(false);
     if (!result.ok && result.kind === 'permanent') {
@@ -247,12 +238,7 @@ describe('pushBatch — TC-I-04 — REQ-8 — 4xx no retry', () => {
     ]);
     const { sleepFn } = makeSleepStub();
 
-    const result = await pushBatch({
-      centralUrl: 'https://central.example.com',
-      signedEnvelope: sampleEnvelope(),
-      fetchFn,
-      sleepFn,
-    });
+    const result = await pushBatch(callInputs({ fetchFn, sleepFn }));
 
     expect(result.ok).toBe(false);
     if (!result.ok && result.kind === 'permanent') {
@@ -281,12 +267,7 @@ describe('pushBatch — TC-I-05 — REQ-8 — 429 honors Retry-After', () => {
     ]);
     const { sleepFn, delays } = makeSleepStub();
 
-    const result = await pushBatch({
-      centralUrl: 'https://central.example.com',
-      signedEnvelope: sampleEnvelope(),
-      fetchFn,
-      sleepFn,
-    });
+    const result = await pushBatch(callInputs({ fetchFn, sleepFn }));
 
     expect(result.ok).toBe(true);
     expect(calls).toHaveLength(2);
@@ -304,12 +285,7 @@ describe('pushBatch — TC-I-05 — REQ-8 — 429 honors Retry-After', () => {
     ]);
     const { sleepFn, delays } = makeSleepStub();
 
-    const result = await pushBatch({
-      centralUrl: 'https://central.example.com',
-      signedEnvelope: sampleEnvelope(),
-      fetchFn,
-      sleepFn,
-    });
+    const result = await pushBatch(callInputs({ fetchFn, sleepFn }));
 
     expect(result.ok).toBe(true);
     expect(calls).toHaveLength(2);
@@ -324,12 +300,7 @@ describe('pushBatch — TC-I-05 — REQ-8 — 429 honors Retry-After', () => {
     ]);
     const { sleepFn, delays } = makeSleepStub();
 
-    const result = await pushBatch({
-      centralUrl: 'https://central.example.com',
-      signedEnvelope: sampleEnvelope(),
-      fetchFn,
-      sleepFn,
-    });
+    const result = await pushBatch(callInputs({ fetchFn, sleepFn }));
 
     expect(result.ok).toBe(true);
     expect(calls).toHaveLength(2);
@@ -345,13 +316,89 @@ describe('pushBatch — URL handling', () => {
     ]);
     const { sleepFn } = makeSleepStub();
 
-    await pushBatch({
-      centralUrl: 'https://central.example.com/',
-      signedEnvelope: sampleEnvelope(),
-      fetchFn,
-      sleepFn,
-    });
+    await pushBatch(
+      callInputs({
+        centralUrl: 'https://central.example.com/',
+        fetchFn,
+        sleepFn,
+      }),
+    );
 
     expect(calls[0]?.url).toBe('https://central.example.com/api/ingest');
+  });
+});
+
+describe('pushBatch — Idempotency-Key derivation (REQ-7)', () => {
+  it('derives Idempotency-Key from sha256(canonicalJSON(payload)) (first 32 hex chars)', async () => {
+    const { fetchFn, calls } = makeFetchStub([
+      { status: 200, body: { accepted: 1, skipped: 0, rejected: 0, errors: [] } },
+    ]);
+    const { sleepFn } = makeSleepStub();
+
+    const env = sampleEnvelope();
+    await pushBatch(callInputs({ envelope: env, fetchFn, sleepFn }));
+
+    const expected = createHash('sha256')
+      .update(canonicalJSON(env.payload))
+      .digest('hex')
+      .slice(0, 32);
+    const headers = calls[0]?.init?.headers as Record<string, string>;
+    expect(headers['idempotency-key']).toBe(expected);
+    expect(headers['idempotency-key']).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('produces the same Idempotency-Key for logically equal payloads with different key order', async () => {
+    const { fetchFn: fn1, calls: calls1 } = makeFetchStub([
+      { status: 200, body: { accepted: 0, skipped: 0, rejected: 0, errors: [] } },
+    ]);
+    const { fetchFn: fn2, calls: calls2 } = makeFetchStub([
+      { status: 200, body: { accepted: 0, skipped: 0, rejected: 0, errors: [] } },
+    ]);
+    const { sleepFn } = makeSleepStub();
+
+    // Same logical payload, different key insertion order — canonicalJSON
+    // sorts keys lexicographically so the idempotency-key must match.
+    const p1 = samplePayload();
+    const p2: SanitizedSessionPayload = {
+      tool_counts: p1.tool_counts,
+      session_id: p1.session_id,
+      started_at: p1.started_at,
+      ended_at: p1.ended_at,
+      project_slug: p1.project_slug,
+      git_branch: p1.git_branch,
+      cc_version: p1.cc_version,
+      total_input_tokens: p1.total_input_tokens,
+      total_output_tokens: p1.total_output_tokens,
+      total_cache_read_tokens: p1.total_cache_read_tokens,
+      total_cache_creation_tokens: p1.total_cache_creation_tokens,
+      total_cost_usd: p1.total_cost_usd,
+      total_cost_usd_otel: p1.total_cost_usd_otel,
+      turn_count: p1.turn_count,
+      tool_call_count: p1.tool_call_count,
+      model_breakdown: p1.model_breakdown,
+      avg_rating: p1.avg_rating,
+      cache_hit_ratio: p1.cache_hit_ratio,
+      output_input_ratio: p1.output_input_ratio,
+      subagent_usage_ratio: p1.subagent_usage_ratio,
+    };
+
+    await pushBatch(
+      callInputs({
+        envelope: { ...sampleEnvelope(), payload: [p1] },
+        fetchFn: fn1,
+        sleepFn,
+      }),
+    );
+    await pushBatch(
+      callInputs({
+        envelope: { ...sampleEnvelope(), payload: [p2] },
+        fetchFn: fn2,
+        sleepFn,
+      }),
+    );
+
+    const h1 = calls1[0]?.init?.headers as Record<string, string>;
+    const h2 = calls2[0]?.init?.headers as Record<string, string>;
+    expect(h1['idempotency-key']).toBe(h2['idempotency-key']);
   });
 });

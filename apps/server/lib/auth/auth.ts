@@ -2,10 +2,12 @@ import NextAuth from 'next-auth';
 // Side-effect import anchors the `next-auth/jwt` module in the resolution
 // graph so the `declare module 'next-auth/jwt'` augmentation below resolves.
 import 'next-auth/jwt';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { authConfig } from './auth.config';
 import { getDb } from '@/lib/db/client';
 import { orgs, users } from '@/lib/db/schema';
+import { emailDomain } from './email-hash';
+import { evaluateSignIn, loadUserByEmail } from './load-user';
 import { log as logger } from '@root/logger';
 
 // Fail-fast on missing auth secret in production. Auth.js v5 falls back to a
@@ -33,54 +35,44 @@ export type { Role } from './roles';
 import type { Role } from './roles';
 import { isRole } from './roles';
 
-/**
- * Look up the user's role + orgId from the DB by email + sso_provider.
- * Used by the JWT callback to persist these fields onto the token so the
- * Edge-safe middleware can read them without a DB hit (Edge-safe).
- *
- * Returns `null` when the user has no row yet (race between signIn and jwt
- * callbacks, or DB hiccup) — JWT keeps any pre-existing values.
- */
-const loadRoleAndOrg = async (
-  email: string,
-  ssoProvider: string,
-): Promise<{ role: Role; orgId: string } | null> => {
-  const db = getDb();
-  const [row] = await db
-    .select({ role: users.role, orgId: users.orgId })
-    .from(users)
-    .where(and(eq(users.email, email), eq(users.ssoProvider, ssoProvider)))
-    .limit(1);
-  if (!row) return null;
-  if (!isRole(row.role)) return null;
-  return { role: row.role, orgId: row.orgId };
-};
+// DB-backed helpers (`loadUserByEmail`, `evaluateSignIn`) live in
+// `./load-user.ts` so integration tests can import them without dragging
+// NextAuth into Vitest's module graph. Re-exported here so any non-test
+// caller that already does `from '@/lib/auth/auth'` keeps working.
+export {
+  evaluateSignIn,
+  loadUserByEmail,
+  type LoadedUser,
+  type SignInDecision,
+  type SignInExisting,
+} from './load-user';
 
 /**
  * Full NextAuth instance — extends the Edge-safe `authConfig` with
  * DB-backed callbacks (Drizzle/`pg` only run here, never on Edge).
  *
- * - `signIn`: REQ-16 — upsert into `users` on first sign-in.
- * - `jwt`: persist `role` + `orgId` on the JWT so middleware reads them
- *   from the token (no DB hit on hot path). DB lookup runs on initial
- *   sign-in AND on subsequent visits when role might have changed.
- * - `session`: re-attach role/orgId to `session.user` for Server Components
- *   that read `auth()` directly (e.g. `app/manager/layout.tsx`).
+ * - `signIn`: invite-aware bootstrap/fill/allow/reject (REQ-13).
+ * - `jwt`: persist `userId` + `role` + `orgId` on the JWT so middleware
+ *   reads them from the token (no DB hit on hot path).
+ * - `session`: re-attach id/role/orgId to `session.user` for Server
+ *   Components reading `auth()` directly.
  */
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
   callbacks: {
     ...authConfig.callbacks,
     /**
-     * REQ-16: on first sign-in, upsert into `users` keyed on (email,
-     * sso_provider). Default role = 'member'.
+     * REQ-13: handle invite-provisioned users with `sso_provider IS NULL`.
+     * Existing-user lookup is now email-only (UNIQUE per schema). The
+     * decision is delegated to the pure `evaluateSignIn` helper so the
+     * branching is independently testable.
      *
-     * Org provisioning is intentionally deferred to
-     * `central-server-onboarding.md`. For v0, this callback only inserts when
-     * a single org exists (single-tenant bootstrap) — otherwise the sign-in
-     * is rejected and the user lands on the NextAuth error page. Production
-     * deployments must seed an org row via `apps/server/scripts/seed-server.ts`
-     * before any user signs in.
+     *   - bootstrap (no row)        → insert iff exactly one org exists.
+     *   - fill-sso (row, sso NULL)  → UPDATE sso_provider/sso_subject. The
+     *     freshly-updated row is what `loadUserByEmail` will read in the
+     *     subsequent `jwt()` callback (READ COMMITTED, same connection).
+     *   - allow (row matches)       → no DB write.
+     *   - reject-mismatch           → false + structured warn (domain only).
      */
     async signIn({ user, account }) {
       if (!user?.email || !account?.provider) {
@@ -98,74 +90,85 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
 
       const db = getDb();
-      const existing = await db
-        .select({ id: users.id })
+      const [row] = await db
+        .select({ ssoProvider: users.ssoProvider, ssoSubject: users.ssoSubject })
         .from(users)
-        .where(and(eq(users.email, user.email), eq(users.ssoProvider, account.provider)))
+        .where(eq(users.email, user.email))
         .limit(1);
 
-      if (existing.length > 0) {
-        return true;
+      const decision = evaluateSignIn(
+        { provider: account.provider, providerAccountId: account.providerAccountId },
+        row ?? null,
+      );
+
+      switch (decision.kind) {
+        case 'allow':
+          return true;
+        case 'fill-sso':
+          await db
+            .update(users)
+            .set({ ssoProvider: decision.provider, ssoSubject: decision.subject })
+            .where(eq(users.email, user.email));
+          return true;
+        case 'reject-mismatch':
+          // Privacy: log the domain only, never the full email. Hand off
+          // to `emailDomain` (TASK-3) so the audit signal is consistent
+          // with the redemption-log conventions.
+          logger.warn('signIn rejected: SSO provider/subject mismatch on existing email', {
+            provider: account.provider,
+            emailDomain: emailDomain(user.email),
+          });
+          return false;
+        case 'bootstrap': {
+          // No row yet — single-org bootstrap. Reject if 0 or >1 orgs.
+          const allOrgs = await db.select({ id: orgs.id }).from(orgs).limit(2);
+          if (allOrgs.length !== 1) {
+            logger.warn('signIn rejected: org count not 1 (single-tenant bootstrap)', {
+              provider: account.provider,
+              orgCount: allOrgs.length,
+              emailDomain: emailDomain(user.email),
+            });
+            return false;
+          }
+          await db.insert(users).values({
+            orgId: allOrgs[0].id,
+            email: user.email,
+            ssoProvider: account.provider,
+            ssoSubject: account.providerAccountId,
+            role: 'member',
+          });
+          return true;
+        }
       }
-
-      // No row yet — bootstrap insert. Pick the org iff exactly one exists;
-      // otherwise refuse (multi-tenant onboarding belongs to the carved-out
-      // spec). See central-server-onboarding.md.
-      const allOrgs = await db.select({ id: orgs.id }).from(orgs).limit(2);
-      if (allOrgs.length !== 1) {
-        // Operator visibility: a misconfigured deployment (0 orgs not yet
-        // seeded, or >1 orgs without onboarding wired up) blocks every
-        // sign-in attempt with NextAuth's generic error page. Log so it's
-        // diagnosable. Email is hashed-out; we record the domain only.
-        const domain = user.email.split('@')[1] ?? 'unknown';
-        logger.warn('signIn rejected: org count not 1 (single-tenant bootstrap)', {
-          provider: account.provider,
-          orgCount: allOrgs.length,
-          emailDomain: domain,
-        });
-        return false;
-      }
-
-      await db.insert(users).values({
-        orgId: allOrgs[0].id,
-        email: user.email,
-        ssoProvider: account.provider,
-        ssoSubject: account.providerAccountId,
-        role: 'member',
-      });
-
-      return true;
     },
     /**
-     * Persist `ssoProvider`, `role`, and `orgId` on the JWT so the Edge
+     * Persist `userId` + `role` + `orgId` on the JWT so the Edge
      * middleware reads them without a DB hit (Edge runtime forbids `pg`).
      *
-     * Strategy:
-     *   - On initial sign-in (`account` present), record `ssoProvider` and
-     *     do the DB lookup to attach `role` + `orgId`.
-     *   - On subsequent calls (no `account`), refresh `role` + `orgId` from
-     *     the DB so role promotions/demotions reflect on the next request.
-     *     Cost: ~1ms per token validation; acceptable for a manager UI.
+     * Lookup predicate is email-only — matches `loadUserByEmail`'s shape
+     * change in REQ-12. `ssoProvider` is no longer needed for the lookup;
+     * it is recorded on the token only as audit/tracing metadata.
      */
     async jwt({ token, account }) {
       if (account?.provider) {
         token.ssoProvider = account.provider;
       }
       const email = typeof token.email === 'string' ? token.email : null;
-      const ssoProvider = typeof token.ssoProvider === 'string' ? token.ssoProvider : null;
-      if (email && ssoProvider) {
-        const roleAndOrg = await loadRoleAndOrg(email, ssoProvider);
-        if (roleAndOrg) {
-          token.role = roleAndOrg.role;
-          token.orgId = roleAndOrg.orgId;
+      if (email) {
+        const loaded = await loadUserByEmail(email);
+        if (loaded) {
+          token.userId = loaded.userId;
+          token.role = loaded.role;
+          token.orgId = loaded.orgId;
         } else {
           // Hardening (security review C2): when DB lookup returns null,
-          // do NOT preserve any pre-existing role/orgId on the token. A
-          // forged JWT with role='admin' for an unknown email would
-          // otherwise survive this callback unchanged and the downstream
-          // session callback would mirror the forged role into
-          // session.user.role. Clearing breaks that escalation path —
-          // unknown user = no role = layout/middleware deny.
+          // do NOT preserve any pre-existing userId/role/orgId on the
+          // token. A forged JWT with role='admin' for an unknown email
+          // would otherwise survive this callback unchanged and the
+          // downstream session callback would mirror the forged role
+          // into session.user.role. Clearing breaks that escalation
+          // path — unknown user = no claims = layout/middleware deny.
+          delete token.userId;
           delete token.role;
           delete token.orgId;
         }
@@ -173,12 +176,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return token;
     },
     /**
-     * Mirror role/orgId from the JWT onto `session.user` for Server
-     * Components reading `auth()`. No DB hit here — the JWT already carries
-     * the values (populated by `jwt()` above).
+     * Mirror id/role/orgId from the JWT onto `session.user` for Server
+     * Components reading `auth()`. No DB hit here — the JWT already
+     * carries the values (populated by `jwt()` above).
      */
     async session({ session, token }) {
       if (session.user) {
+        if (typeof token.userId === 'string') {
+          session.user.id = token.userId;
+        }
         if (isRole(token.role)) {
           session.user.role = token.role;
         }
@@ -194,6 +200,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 declare module 'next-auth' {
   interface Session {
     user?: {
+      id?: string;
       email?: string | null;
       name?: string | null;
       image?: string | null;
@@ -209,6 +216,7 @@ declare module 'next-auth' {
 
 declare module 'next-auth/jwt' {
   interface JWT {
+    userId?: string;
     ssoProvider?: string;
     role?: Role;
     orgId?: string;

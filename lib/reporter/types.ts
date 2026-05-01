@@ -56,3 +56,19 @@ export type SanitizeError =
   | { kind: 'zod-validation'; issues: z.ZodIssue[] }
   | { kind: 'empty-cwd' }
   | { kind: 'invalid-input'; reason: string };
+
+/**
+ * Wire envelope POSTed to the central server's `/api/ingest` route.
+ *
+ * Renamed from `SignedEnvelope` (and dropped the `signature` field) when the
+ * reporter auth model moved from HMAC-signed payloads to `Authorization:
+ * Bearer <secret>` + bcrypt-at-rest (central-server-onboarding spec, REQ-6/7).
+ * Payload integrity in transit is provided by TLS; per-payload authenticity
+ * is provided by the bearer token tied to `key_id`.
+ */
+export type IngestEnvelope = {
+  version: 1;
+  key_id: string;
+  machine_id: string;
+  payload: SanitizedSessionPayload[];
+};

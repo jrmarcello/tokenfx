@@ -1,7 +1,9 @@
-import type { SanitizedSessionPayload } from './types';
+import { createHash } from 'node:crypto';
+import { canonicalJSON } from './canonical-json';
+import type { IngestEnvelope } from './types';
 
 /**
- * Push client for the reporter — POSTs a signed batch envelope to the central
+ * Push client for the reporter — POSTs an ingest envelope to the central
  * server's `/api/ingest` route. Implements the retry policy from REQ-8:
  *
  *   - HTTP 5xx or network error → retry with exponential backoff
@@ -9,6 +11,12 @@ import type { SanitizedSessionPayload } from './types';
  *   - HTTP 4xx (except 429) → no retry (contract bug, not transient).
  *   - HTTP 429 → honor `Retry-After` header (seconds) capped at 60s; if absent,
  *     fall back to the next backoff slot.
+ *
+ * Auth: `Authorization: Bearer <secret>` (central-server-onboarding REQ-7).
+ * The plaintext secret is read from `data/reporter-config.json`. The server
+ * looks up `user_machines.secret_hash` (bcrypt) by `key_id` and verifies via
+ * `bcrypt.compare`. TLS provides payload integrity in transit; HMAC was
+ * removed in the same refactor.
  */
 
 export type IngestSuccessBody = {
@@ -18,17 +26,13 @@ export type IngestSuccessBody = {
   errors: ReadonlyArray<{ session_id: string; reason: string }>;
 };
 
-export type SignedEnvelope = {
-  version: 1;
-  key_id: string;
-  machine_id: string;
-  signature: string;
-  payload: SanitizedSessionPayload[];
-};
+export type { IngestEnvelope } from './types';
 
 export type PushBatchInput = {
   centralUrl: string;
-  signedEnvelope: SignedEnvelope;
+  envelope: IngestEnvelope;
+  /** Bearer secret from `data/reporter-config.json` (`secret` field). */
+  secret: string;
   /** Injection seam for tests. Defaults to global `fetch`. */
   fetchFn?: (url: string, init?: RequestInit) => Promise<Response>;
   /** Injection seam for tests. Defaults to `setTimeout`-backed sleep. */
@@ -74,17 +78,27 @@ const retryAfterDelayMs = (
   return BACKOFF_DELAYS_MS[idx] ?? 32_000;
 };
 
+/**
+ * Derive the `Idempotency-Key` from the payload array directly. The reporter
+ * previously used a slice of the HMAC signature; after the Bearer refactor
+ * the signature is gone, so we recompute the same uniqueness guarantee from
+ * `sha256(canonicalJSON(payload))`. Canonical JSON makes equivalent payloads
+ * (different key order, different whitespace) produce the same key, so a
+ * server-side retry of the same logical batch hits the same idempotency-key.
+ */
+const deriveIdempotencyKey = (
+  payload: IngestEnvelope['payload'],
+): string =>
+  createHash('sha256').update(canonicalJSON(payload)).digest('hex').slice(0, 32);
+
 export const pushBatch = async (
   input: PushBatchInput,
 ): Promise<PushBatchResult> => {
   const fetchFn = input.fetchFn ?? fetch;
   const sleep = input.sleepFn ?? defaultSleep;
   const url = `${input.centralUrl.replace(/\/$/, '')}/api/ingest`;
-  const body = JSON.stringify(input.signedEnvelope);
-  // Idempotency-Key: short-lived stable identifier per envelope. Using a slice
-  // of the HMAC signature is good enough at the transport layer (TASK-8 may
-  // refine to a sha256 of canonical body if the server demands a stricter key).
-  const idempotencyKey = input.signedEnvelope.signature.slice(0, 32);
+  const body = JSON.stringify(input.envelope);
+  const idempotencyKey = deriveIdempotencyKey(input.envelope.payload);
 
   let attempt = 0;
   let lastError = '';
@@ -98,6 +112,7 @@ export const pushBatch = async (
         method: 'POST',
         headers: {
           'content-type': 'application/json',
+          authorization: `Bearer ${input.secret}`,
           'idempotency-key': idempotencyKey,
         },
         body,

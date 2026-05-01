@@ -87,6 +87,8 @@ docker compose down                   # Parar (DB persiste em ./data)
 | `pnpm validate` | `typecheck && lint && test --run` |
 | `pnpm changelog` | Preview do CHANGELOG.md a partir dos commits (não sobrescreve arquivo) |
 | `pnpm release VERSION=X.Y.Z` | Gera CHANGELOG via `git-cliff`, cria tag anotada e publica GitHub Release |
+| `pnpm reporter:setup` | Onboarding interativo de uma máquina dev no servidor central — redime token de convite, escreve `data/reporter-config.json`. Veja [`apps/server/README.md`](apps/server/README.md#onboarding-flow) pra fluxo completo |
+| `pnpm reporter:run` / `:once` | Empurra um batch de aggregates pro servidor central (após `reporter:setup`) |
 
 ### Variáveis de ambiente
 
@@ -402,5 +404,8 @@ See [`apps/server/README.md`](./apps/server/README.md) for the full privacy
 boundary, allowlist, and audit procedures.
 
 **Reporter is opt-in** — devs without `data/reporter-config.json` make zero
-outbound network calls. Run `pnpm reporter:setup` to provision (after
-`central-server-onboarding.md` ships).
+outbound network calls.
+
+### Onboarding como dev novo
+
+Pra começar a reportar pro servidor central, peça um invite ao manager do seu time (ele cria em `/manager/invites`) e rode `pnpm reporter:setup` colando a URL recebida. O CLI valida o token, grava `data/reporter-config.json` (mode 0600, atomic write) e a partir daí `pnpm reporter:run` faz push contínuo via Bearer auth. Detalhes do fluxo, threat model e procedimentos operacionais (revogação de máquina, rotação de pepper, leitura da trilha de auditoria) em [`apps/server/README.md` → "Onboarding flow"](./apps/server/README.md#onboarding-flow).

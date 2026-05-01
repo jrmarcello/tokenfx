@@ -36,7 +36,7 @@
     "**/*.ts",
     "**/*.tsx",
     "../../lib/analytics/**/*",
-    "../../lib/reporter/signer.ts",
+    "../../lib/reporter/canonical-json.ts",
     "../../lib/reporter/types.ts",
     "../../lib/result.ts",
     "next-env.d.ts",

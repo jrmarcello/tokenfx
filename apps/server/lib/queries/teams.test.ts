@@ -93,6 +93,7 @@ skipDescribe('getTeamDetail (Postgres integration)', () => {
     // test files in the suite — sibling files seeding the same constants
     // would otherwise leak rows into this file's seeds).
     await db.execute(sql`TRUNCATE TABLE
+      onboarding_redemption_log, onboarding_audit_log, onboarding_invites,
       ingestion_log, model_breakdown_agg, tool_count_agg, sessions_agg,
       cost_calibration_per_user, user_machines, users, teams, orgs
       RESTART IDENTITY CASCADE`);

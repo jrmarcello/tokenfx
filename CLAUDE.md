@@ -110,6 +110,27 @@ Delegate with "use a subagent to..." or launch a team via `/full-review-team`.
 
 ### Execution Directives
 
+0. **Quality > Velocity > Cost (TOP-OF-STACK FILTER)** — Para QUALQUER decisão de planejamento, design, ou implementação neste projeto, este é o filtro pré-resposta:
+   - **Pergunta sempre**: "Esta é a MELHOR opção possível, ou só a mais rápida/barata?"
+   - **Trade-off ranking não-negociável**: qualidade primeiro, velocidade segundo, custo terceiro.
+   - **NÃO faça**:
+     - "Pulei X pra economizar tokens" — proibido em qualquer hipótese.
+     - Reduzir cobertura de testes pra ir mais rápido.
+     - Skip de self-review (Step 2 ou Step 5) "porque já fizemos antes".
+     - Aceitar workaround feio quando o fix limpo é viável.
+     - Encerrar spec antes de tudo green.
+     - "Pragmaticamente vou deixar isso como follow-up" quando o fix está dentro do escopo.
+     - Sugerir commit antes de tudo verde sob argumento de "preservar trabalho".
+     - Recomendar a opção mais simples sem antes considerar a melhor.
+   - **FAÇA em vez**:
+     - Apresente PRIMEIRO a melhor opção; alternativas pragmáticas só se o usuário pedir.
+     - Quando bater num bloqueador real (não cosmético), investigue até a raiz e fixe lá.
+     - Mudanças de plano só pra MELHORAR (qualidade ↑), nunca pra reduzir.
+     - Se a sessão fica longa, continue com mesmo rigor — auto-compaction lida com contexto.
+     - Se há custo/budget concern, o usuário fala explicitamente e a gente busca alternativas juntos.
+   - Esta diretriz é o FILTRO TOP-OF-STACK pra qualquer decisão "devo fazer X ou pular?". Resposta default = fazer X com qualidade. Skip só se o usuário falar.
+   - Em conflito com qualquer outra diretriz desta lista, **esta vence**.
+
 1. **Prefer subagents and parallelization** — use subagents or Agent Teams for independent discovery/analysis. Merge findings before coding.
 2. **Mandatory cycle** for non-trivial tasks: **Plan** → **Implement** → **Review** → **Test** → **Validate**. Do not finish without concrete validation evidence.
 3. **The Review step is MANDATORY and AUTOMATIC** — after implementing, re-read the plan/spec and diff what was implemented vs what was specified (files, patterns, mappings). Verify: all files listed in `files:` metadata were created/modified, all patterns from the Design section are followed, all error mappings are complete, no implementation gap vs the spec. Only then proceed to tests. This is NEVER skipped.

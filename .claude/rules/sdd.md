@@ -4,6 +4,27 @@ applies-to: ".specs/**"
 
 # SDD Spec Rules
 
+## North Star — Quality > Velocity > Cost
+
+**Trade-off ranking não-negociável: qualidade primeiro, velocidade segundo, custo terceiro.** Vale pra todas as fases do flow SDD: autoria da spec, self-review, execução, decisões de design, commit.
+
+Em **toda** decisão (design, refactor, fix, scope), pergunta antes:
+
+> "Esta é a MELHOR opção possível, ou só a mais rápida/barata?"
+
+Se a resposta é "mais rápida/barata", **escolha a melhor** e siga — mesmo que dê retrabalho, mesmo que a sessão fique longa, mesmo que custe mais tokens. Skip só se o usuário pedir explicitamente.
+
+**Manifestações concretas dessa diretriz no flow SDD:**
+
+- Phase 2 (self-review da spec): jamais skip "porque a spec parece OK". Sempre rodar os 3 agentes em paralelo.
+- Phase 3 (Pause 1): apresentar PRIMEIRO a opção de maior qualidade pro usuário; opções pragmáticas só se solicitadas.
+- Phase 4 (execução): se um agente bate em problema arquitetural, **NÃO patch**. Volta na spec, corrige, re-aprova se mudar requisito.
+- Phase 5 (self-review da implementação): jamais skip "porque já self-reviewamos antes" — re-revisão é obrigatória após qualquer mudança.
+- Phase 6 (Pause 2): liderar com o que foi validado em produção (live data), não com "tests pass".
+- Phase 7 (commit): jamais commitar antes de tudo green. "Preservar trabalho" não é justificativa.
+
+Em conflito com qualquer outra regra deste arquivo, **esta vence**. Mesmo princípio aplica em CLAUDE.md (Execution Directive #0).
+
 ## Flow
 
 ```text

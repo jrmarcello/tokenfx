@@ -4,9 +4,9 @@ import Database from 'better-sqlite3';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { log } from '@/lib/logger';
 import { sanitizeSession, type SessionWithAggs } from './sanitizer';
-import type { SanitizedSessionPayload } from './types';
-import { canonicalJSON, sign } from './signer';
-import { pushBatch, type SignedEnvelope } from './client';
+import type { IngestEnvelope, SanitizedSessionPayload } from './types';
+import { canonicalJSON } from './canonical-json';
+import { pushBatch } from './client';
 import { openQueue, type Queue } from './queue';
 import { readConfig, defaultConfigPath, type ReporterConfig } from './config';
 
@@ -427,17 +427,16 @@ export const runReporter = async (
     for (let i = 0; i < prepared.length; i += BATCH_SIZE) {
       const chunk = prepared.slice(i, i + BATCH_SIZE);
       const payloads = chunk.map((p) => p.payload);
-      const signature = sign(payloads, config.secret);
-      const envelope: SignedEnvelope = {
+      const envelope: IngestEnvelope = {
         version: 1,
         key_id: config.key_id,
         machine_id: config.machine_id,
-        signature,
         payload: payloads,
       };
       const result = await pushBatch({
         centralUrl: config.central_url,
-        signedEnvelope: envelope,
+        envelope,
+        secret: config.secret,
         fetchFn: opts.fetchFn,
       });
 

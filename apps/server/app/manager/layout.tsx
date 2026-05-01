@@ -66,6 +66,13 @@ export default async function ManagerLayout({
           >
             Teams
           </Link>
+          <Link
+            href="/manager/invites"
+            className="text-neutral-700 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-neutral-100"
+            data-testid="nav-invites"
+          >
+            Convites
+          </Link>
           {role === 'admin' ? (
             <Link
               href="/manager/admin/users"

@@ -27,12 +27,16 @@
 // E2E mode is fully idempotent: every insert uses
 // `.onConflictDoNothing()` so a re-run on a primed DB is a no-op.
 //
-// DEVIATION (TASK-14): the column `user_machines.secret_hash` currently stores
-// the HMAC secret as plaintext, NOT a bcrypt hash. The schema column name is
-// kept ("secret_hash") for forward compatibility with the future bcrypt
-// migration. Until then, this seed writes the plaintext secret directly.
+// AUTH MODEL (central-server-onboarding REQ-9): `user_machines.secret_hash`
+// now stores a bcrypt hash of the plaintext secret. The reporter sends the
+// plaintext as `Authorization: Bearer <secret>` and the server runs
+// `bcrypt.compare`. Single-org seed prints the plaintext to stdout once so
+// the dev can hand-copy it to `data/reporter-config.json`. E2E seed prints
+// only `key_id` + `machine_id` (the e2e runner mints JWT cookies for
+// `/manager/*` routes and reads `key_id` for ingest fixtures).
 
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import bcrypt from 'bcrypt';
 import { closeDb, getDb } from '@/lib/db/client';
 import {
   modelBreakdownAgg,
@@ -44,6 +48,7 @@ import {
   users,
 } from '@/lib/db/schema';
 import { stableUuid } from '@/lib/e2e/seed-ids';
+import { BCRYPT_COST } from '@/lib/auth/bearer-auth';
 
 // --- Single-org seed (preserved from TASK-15) -------------------------------
 
@@ -94,16 +99,17 @@ const seedSingleOrg = async (
   if (!user) throw new Error('failed to insert user');
   process.stdout.write(`user: ${user.id} (${userEmail}) role=admin\n`);
 
-  // 4. Machine + HMAC secret
+  // 4. Machine + Bearer secret. Bcrypt-hash the plaintext at rest; print
+  // the plaintext ONCE for the dev to hand-copy into data/reporter-config.json.
   const machineId = randomUUID();
   const keyId = `k_${randomBytes(8).toString('hex')}`;
   const secret = randomBytes(32).toString('hex');
+  const secretHash = await bcrypt.hash(secret, BCRYPT_COST);
   await db.insert(userMachines).values({
     userId: user.id,
     machineId,
     keyId,
-    // Plaintext per TASK-14 deviation (see module header).
-    secretHash: secret,
+    secretHash,
   });
   process.stdout.write(`machine: ${machineId}\n\n`);
 
@@ -253,12 +259,12 @@ const seedE2e = async (): Promise<void> => {
 
         const machineId = stableUuid(`machine:${orgSpec.slug}:${userSpec.localPart}`);
         const keyId = `k_e2e_${orgSpec.slug.replace(/^org-/, '')}_${userSpec.localPart}`;
-        // Deterministic secret derived from local-part — never leaves the
-        // test container, so a hash is acceptable here. Plaintext per
-        // TASK-14 deviation.
-        const secret = createHash('sha256')
+        // Deterministic plaintext derived from local-part — never leaves
+        // the test container. Bcrypt-hashed before INSERT (REQ-9).
+        const plaintextSecret = createHash('sha256')
           .update(`e2e-secret:${orgSpec.slug}:${userSpec.localPart}`)
           .digest('hex');
+        const secretHash = await bcrypt.hash(plaintextSecret, BCRYPT_COST);
         await db
           .insert(userMachines)
           .values({
@@ -266,9 +272,16 @@ const seedE2e = async (): Promise<void> => {
             userId,
             machineId,
             keyId,
-            secretHash: secret,
+            secretHash,
           })
           .onConflictDoNothing();
+        // Print key_id + machine_id (NOT the plaintext secret — REQ-9).
+        // The e2e runner reads these for credential identification; the
+        // ingest path uses TC-E2E-06's full reporter:setup flow which
+        // mints its own credential via redeem.
+        process.stdout.write(
+          `[seed-e2e] machine: key_id=${keyId} machine_id=${machineId}\n`,
+        );
         machineCount += 1;
 
         allUsers.push({
@@ -394,12 +407,11 @@ const seedE2e = async (): Promise<void> => {
 
 const main = async (): Promise<void> => {
   // Refuse to run against a production deployment. The single-org mode prints
-  // plaintext HMAC secrets to stdout (TASK-15 v0 stand-in), the E2E mode
-  // wipes existing rows via deterministic UUIDs that could collide with real
-  // org IDs, and the schema column `secret_hash` currently stores plaintext
-  // pending the bcrypt migration (TASK-14 deviation, documented at top of
-  // file). All three are unsafe in production. Set ALLOW_PRODUCTION_SEED=1
-  // only if you genuinely accept those trade-offs.
+  // plaintext bearer secrets to stdout (so the dev can hand-copy them into
+  // data/reporter-config.json) and the E2E mode wipes existing rows via
+  // deterministic UUIDs that could collide with real org IDs. Both are
+  // unsafe in production. Set ALLOW_PRODUCTION_SEED=1 only if you genuinely
+  // accept those trade-offs.
   if (
     process.env.NODE_ENV === 'production' &&
     process.env.ALLOW_PRODUCTION_SEED !== '1'

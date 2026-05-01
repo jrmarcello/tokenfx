@@ -9,8 +9,13 @@
  * `SKIP_PG_TESTS=1` so devs without Docker can still run unit suites.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import bcrypt from 'bcrypt';
 import { eq, and, sql } from 'drizzle-orm';
-import { POST, __resetRateLimiter } from '@/app/api/ingest/route';
+import {
+  POST,
+  __resetRateLimiter,
+  __resetIngestAuthCache,
+} from '@/app/api/ingest/route';
 import { closeDb, getDb } from '@/lib/db/client';
 import {
   ingestionLog,
@@ -21,7 +26,7 @@ import {
   userMachines,
   users,
 } from '@/lib/db/schema';
-import { sign } from '@root/reporter/signer';
+import { BCRYPT_COST } from '@/lib/auth/bearer-auth';
 
 const SKIP = process.env.SKIP_PG_TESTS === '1';
 const skipDescribe = SKIP ? describe.skip : describe;
@@ -96,21 +101,42 @@ const MACHINE_ID = '00000000-0000-4000-8000-000000000001';
 
 let testUserId = '';
 
+type MakeRequestOpts = {
+  keyId?: string;
+  machineId?: string;
+  raw?: string;
+  /** Override the Authorization header value (full string after `:`). If
+   *  omitted, defaults to `Bearer ${SECRET}`. Pass `null` to omit the header. */
+  authorization?: string | null;
+  /** Inject extra envelope fields (e.g. legacy `signature` to assert
+   *  Zod strict rejection). */
+  extraEnvelope?: Record<string, unknown>;
+};
+
 const makeRequest = (
   payload: unknown[],
-  opts: { signature?: string; keyId?: string; machineId?: string; raw?: string } = {},
+  opts: MakeRequestOpts = {},
 ): Request => {
   const envelope = {
     version: 1 as const,
     key_id: opts.keyId ?? KEY_ID,
     machine_id: opts.machineId ?? MACHINE_ID,
-    signature: opts.signature ?? sign(payload, SECRET),
     payload,
+    ...(opts.extraEnvelope ?? {}),
   };
   const body = opts.raw ?? JSON.stringify(envelope);
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    'x-forwarded-for': '203.0.113.42',
+  };
+  if (opts.authorization === undefined) {
+    headers.authorization = `Bearer ${SECRET}`;
+  } else if (opts.authorization !== null) {
+    headers.authorization = opts.authorization;
+  }
   return new Request('http://localhost/api/ingest', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.42' },
+    headers,
     body,
   });
 };
@@ -121,8 +147,9 @@ skipDescribe('POST /api/ingest (Postgres integration)', () => {
     // Reset shared Postgres state — Testcontainers persists across the suite,
     // sibling test files seed orgs/users/machines too. Without this, this
     // file's seed collides on email/key_id uniques and cascades to 401s
-    // (signature mismatch) when the route reads a stale `user_machines.secretHash`.
+    // (auth mismatch) when the route reads a stale `user_machines.secretHash`.
     await db.execute(sql`TRUNCATE TABLE
+      onboarding_redemption_log, onboarding_audit_log, onboarding_invites,
       ingestion_log, model_breakdown_agg, tool_count_agg, sessions_agg,
       cost_calibration_per_user, user_machines, users, teams, orgs
       RESTART IDENTITY CASCADE`);
@@ -139,13 +166,13 @@ skipDescribe('POST /api/ingest (Postgres integration)', () => {
       })
       .returning({ id: users.id });
     testUserId = user.id;
+    const secretHash = await bcrypt.hash(SECRET, BCRYPT_COST);
     await db.insert(userMachines).values({
       userId: testUserId,
       machineId: MACHINE_ID,
       keyId: KEY_ID,
-      // Plaintext HMAC secret (column kept as `secret_hash` for stability —
-      // see DEVIATION note in route.ts).
-      secretHash: SECRET,
+      // Bcrypt-hashed bearer secret (central-server-onboarding REQ-9).
+      secretHash,
     });
   });
 
@@ -155,6 +182,7 @@ skipDescribe('POST /api/ingest (Postgres integration)', () => {
 
   beforeEach(() => {
     __resetRateLimiter();
+    __resetIngestAuthCache();
   });
 
   afterEach(async () => {
@@ -166,7 +194,7 @@ skipDescribe('POST /api/ingest (Postgres integration)', () => {
     await db.delete(ingestionLog);
   });
 
-  it('TC-I-21: valid signed batch of 5 sessions → 200 accepted=5', async () => {
+  it('TC-I-21: valid Bearer-authenticated batch of 5 sessions → 200 accepted=5', async () => {
     const payload = Array.from({ length: 5 }, (_, i) =>
       makeSession({ session_id: `sess-tc21-${i}` }),
     );
@@ -182,12 +210,13 @@ skipDescribe('POST /api/ingest (Postgres integration)', () => {
     expect(rows).toHaveLength(5);
   });
 
-  it('TC-I-22: tampered signature → 401', async () => {
+  it('TC-I-22 (legacy → Bearer): wrong bearer secret → 401', async () => {
     const payload = [makeSession()];
-    const validSig = sign(payload, SECRET);
-    // Flip one hex char.
-    const tampered = validSig[0] === 'a' ? `b${validSig.slice(1)}` : `a${validSig.slice(1)}`;
-    const res = await POST(makeRequest(payload, { signature: tampered }) as never);
+    const res = await POST(
+      makeRequest(payload, {
+        authorization: `Bearer ${SECRET.slice(0, -1)}x`,
+      }) as never,
+    );
     expect(res.status).toBe(401);
     const db = getDb();
     const rows = await db.select().from(sessionsAgg);
@@ -202,17 +231,21 @@ skipDescribe('POST /api/ingest (Postgres integration)', () => {
 
   it('TC-I-24: extra field at envelope root (Zod strict) → 400', async () => {
     const payload = [makeSession()];
+    // The legacy `signature` field is itself an "extra field" after the
+    // Bearer-auth refactor, so we reuse it as the unknown root key.
     const envelope = {
       version: 1,
       key_id: KEY_ID,
       machine_id: MACHINE_ID,
-      signature: sign(payload, SECRET),
       payload,
       extra_field: 'should not be here',
     };
     const req = new Request('http://localhost/api/ingest', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${SECRET}`,
+      },
       body: JSON.stringify(envelope),
     });
     const res = await POST(req as never);

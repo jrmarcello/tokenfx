@@ -49,6 +49,9 @@ export const authConfig = {
     // pre-augmented by its `jwt()` callback's DB lookup).
     session({ session, token }) {
       if (session.user) {
+        if (typeof token.userId === 'string') {
+          session.user.id = token.userId;
+        }
         if (isRole(token.role)) {
           session.user.role = token.role;
         }

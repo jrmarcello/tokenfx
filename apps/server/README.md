@@ -106,6 +106,130 @@ If a machine's HMAC secret is compromised:
 - **Reporter sanitizer**: `lib/reporter/sanitizer.ts` (root — single source of truth, also imported by `apps/server/lib/ingest/sanitizer-shared.ts`)
 - **Onboarding**: see `.specs/central-server-onboarding.md` (carved-out spec for invite tokens)
 
+## Onboarding flow
+
+Como um manager provisiona um colega de time pra reportar dados pro servidor central — fluxo invite-token + setup CLI (see `.specs/central-server-onboarding.md` REQ-7..15, REQ-17..22, REQ-26..36).
+
+```text
+┌──────────────────┐     ┌──────────────────────┐     ┌──────────────────┐
+│  Manager (web)   │     │   Slack / Email      │     │   Dev (CLI)      │
+└────────┬─────────┘     └──────────┬───────────┘     └────────┬─────────┘
+         │                          │                          │
+         │ 1. Cria invite           │                          │
+         │ /manager/invites         │                          │
+         │ → onboard_url            │                          │
+         │   (#token=… fragment,    │                          │
+         │    visível 1× só)        │                          │
+         │                          │                          │
+         │ 2. Compartilha URL ──────►                          │
+         │                          │ 3. Encaminha URL ────────►
+         │                          │                          │
+         │                          │                4. pnpm reporter:setup
+         │                          │                  - cola URL ou token
+         │                          │                  - confirma email
+         │                          │                  - POST /api/onboarding/redeem-invite
+         │                          │                          │
+         │                          │                5. Server retorna
+         │                          │                  { key_id, secret }
+         │                          │                  → grava em data/reporter-config.json
+         │                          │                          │
+         │                          │                6. pnpm reporter:run
+         │                          │                  → push contínuo (Bearer auth)
+```
+
+Passos:
+
+1. **Manager cria o invite** em `/manager/invites/create`. Campos: team (opcional), `email_pattern` (opcional, ex.: `*@empresa.com`), `max_uses` (1..100, default 1), `expires_in_hours` (1..168, default 8).
+2. O servidor gera o token (32 random bytes / 64 hex), insere `onboarding_invites` + `onboarding_audit_log` com `action='invite-created'` e responde com a URL `${central_url}/onboard#token=XXX`. **A URL completa só é exibida uma vez** (flash cookie HMAC-assinado, TTL 2min, `path=/manager/invites/created`).
+3. **Manager compartilha** a URL via Slack/email. O fragmento `#token=…` nunca atinge o servidor (o navegador não envia fragmentos em requests HTTP) — mas **fica em histórico**. A página `/onboard` instrui o dev a copiar pro terminal imediatamente.
+4. **Dev roda `pnpm reporter:setup`**. O CLI pede a URL (ou token) + o email de trabalho (default = `git config user.email`), confirma e faz `POST /api/onboarding/redeem-invite`.
+5. **Server valida** (rate-limit, Zod, lookup `FOR UPDATE`, revoked / expired / exhausted / email-mismatch — todos uniformemente 401), executa a transação (upsert `users` por email, INSERT `user_machines` com `secret_hash = bcrypt(secret, 10)`, increment `used_count`, INSERT `onboarding_redemption_log`) e retorna `{ key_id, secret, central_url, user_email }`. **`secret` é o ÚNICO momento em que o plaintext sai pro cliente.**
+6. **CLI grava `data/reporter-config.json`** (atomic write — `.tmp` + fsync + rename, mode 0600). Próximas pushes via `pnpm reporter:run` usam `Authorization: Bearer ${secret}` (REQ-6/7).
+
+Pre-flight (REQ-32): se já existe um `reporter-config.json` válido (verificado via `GET /api/health` com Bearer), o setup recusa rerun sem `--force`. Útil pra evitar re-onboarding acidental que duplica máquinas.
+
+## Threat model
+
+Os 8 vetores que o desenho mitigou — explicação curta + onde o código materializa cada controle (see `.specs/central-server-onboarding.md` Context section).
+
+| # | Vetor | Mitigação |
+| --- | --- | --- |
+| 1 | **Token leak via URL fragment** (browser history residual) | Fragmento (`#token=…`) nunca é enviado em requests HTTP; a página `/onboard` exibe warning ("This token is shown only once. Treat it like a password.") instruindo cópia imediata pro terminal. Risco residual = histórico do browser local — aceito. |
+| 2 | **Token leak via Slack/email** (qualquer pessoa que vê a mensagem) | TTL curto (default 8h, máx 168h), single-use por padrão (`max_uses=1`), e `email_pattern` lock (ex.: `*@empresa.com`) — quem captura a URL ainda precisa controlar um email do domínio certo. |
+| 3 | **Bruteforce de tokens** | 256-bit de entropia (`crypto.randomBytes(32).toString('hex')`) torna guessing infeasível. Rate limit dual: `(ip_truncated_24, 10/min)` + `(token, 3/min)` — ambas dimensões verificadas; qualquer uma excedida → 429. |
+| 4 | **Token-existence probing** (atacante quer descobrir quais tokens existem) | TODAS as rejeições de token (invalid / expired / revoked / exhausted / email-mismatch) retornam **401 idêntico byte-a-byte**: `{"error":{"message":"invalid or expired invite","code":"unauthorized"}}`. Sem 403 vazando "seu token é válido mas o email tá errado". |
+| 5 | **Manager session compromise → rogue invite** | Server Actions têm CSRF protection by default; `onboarding_audit_log` registra todo create/revoke com `actor_user_id` + `target_token_prefix` — qualquer convite forjado é rastreável. Re-auth a cada criação NÃO é exigido (queda ergonômica não justifica o ganho marginal). |
+| 6 | **Replay de redeem após sucesso** | Increment de `used_count` é parte da MESMA transação do INSERT em `user_machines`. `SELECT ... FOR UPDATE` na linha do invite serializa attempts concorrentes; `max_uses=N` resulta exatamente em N aceitos e (M−N) `token-exhausted` pra M tentativas concorrentes. |
+| 7 | **TLS off** (passar token em clear text) | Setup CLI recusa `central_url` não-HTTPS. Override apenas com `--allow-http` (dev-only, com warning ruidoso). Push contínuo via reporter assume HTTPS em produção. |
+| 8 | **Email harvesting via redeem log** | `onboarding_redemption_log` armazena `email_domain` (ex.: `"empresa.com"`) + `email_hash = sha256(lowercase(email) + pepper)`. **Nunca o email completo.** Domain dá sinal coarse-grained de auditoria; hash permite contagem de emails únicos sem reversão. Pepper (`ONBOARDING_EMAIL_HASH_PEPPER`) protege contra rainbow-table mesmo se o DB vazar. |
+
+Defesas em camadas adicionais que não se enquadram em vetor único:
+
+- **Bcrypt cost factor 10** (~25ms) em `user_machines.secret_hash` — alinhado com Auth0/Stripe; cost 12 foi rejeitado por saturar o ingest hot-path. Cache em memória (60s TTL) evita re-bcrypt em cada push.
+- **Authorization header parsing** segue RFC 7235: scheme `Bearer` case-insensitive; empty Bearer e schemes errados → 401.
+- **DoS amplification protection**: rejeições antes da auth válida (rate-limit, Zod) NÃO escrevem em `onboarding_redemption_log` — bot scanner não consegue inflar storage. Apenas `logger.warn` estruturado.
+
+## Operational procedures
+
+Fluxos manuais que o time precisa rodar enquanto a UI dedicada pra cada um não chega.
+
+### Revogar uma máquina comprometida
+
+Quando o `secret` de uma máquina vaza (ex.: laptop roubado, leak em dotfiles públicos, dev offboarding):
+
+```sql
+UPDATE user_machines
+SET revoked_at = now()
+WHERE key_id = 'k_xxxxxxxxxxxxxxxx';
+```
+
+Após o UPDATE, qualquer push subsequente daquele `key_id` retorna 401 (`unknown or revoked key`). Re-onboarding é via novo invite + novo `pnpm reporter:setup` na máquina substituta. UI dedicada pra essa operação é uma spec follow-up (não chegou ainda).
+
+Pra confirmar quais máquinas estão ativas:
+
+```sql
+SELECT key_id, hostname, last_seen_at, created_at
+FROM user_machines
+WHERE user_id = '<uuid>' AND revoked_at IS NULL
+ORDER BY last_seen_at DESC;
+```
+
+### Rotacionar o pepper de email-hash
+
+`ONBOARDING_EMAIL_HASH_PEPPER` é o segredo que impede rainbow-table reversa do `email_hash` em `onboarding_redemption_log`. Pra rotacionar:
+
+1. Gera novo pepper (ex.: `openssl rand -hex 32`).
+2. Bumpa o env var nos deployments (Vercel / Docker compose / etc.) e reinicia.
+3. **Hashes existentes ficam incomparáveis** com hashes novos — aceito por design: o campo é usado pra contagem de emails únicos (uniqueness counting), não pra lookup. Não há query que cruze pré- e pós-rotação.
+
+Não há migration de dados. Não há "rehash em massa" (impossível — não temos o email plaintext).
+
+### Ler a trilha de auditoria
+
+`onboarding_audit_log` registra todo `invite-created` e `invite-revoked` com `actor_user_id` + `target_token_prefix` + `metadata` JSONB.
+
+```sql
+SELECT *
+FROM onboarding_audit_log
+WHERE org_id = '<uuid>'
+ORDER BY occurred_at DESC
+LIMIT 50;
+```
+
+Pra investigar uma redemption suspeita, cruza com `onboarding_redemption_log` pelo `token_prefix`:
+
+```sql
+SELECT al.action, al.actor_user_id, al.occurred_at,
+       rl.outcome, rl.email_domain, rl.received_at
+FROM onboarding_audit_log al
+LEFT JOIN onboarding_redemption_log rl
+  ON rl.token_prefix = al.target_token_prefix
+WHERE al.target_token_prefix = '<8-char prefix>'
+ORDER BY al.occurred_at, rl.received_at;
+```
+
+`request_ip` em `onboarding_redemption_log` é truncado (`/24` IPv4, `/48` IPv6) e nullado após 30 dias por cleanup separado (parte da spec 3 REQ-27).
+
 ## Rate limits
 
 `POST /api/ingest`: 100 requests/minute per machine_id. 429 with `Retry-After: 60`.

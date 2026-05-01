@@ -9,6 +9,16 @@ user-invocable: true
 
 End-to-end spec authoring with built-in self-review. **No iteration loops** — runs once, presents the result, waits for your approval. After approval, run `/ralph-loop .specs/<name>.md` to execute it.
 
+## North Star — Quality > Velocity > Cost
+
+**Trade-off ranking não-negociável**: qualidade primeiro, velocidade segundo, custo terceiro. Em todas as fases deste skill (Author, Self-review, Present), pergunte antes de decidir:
+
+> "Esta é a MELHOR opção possível, ou só a mais rápida/barata?"
+
+Se a resposta é "mais rápida/barata", escolha a melhor. Mesmo que dê retrabalho. Mesmo que a spec fique mais longa. Mesmo que custe mais tokens. Skip só se o usuário pedir explicitamente.
+
+Concretamente: ao apresentar Pontos de Atenção pra Pause 1, lidere com a opção de maior qualidade. Alternativas pragmáticas (de menor qualidade) só se o usuário pedir. Ver `.claude/rules/sdd.md` (seção "North Star") + `CLAUDE.md` Execution Directive #0.
+
 ## Example
 
 ```text
