@@ -1,0 +1,1 @@
+- [Integration test patterns — central-reporter-server](project_integration_patterns.md) — Testcontainers, TRUNCATE CASCADE over 9 tables, closeDb, E2E global-setup rationale

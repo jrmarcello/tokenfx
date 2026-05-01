@@ -331,3 +331,37 @@ describe('migrate — user_settings singleton', () => {
     ).not.toThrow();
   });
 });
+
+describe('migrate — reporter_pushed_sessions table (TASK-1)', () => {
+  it('creates reporter_pushed_sessions on a fresh DB with the expected shape', () => {
+    const db = openDatabase(':memory:');
+    migrate(db);
+    const cols = db
+      .prepare(`PRAGMA table_info(reporter_pushed_sessions)`)
+      .all() as Array<{ name: string; type: string; notnull: number; pk: number }>;
+    const byName = new Map(cols.map((c) => [c.name, c]));
+    expect(byName.get('session_id')).toMatchObject({ pk: 1, type: 'TEXT' });
+    expect(byName.get('payload_hash')).toMatchObject({ notnull: 1, type: 'TEXT' });
+    expect(byName.get('pushed_at')).toMatchObject({ notnull: 1, type: 'INTEGER' });
+    db.close();
+  });
+
+  it('migrate is idempotent — running twice keeps the table identical', () => {
+    const db = openDatabase(':memory:');
+    migrate(db);
+    db.prepare(
+      `INSERT INTO sessions (id, cwd, project, started_at, ended_at, source_file, ingested_at)
+       VALUES ('s-pushed', '/tmp', 'p', 1, 2, '/tmp/f.jsonl', 3)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO reporter_pushed_sessions (session_id, payload_hash, pushed_at)
+       VALUES ('s-pushed', 'hash-1', 100)`,
+    ).run();
+    migrate(db);
+    const row = db
+      .prepare(`SELECT payload_hash, pushed_at FROM reporter_pushed_sessions WHERE session_id = ?`)
+      .get('s-pushed') as { payload_hash: string; pushed_at: number };
+    expect(row).toEqual({ payload_hash: 'hash-1', pushed_at: 100 });
+    db.close();
+  });
+});

@@ -1,6 +1,6 @@
 ---
-name: Project state after session-timeline-heatmap (2026-04-18 review pass 3)
-description: Updated architectural facts and known issues after reviewing the session-timeline-heatmap spec implementation
+name: Project state after effectiveness-personal-v2 (2026-04-28 review pass 4)
+description: Updated architectural facts and known issues after reviewing the effectiveness-personal-v2 spec implementation
 type: project
 ---
 
@@ -33,7 +33,26 @@ MVP is complete. OTEL features added (5 metrics with graceful degradation). All 
 - **Middle-click / open-in-new-tab does not work**: Design decision AD-4 documents this as intentional. Cells use `useRouter().push()` not `<a href>`. Acceptable for internal tool.
 - **`seedSession` helper in `session.test.ts` creates a new `db.prepare(...)` per call** — the helper is test-local so this doesn't violate the production pattern, but it's a prepared-statement-per-call in tests (minor).
 
-## Persisting issues (unfixed as of 2026-04-18)
+## Added in effectiveness-personal-v2 (2026-04-28 review pass 4)
+
+- `lib/analytics/regression.ts` — pure least-squares helper. Clean TS, no anys.
+- `lib/analytics/effectiveness-v2.ts` — constants + pure helpers (palette, level mapping, median, formatInsightLine). Clean.
+- `lib/queries/effectiveness-v2.ts` — 6 query functions with full WeakMap PreparedSet. N+1 pattern accepted by spec design (per-session loop in aggregates/quartiles capped by bounded window).
+- `components/effectiveness-v2/` — 5 components. CostRatingScatter is correct `'use client'`; others are Server Components.
+- `components/overview/activity-heatmap.tsx` — gained `colorScheme` prop; EMERALD_PALETTE extracted to named export. 'use client' inherited from original.
+- `app/effectiveness/page.tsx` + `loading.tsx` — Server Component with `force-dynamic`+`nodejs` runtime, same pattern as home page.
+- `compaction_events` table added to schema.sql with correct PK + index.
+- Parser collects `compact_boundary` events before `CONSUMED_TYPES` filter. Writer inserts them in same transaction as session.
+
+### New known issues (effectiveness-v2 spec)
+
+- `revalidatePath('/effectiveness')` is STILL missing from `app/api/ratings/route.ts` (pre-existing issue, compounded: now a second page needs it).
+- `getPersonalEffectivenessAggregates` does N+1 DB lookups per session in window via `getPersonalEffectivenessSession` loop — spec design §1 accepts this for personal-scale DBs (5k sessions max), but it calls `sessionExists` stmt redundantly on each inner call since the IDs are already known valid.
+- `effectivenessLevelFor` mapping uses `[0,25)→1, [25,50)→2, [50,75)→3, [75,100]→4` (quartile-fixed breakpoints), which differs from the REQ-24 formula `Math.min(4, Math.ceil(4 * score / 100))`. These produce different results for score=25 (formula gives 1, impl gives 2), score=50 (formula gives 2, impl gives 3), score=75 (formula gives 3, impl gives 4). Spec Design §10 and REQ-24 describe different breakpoint semantics — Design §10 wins.
+- `loadCalibration` in effectiveness-v2.ts is a near-duplicate of `getCostCalibration` in calibration.ts, inlined to avoid re-prepare. Acceptable per REQ-16's explicit mandate but creates drift risk if calibration schema evolves.
+- `computeAvgMetrics` calls `getPersonalEffectivenessSession` per session which itself calls `sessionExists` — redundant check since the IDs come from `getSessionScores` and are guaranteed to exist.
+
+## Persisting issues (unfixed as of 2026-04-28)
 
 - **otel.ts prepared statements NOT memoized** — every call to `getOtelInsights`, `getWeeklyAcceptRate`, `getSessionOtelStats`, `getAcceptRatesBySession`, and `hasAnyOtelScrapes` calls `db.prepare(...)` inline. The other query modules all use a WeakMap cache; otel.ts is the outlier.
 - **reconcile.ts prepared statements NOT memoized** — `reconcileSession` calls `db.prepare(RENUMBER_ONE_SQL).run(...)` and `db.prepare(ROLLUP_ONE_SQL).run(...)` on every invocation (called after every `writeSession`). No WeakMap cache.

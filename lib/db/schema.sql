@@ -218,3 +218,13 @@ CREATE TABLE IF NOT EXISTS compaction_events (
   PRIMARY KEY (session_id, source_file, sequence_in_file)
 );
 CREATE INDEX IF NOT EXISTS idx_compaction_events_session ON compaction_events(session_id);
+
+-- Reporter local-DB tracking: which sessions have already been pushed to the
+-- central server, with the payload hash so re-runs can skip unchanged rows
+-- (idempotency contract — see central-reporter-server.md REQ-10 / TC-I-09).
+-- Per-session row, FK CASCADE so deleting a session also drops its push state.
+CREATE TABLE IF NOT EXISTS reporter_pushed_sessions (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  payload_hash TEXT NOT NULL,
+  pushed_at INTEGER NOT NULL
+);

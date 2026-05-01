@@ -391,3 +391,16 @@ chore(scope):    Manutenção
 ```
 
 Não edite `CHANGELOG.md` à mão — ele é regenerado por `git-cliff` a cada `pnpm release VERSION=X.Y.Z`. Para prever o output a qualquer momento: `pnpm changelog`.
+
+---
+
+## Central manager server
+
+A sibling Next.js app at `apps/server/` provides org-wide cost + adoption
+dashboards via a push-based reporter that ships **sanitized aggregates only**.
+See [`apps/server/README.md`](./apps/server/README.md) for the full privacy
+boundary, allowlist, and audit procedures.
+
+**Reporter is opt-in** — devs without `data/reporter-config.json` make zero
+outbound network calls. Run `pnpm reporter:setup` to provision (after
+`central-server-onboarding.md` ships).

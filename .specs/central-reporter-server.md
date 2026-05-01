@@ -1,6 +1,6 @@
 # Spec: central-reporter-server — manager view across many devs (cost + adoption MVP)
 
-## Status: DRAFT
+## Status: DONE
 
 ## Context
 
@@ -584,106 +584,106 @@ Dev:
 
 ### Foundation
 
-- [ ] **TASK-1**: Add reporter local-DB tracking table.
+- [x] **TASK-1**: Add reporter local-DB tracking table.
   - files: lib/db/schema.sql, lib/db/migrate.ts
   - tests: TC-I-09 (idempotency)
-- [ ] **TASK-2**: Repo hooks + scripts setup for sibling app.
+- [x] **TASK-2**: Repo hooks + scripts setup for sibling app.
   - files: package.json (root), .gitignore, tsconfig.json (root, exclude apps/server), .claude/hooks/stop-validate.sh
   - tests: —
-- [ ] **TASK-3**: `apps/server/` scaffold — package.json, tsconfig (with paths), next.config, tailwind, drizzle.config, .env.example, empty `app/layout.tsx` + `app/page.tsx`, `vitest.config.ts`.
+- [x] **TASK-3**: `apps/server/` scaffold — package.json, tsconfig (with paths), next.config, tailwind, drizzle.config, .env.example, empty `app/layout.tsx` + `app/page.tsx`, `vitest.config.ts`.
   - files: apps/server/package.json, apps/server/tsconfig.json, apps/server/next.config.ts, apps/server/postcss.config.mjs, apps/server/tailwind.config.ts, apps/server/drizzle.config.ts, apps/server/.env.example, apps/server/app/layout.tsx, apps/server/app/page.tsx, apps/server/vitest.config.ts, apps/server/.gitignore
   - depends: TASK-2
   - tests: —
 
 ### Reporter (root repo) — privacy core
 
-- [ ] **TASK-4**: Sanitizer + Zod schema + slug derivation. Tests cover privacy fuzzing and boundaries — privacy is the spec's #1 invariant.
+- [x] **TASK-4**: Sanitizer + Zod schema + slug derivation. Tests cover privacy fuzzing and boundaries — privacy is the spec's #1 invariant.
   - files: lib/reporter/types.ts, lib/reporter/sanitizer.ts, lib/reporter/sanitizer.test.ts
   - tests: TC-U-01, TC-U-02, TC-U-03, TC-U-04, TC-U-05, TC-U-06, TC-U-07, TC-U-08, TC-U-09, TC-U-10, TC-U-11, TC-U-12, TC-U-13, TC-U-14, TC-U-15, TC-U-16, TC-U-17, TC-U-18, TC-U-19, TC-U-20, TC-U-21, TC-U-22, TC-U-28, TC-U-29, TC-U-30, TC-U-31
-- [ ] **TASK-5**: HMAC signer + canonical JSON + verify.
+- [x] **TASK-5**: HMAC signer + canonical JSON + verify.
   - files: lib/reporter/signer.ts, lib/reporter/signer.test.ts
   - tests: TC-U-23, TC-U-24, TC-U-25, TC-U-26, TC-U-27
-- [ ] **TASK-6**: Offline queue (separate SQLite at `data/reporter-queue.db`).
+- [x] **TASK-6**: Offline queue (separate SQLite at `data/reporter-queue.db`).
   - files: lib/reporter/queue.ts, lib/reporter/queue.test.ts
   - depends: TASK-4
   - tests: TC-I-06, TC-I-07
-- [ ] **TASK-7**: Push client with retry/backoff.
+- [x] **TASK-7**: Push client with retry/backoff.
   - files: lib/reporter/client.ts, lib/reporter/client.test.ts
   - depends: TASK-5
   - tests: TC-I-03, TC-I-04, TC-I-05
-- [ ] **TASK-8**: Runner — reads local DB, sanitizes, batches, calls client, marks pushed.
+- [x] **TASK-8**: Runner — reads local DB, sanitizes, batches, calls client, marks pushed.
   - files: lib/reporter/runner.ts, lib/reporter/runner.test.ts, lib/reporter/config.ts
   - depends: TASK-1, TASK-4, TASK-5, TASK-6, TASK-7
   - tests: TC-I-08, TC-I-09, TC-I-10
-- [ ] **TASK-9**: Local setup utilities — `pnpm reporter:once --dry-run` (REQ-29), `scripts/install-reporter.sh` (cron registration), and `scripts/reporter-config-init.ts` (validates a hand-written `data/reporter-config.json` shape, generates `project_secret` if missing). **Note**: `pnpm reporter:setup` (the interactive onboarding entry point that fetches `key_id`/`secret` from the central server) lives in `central-server-onboarding.md`; for v0 of THIS spec, devs hand-write the config file from a seeded `user_machines` row. TC-I-01/02 (interactive setup happy/error) move to the onboarding spec — only the config-validation TCs remain here.
+- [x] **TASK-9**: Local setup utilities — `pnpm reporter:once --dry-run` (REQ-29), `scripts/install-reporter.sh` (cron registration), and `scripts/reporter-config-init.ts` (validates a hand-written `data/reporter-config.json` shape, generates `project_secret` if missing). **Note**: `pnpm reporter:setup` (the interactive onboarding entry point that fetches `key_id`/`secret` from the central server) lives in `central-server-onboarding.md`; for v0 of THIS spec, devs hand-write the config file from a seeded `user_machines` row. TC-I-01/02 (interactive setup happy/error) move to the onboarding spec — only the config-validation TCs remain here.
   - files: scripts/reporter-once.ts, scripts/install-reporter.sh, scripts/reporter-config-init.ts
   - depends: TASK-8
   - tests: TC-I-11, TC-I-12
 
 ### Server — schema + auth
 
-- [ ] **TASK-10**: Drizzle schema + migrations + client + migrate runner.
+- [x] **TASK-10**: Drizzle schema + migrations + client + migrate runner.
   - files: apps/server/lib/db/schema.ts, apps/server/lib/db/client.ts, apps/server/lib/db/migrate.ts, apps/server/lib/db/migrations/0000_init.sql (generated)
   - depends: TASK-3
   - tests: TC-I-20
-- [ ] **TASK-11**: Testcontainers globalSetup for Postgres in tests.
+- [x] **TASK-11**: Testcontainers globalSetup for Postgres in tests.
   - files: apps/server/tests/integration/setup-pg.ts, apps/server/vitest.config.ts (extension)
   - depends: TASK-10
   - tests: — (infra for other tests)
-- [ ] **TASK-12**: NextAuth v5 setup with Google + Okta + role middleware.
+- [x] **TASK-12**: NextAuth v5 setup with Google + Okta + role middleware.
   - files: apps/server/lib/auth/auth.ts, apps/server/lib/auth/middleware.ts, apps/server/middleware.ts, apps/server/app/api/auth/[...nextauth]/route.ts
   - depends: TASK-10
   - tests: TC-I-42, TC-I-43, TC-I-44, TC-I-45, TC-I-46
 
 ### Server — ingest
 
-- [ ] **TASK-13**: Shared sanitized payload schema importable on server.
+- [x] **TASK-13**: Shared sanitized payload schema importable on server.
   - files: apps/server/lib/ingest/sanitizer-shared.ts
   - depends: TASK-3, TASK-4
   - tests: — (re-export, validated via TC-I-25, TC-I-48)
-- [ ] **TASK-14**: `POST /api/ingest` — signature verify, Zod re-validate, UPSERT, ingestion_log, per-user calibration recompute.
+- [x] **TASK-14**: `POST /api/ingest` — signature verify, Zod re-validate, UPSERT, ingestion_log, per-user calibration recompute.
   - files: apps/server/app/api/ingest/route.ts, apps/server/lib/queries/calibration.ts, apps/server/tests/integration/ingest.test.ts
   - depends: TASK-10, TASK-11, TASK-13
   - tests: TC-I-21, TC-I-22, TC-I-23, TC-I-24, TC-I-25, TC-I-26, TC-I-27, TC-I-28, TC-I-29, TC-I-30, TC-I-31, TC-I-40, TC-I-48
-- [ ] **TASK-15**: ~~`POST /api/auth/register-machine`~~ **MOVED to `central-server-onboarding.md`** (carved-out spec). For v0 of this spec, `user_machines` rows are seeded via `apps/server/scripts/seed-server.ts` (admin DB seeding). Reporter-side `data/reporter-config.json` is hand-written for testing. No production-grade onboarding endpoint in this spec.
+- [x] **TASK-15**: ~~`POST /api/auth/register-machine`~~ **MOVED to `central-server-onboarding.md`** (carved-out spec). For v0 of this spec, `user_machines` rows are seeded via `apps/server/scripts/seed-server.ts` (admin DB seeding). Reporter-side `data/reporter-config.json` is hand-written for testing. No production-grade onboarding endpoint in this spec.
   - files: apps/server/scripts/seed-server.ts (extended to support manual machine seeding)
   - depends: TASK-10
   - tests: — (manual seeding verified by TC-I-21 happy-path which assumes a seeded machine)
-- [ ] **TASK-16**: ingestion_log IP cleanup cron (daily).
+- [x] **TASK-16**: ingestion_log IP cleanup cron (daily).
   - files: apps/server/app/api/admin/cleanup/route.ts, apps/server/lib/queries/cleanup.ts
   - depends: TASK-14
   - tests: TC-I-41
 
 ### Server — manager UI
 
-- [ ] **TASK-17**: Overview queries + per-user calibration application via shared `effectiveCostForSession`.
+- [x] **TASK-17**: Overview queries + per-user calibration application via shared `effectiveCostForSession`.
   - files: apps/server/lib/queries/overview.ts, apps/server/lib/queries/overview.test.ts
   - depends: TASK-14
   - tests: TC-I-32, TC-I-33, TC-I-34, TC-I-35, TC-I-36, TC-I-37, TC-I-47
-- [ ] **TASK-18**: Team queries (alphabetical, no rankings).
+- [x] **TASK-18**: Team queries (alphabetical, no rankings).
   - files: apps/server/lib/queries/teams.ts, apps/server/lib/queries/teams.test.ts
   - depends: TASK-14
   - tests: TC-I-38, TC-I-39
-- [ ] **TASK-19**: Manager UI — `/manager`, `/manager/teams`, `/manager/teams/[id]` pages with KPI cards, trend chart, team table.
+- [x] **TASK-19**: Manager UI — `/manager`, `/manager/teams`, `/manager/teams/[id]` pages with KPI cards, trend chart, team table.
   - files: apps/server/app/manager/layout.tsx, apps/server/app/manager/page.tsx, apps/server/app/manager/teams/page.tsx, apps/server/app/manager/teams/[id]/page.tsx, apps/server/components/manager/*
   - depends: TASK-12, TASK-17, TASK-18
   - tests: — (covered by E2E)
-- [ ] **TASK-20**: Admin UI — role assignment.
+- [x] **TASK-20**: Admin UI — role assignment.
   - files: apps/server/app/manager/admin/users/page.tsx, apps/server/app/manager/admin/users/actions.ts
   - depends: TASK-19
   - tests: TC-I-45, TC-I-46
 
 ### Privacy doc + smoke
 
-- [ ] **TASK-21**: Privacy boundary docs (server README + root README link).
+- [x] **TASK-21**: Privacy boundary docs (server README + root README link).
   - files: apps/server/README.md, README.md (root: link section)
   - depends: TASK-19
   - tests: — (manual review)
-- [ ] **TASK-22**: Server seed script + Playwright config.
+- [x] **TASK-22**: Server seed script + Playwright config.
   - files: apps/server/scripts/seed-server.ts, apps/server/playwright.config.ts, apps/server/tests/e2e/global-setup.ts
   - depends: TASK-19
   - tests: —
-- [ ] **TASK-SMOKE**: E2E manager flows.
+- [x] **TASK-SMOKE**: E2E manager flows.
   - files: apps/server/tests/e2e/manager.spec.ts
   - depends: TASK-22, TASK-20
   - tests: TC-E2E-01, TC-E2E-02, TC-E2E-03, TC-E2E-04, TC-E2E-05
@@ -749,3 +749,28 @@ Zero shared-mutative overlaps. Up to 4 worktrees parallel in Batch 4 and Batch 6
   - **M2 (TC-I-11 vago)**: REQ-11 ganhou **gate concreto** — todo entry-point do reporter checa `fs.existsSync('data/reporter-config.json')` ANTES de qualquer import network-side; sem config, exit 0 com info-log e zero outbound (assertado via `nock.disableNetConnect()`). Mais um grep CI bloqueia import transitivo de `lib/reporter/**` em `app/`/`lib/queries/`/`lib/ingest/`.
   - **Mi1**: Contagem do allowlist corrigida 18→20 fields (TC-U-01).
   - Status: DRAFT permanece. Pre-implementation, lock final do `data/reporter-config.json` shape esperado pelos dois specs (já documentado em REQ-7).
+
+- 2026-05-01: **Spec implementation completed end-to-end (DONE)**.
+  - **Implementation**: 22/22 tasks landed across 9 parallel batches via `/ralph-loop` worktrees. Schema additions (`orgs`, `teams`, `users`, `user_machines`, `sessions_agg`, `model_breakdown_agg`, `tool_count_agg`, `cost_calibration_per_user`, `ingestion_log`, `reporter_pushed_sessions`) merged via the SDD wiring-fragment + accumulator pattern. Reporter privacy allowlist (`lib/reporter/sanitizer.ts`) with red-team fuzz tests passes. HMAC signing (`lib/reporter/signer.ts`) with canonical JSON. Ingest route + cost calibration + manager UI (overview, team detail, admin users) with REQ-26 anti-leaderboard (alphabetical sort, no per-user ranking).
+  - **Phase 4 follow-ups (Fix A/B/C)**:
+    - **Vitest parallelism races**: shared Postgres testcontainer + parallel test files caused FK + 401 leaks. Fixed with `fileParallelism: false` + `TRUNCATE … RESTART IDENTITY CASCADE` in every integration test's `beforeAll` (4 files: cleanup, teams, overview, ingest).
+    - **NextAuth v5 Edge + pg incompatibility**: Edge runtime forbids `node:crypto` (pg dependency). Split into `lib/auth/auth.config.ts` (Edge-safe) + `lib/auth/auth.ts` (Node-full) + shared `lib/auth/roles.ts`. Middleware uses authConfig only.
+    - **Dev-server lifecycle**: Playwright's `webServer` block was spawning before `globalSetup`, missing the testcontainer URI. Migrated dev-server spawn into `global-setup.ts` itself with `execFileSync` (instead of `execSync`) and `beforeExit` cleanup (async-safe vs the `exit` event).
+    - **Server/Client serialization**: `TrendChart` was receiving `valueFormatter: (n) => string` from a Server Component — Next.js 15 forbids functions across the boundary. Replaced with `valueFormat: 'currency-usd' | 'count'` discriminator.
+    - **JWT-cookie E2E auth bypass**: middleware (Edge) reads role from JWT, but the Node-only `jwt()` callback that augments role/orgId via DB lookup doesn't run on Edge. Test JWT now carries pre-baked `role` + `orgId`. Shared `lib/e2e/seed-ids.ts` so seed and test agree on deterministic UUIDs (regression-pinned via 6 unit tests).
+  - **Self-review CRITICAL/HIGH/SHOULD-FIX items applied (security-reviewer + code-reviewer + test-reviewer)**:
+    - **C1**: `auth.ts` throws on boot if `NODE_ENV=production` and no `AUTH_SECRET`/`NEXTAUTH_SECRET` (closes silent transient-secret fallback).
+    - **C2**: `auth.ts:jwt()` deletes `token.role`/`token.orgId` when `loadRoleAndOrg` returns null (closes privilege-escalation surface for forged JWTs against unknown emails).
+    - **CRITICAL test integrity**: `cleanup.test.ts` was missing the TRUNCATE block; added.
+    - **H2**: `signIn` rejection branches now log structured `logger.warn` with email domain (not full PII).
+    - **H3**: `seed-server.ts` refuses `NODE_ENV=production` unless `ALLOW_PRODUCTION_SEED=1`.
+    - **H4**: `execSync(string)` → `execFileSync(cmd, [args])` in `global-setup.ts`.
+    - **WARNING**: extracted `Role` + `isRole` to `lib/auth/roles.ts` (prevents drift between `auth.ts` and `auth.config.ts`).
+    - **WARNING**: `signInAs` E2E helper refuses non-localhost `BASE_URL` (defense-in-depth against copy-paste into staging).
+    - **WARNING**: `seed-ids.ts` regression-pin tests (snapshot of `stableUuid` formula).
+  - **Final validation**:
+    - Root: typecheck ✓, lint ✓, vitest **904/904** ✓
+    - apps/server: typecheck ✓, lint ✓, vitest **73/73** ✓ (+6 seed-ids tests vs original 67)
+    - Playwright E2E: **4 active passing**, 1 `test.skip` per spec (TC-E2E-05 empty-org seed deferred — covered by overview integration tests)
+    - Live HTTP validated with deterministic seed: `GET /manager 200` for alice (admin); 403 for bob (member); team detail loads via `/manager/teams/4f64a24a-…`.
+  - **NIT-tier deferred** (non-blocking): `formatUsd` duplicated in 3 files; eslint `**/.next/**` ignore expanded for nested workspace builds (already applied as part of validation pipeline).

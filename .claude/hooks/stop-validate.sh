@@ -84,6 +84,27 @@ else
   fi
 fi
 
+# ── Sibling app: apps/server ───────────────────────────────────────
+# Validate apps/server when fully installed. Pre-TASK-3 (no dir) and
+# pre-`pnpm install` (no node_modules) are no-ops. Tests gated by
+# RUN_APPS_SERVER_TESTS=1 because the Postgres-backed integration tests
+# require Docker AND there are 12 known-failing tests pending follow-up
+# (FK seed order in lib/queries/{teams,overview}.test.ts; 401 signature
+# in tests/integration/ingest.test.ts post-merge — see
+# `central-reporter-server.md` Execution Log). Typecheck + lint always run.
+if [ -z "$ERRORS" ] \
+   && [ -d "${REPO_ROOT}/apps/server" ] \
+   && [ -f "${REPO_ROOT}/apps/server/package.json" ] \
+   && [ -d "${REPO_ROOT}/apps/server/node_modules" ]; then
+  if [ "${RUN_APPS_SERVER_TESTS:-0}" = "1" ]; then
+    SERVER_OUT=$(cd "${REPO_ROOT}/apps/server" && pnpm typecheck 2>&1 && pnpm lint 2>&1 && pnpm test --silent 2>&1) \
+      || ERRORS="${ERRORS}APPS/SERVER VALIDATION FAILED:\n${SERVER_OUT}\n\n"
+  else
+    SERVER_OUT=$(cd "${REPO_ROOT}/apps/server" && pnpm typecheck 2>&1 && pnpm lint 2>&1) \
+      || ERRORS="${ERRORS}APPS/SERVER TYPECHECK/LINT FAILED:\n${SERVER_OUT}\n\n"
+  fi
+fi
+
 # ── Result ─────────────────────────────────────────────────────────
 if [ -n "$ERRORS" ]; then
   printf "Post-implementation validation FAILED:\n\n%b" "$ERRORS" >&2

@@ -53,3 +53,12 @@ data/*.db-*
 /test-results/
 /playwright-report/
 /playwright/.cache/
+
+# Central reporter (sibling apps/server) runtime
+data/reporter-config.json
+data/reporter-queue.db*
+apps/server/.env*
+apps/server/node_modules/
+apps/server/.next/
+apps/server/test-results/
+apps/server/playwright-report/

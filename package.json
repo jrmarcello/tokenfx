@@ -22,7 +22,18 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f app",
-    "docker:restart": "docker compose up -d --build"
+    "docker:restart": "docker compose up -d --build",
+    "reporter:once": "tsx scripts/reporter-once.ts",
+    "reporter:run": "tsx scripts/reporter-once.ts",
+    "reporter:setup": "tsx scripts/reporter-config-init.ts",
+    "dev:server": "cd apps/server && pnpm dev",
+    "build:server": "cd apps/server && pnpm build",
+    "typecheck:server": "cd apps/server && pnpm typecheck",
+    "lint:server": "cd apps/server && pnpm lint",
+    "test:server": "cd apps/server && pnpm test",
+    "test:server:e2e": "cd apps/server && pnpm test:e2e",
+    "db:server:migrate": "cd apps/server && pnpm db:migrate",
+    "db:server:generate": "cd apps/server && pnpm db:generate"
   },
   "dependencies": {
     "@radix-ui/react-dropdown-menu": "^2.1.16",
