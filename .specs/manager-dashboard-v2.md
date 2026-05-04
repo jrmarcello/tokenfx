@@ -1,6 +1,6 @@
 # Spec: manager-dashboard-v2 — effectiveness depth + health signals (Q2-C / Q2-D)
 
-## Status: IN_PROGRESS
+## Status: DONE
 
 > **v2 rewrite (2026-05-01)**: Pause-1 user approval received; 13 bloqueadores arquiteturais + 25 must-fix + ~50 TCs aplicados; re-self-review caught 4 additional CRITICALs (formula table stale, TC-I-29 mock channel wording, TC-I-33 ORDER BY missing COALESCE, TASK-NOTIFICATION circular dep) + ~10 WARNINGs (TASK-MIGRATIONS missing files in list, MERGE-LAYOUT anchor undefined, TASK-CRON-CLEANUP needed notification prune, Q14 needs owning task), all applied. Spec advanced to IN_PROGRESS for execution.
 
