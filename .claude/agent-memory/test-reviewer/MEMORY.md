@@ -1,2 +1,3 @@
 - [Integration test patterns — central-reporter-server](project_integration_patterns.md) — Testcontainers, TRUNCATE CASCADE over 9 tables, closeDb, E2E global-setup rationale
 - [central-server-onboarding test-plan review](project_onboarding_review.md) — gaps checklist from 2026-04-30 review (Zod boundaries, 401 uniformity, team_id branch, TRUNCATE list expansion)
+- [manager-dashboard-v2 test-plan review](project_manager_v2_review.md) — CRITICAL/WARNING gaps from 2026-04-30 DRAFT review (cross-org isolation, IP truncation TC, cron auth, TRUNCATE list, DI stub seam, idempotency)

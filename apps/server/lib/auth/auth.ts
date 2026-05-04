@@ -105,9 +105,18 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         case 'allow':
           return true;
         case 'fill-sso':
+          // manager-dashboard-v2 (REQ-18): populate display_name from the
+          // OAuth profile name on the SSO-fill branch. Only set if the
+          // provider actually returned a name (NextAuth's `user.name` is
+          // nullable). Existing display_name is overwritten on each fill;
+          // this is intentional — `name` reflects the latest SSO claim.
           await db
             .update(users)
-            .set({ ssoProvider: decision.provider, ssoSubject: decision.subject })
+            .set({
+              ssoProvider: decision.provider,
+              ssoSubject: decision.subject,
+              ...(user.name ? { displayName: user.name } : {}),
+            })
             .where(eq(users.email, user.email));
           return true;
         case 'reject-mismatch':
@@ -130,12 +139,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             });
             return false;
           }
+          // manager-dashboard-v2 (REQ-18): populate display_name from OAuth
+          // profile.name on bootstrap insert. Nullable — providers that
+          // don't expose a name leave it NULL and `displayLabelFor()` falls
+          // back to email local-part.
           await db.insert(users).values({
             orgId: allOrgs[0].id,
             email: user.email,
             ssoProvider: account.provider,
             ssoSubject: account.providerAccountId,
             role: 'member',
+            displayName: user.name ?? null,
           });
           return true;
         }

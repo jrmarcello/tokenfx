@@ -1,0 +1,44 @@
+name: Lint tone (manager support cards)
+
+on:
+  pull_request:
+    paths:
+      - 'apps/server/components/manager/check-in-card.tsx'
+      - 'apps/server/components/manager/dropoff-card.tsx'
+  push:
+    branches: [main]
+
+jobs:
+  lint-tone:
+    name: Forbidden tone words
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Q14 (manager-dashboard-v2): support-card copy must avoid surveillance
+      # tone words. dropoff-card.tsx is strict-zero. check-in-card.tsx allows
+      # the single spec-locked literal "It's not a flag." (REQ-11 verbatim).
+      - name: Forbidden tone words
+        run: |
+          set -e
+          if grep -nE 'alert|warning|flag|violation|breach' \
+               apps/server/components/manager/dropoff-card.tsx; then
+            echo "::error::dropoff-card.tsx contains forbidden tone words (alert/warning/flag/violation/breach)"
+            exit 1
+          fi
+          # REQ-11 verbatim copy contains the phrase "It's not a flag." which
+          # wraps across two JSX lines (line 1 ends with "It&apos;s", line 2
+          # starts with "not a flag."). Allow-list lines that contain BOTH
+          # "not a" AND "flag" — substring contains, not regex — to avoid
+          # accidentally allowlisting unrelated `flag` occurrences hiding
+          # behind a "not a" prefix in some future copy change.
+          matches=$(grep -nE 'alert|warning|flag|violation|breach' \
+                    apps/server/components/manager/check-in-card.tsx \
+                    | grep -Ev '^[0-9]+:[[:space:]]*not a flag\.?[[:space:]]*$' \
+                    || true)
+          if [ -n "$matches" ]; then
+            echo "::error::check-in-card.tsx contains forbidden tone words (excluding the REQ-11 spec-locked phrase):"
+            echo "$matches"
+            exit 1
+          fi
+          echo "Tone lint OK"

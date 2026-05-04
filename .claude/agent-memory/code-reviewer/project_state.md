@@ -75,6 +75,21 @@ All 39 REQs implemented and confirmed. Key highlights:
 - **IP truncation duplicated**: truncateIp logic exists independently in ingest/route.ts and redeem-invite/route.ts with slightly different null-fallback constants ('unknown-ip' vs null). Comment in code acknowledges this but it's not extracted to lib/util/ip.ts.
 - **redeem.ts normalizeInviteRow**: handles dual number|string types from raw SQL because Drizzle's raw sql`` template can return strings for integer columns. The two-path normalize is correct but the type variance is a leakage of the raw-SQL approach through the typed boundary.
 
+## manager-dashboard-v2.md DRAFT review (2026-04-30)
+
+Key findings recorded below; full list delivered in conversation output.
+
+- `sessions_agg` has NO `correction_density` or `subagent_count` columns. Available: `cacheHitRatio`, `outputInputRatio`, `subagentUsageRatio`, `avgRating`. Composite score formula must map to these column names, NOT the ones the spec describes.
+- `users` table has NO `display_name` column — only `email`. REQ-18/alphabetical ordering must ORDER BY `users.email`, not `users.display_name`. All spec copy using `displayName` refers to a non-existent column.
+- `org_settings` table does NOT exist in schema.ts. Spec assumes `ALTER TABLE org_settings ADD COLUMN ... IF NOT EXISTS` will succeed, but the table is not present. It must be created from scratch.
+- `cron_runs` table does NOT exist anywhere in schema.ts. Spec says "assumes spec 1 ships a cron_runs table; if not, created here". Spec 1 does NOT ship it — TASK-MIGRATIONS must include it unconditionally.
+- No notification infrastructure exists at all in apps/server/. No `lib/notifications/` directory, no templates registry, no email/Slack/in-app channel. REQ-16 + TASK-NOTIFICATION have no concrete channel to target. Q9 is a hard blocker.
+- `apps/server/lib/auth/middleware.ts` does NOT exist. The auth gate is `apps/server/middleware.ts` (root). Files-to-Modify cites the wrong path.
+- IP truncation is already duplicated in 2 places (ingest/route.ts + redeem); v2 adding a third without extracting `lib/util/ip.ts` violates the prior LOW finding from onboarding review.
+- Existing pattern in apps/server is Drizzle ORM (not `pg` prepared statements with WeakMap). REQ-19 says "Postgres `pg` library `client.query(text, values)`" — but actual code uses Drizzle everywhere. REQ-24 says "WeakMap pattern" but Drizzle doesn't support WeakMap-cached prepared statements. These are conflicting claims.
+- `team_metrics_daily.metric_set` discriminator column is structurally confused: all metric columns exist on every row, so metric_set adds no information and complicates the PK without benefit. Should be dropped.
+- RLS column-level UPDATE privileges (`GRANT UPDATE (viewed_at, ip_address_trunc)`) require raw SQL — Drizzle migrations do not support `GRANT` statements natively. Needs raw SQL postlude in migration.
+
 ## Persisting issues (unfixed as of 2026-04-30)
 
 - **otel.ts prepared statements NOT memoized** — every call to `getOtelInsights` etc. calls `db.prepare(...)` inline. The other query modules all use a WeakMap cache; otel.ts is the outlier.

@@ -67,6 +67,13 @@ export const authConfig = {
     // request).
     authorized({ request, auth }) {
       const path = request.nextUrl.pathname;
+
+      // manager-dashboard-v2 (REQ-17): `/me/*` is for any authenticated user
+      // (member/manager/admin) — no role gate. They only see their own data.
+      if (path.startsWith('/me')) {
+        return !!auth?.user;
+      }
+
       if (!path.startsWith('/manager')) return true;
 
       if (!auth?.user) return false; // → redirect to signIn

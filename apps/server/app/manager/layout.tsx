@@ -73,6 +73,28 @@ export default async function ManagerLayout({
           >
             Convites
           </Link>
+          {/* Section: nav-links */}
+          <Link
+            href="/manager/effectiveness"
+            className="text-neutral-700 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-neutral-100"
+            data-testid="nav-effectiveness"
+          >
+            Effectiveness
+          </Link>
+          <Link
+            href="/manager/health"
+            className="text-neutral-700 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-neutral-100"
+            data-testid="nav-health"
+          >
+            Health
+          </Link>
+          <Link
+            href="/me/visibility"
+            className="text-neutral-700 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-neutral-100"
+            data-testid="nav-visibility"
+          >
+            My visibility
+          </Link>
           {role === 'admin' ? (
             <Link
               href="/manager/admin/users"

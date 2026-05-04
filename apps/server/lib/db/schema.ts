@@ -2,7 +2,9 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   bigserial,
+  boolean,
   check,
+  date,
   index,
   integer,
   jsonb,
@@ -12,6 +14,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uuid,
 } from 'drizzle-orm/pg-core';
 
@@ -44,6 +47,11 @@ export const users = pgTable(
     ssoProvider: text('sso_provider'),
     ssoSubject: text('sso_subject'),
     role: text('role').notNull().default('member'),
+    // manager-dashboard-v2 (REQ-18): NULL allowed for users created before
+    // this column existed. Populated on next SSO login by `auth.ts:signIn`
+    // from `profile.name`. UI/queries fall back to email local-part via
+    // `displayLabelFor()` and `COALESCE(display_name, split_part(email,'@',1))`.
+    displayName: text('display_name'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -262,5 +270,221 @@ export const onboardingAuditLog = pgTable(
   (t) => ({
     tokenPrefixLenCheck: check('token_prefix_len', sql`length(${t.targetTokenPrefix}) = 8`),
     orgOccurredIdx: index('idx_audit_log_org_occurred').on(t.orgId, t.occurredAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// manager-dashboard-v2 — effectiveness depth + health signals (Q2-C/Q2-D).
+// 7 new tables — see `.specs/manager-dashboard-v2.md` Design / DDL section.
+// Partial indexes (`idx_mda_dismiss_until`, `idx_mn_pending`) and the RLS
+// column GRANTs on manager_drilldown_audit live in the migration's raw-SQL
+// postlude — Drizzle's `index().on()` does not support `.where()` clauses,
+// and DCL (GRANT/REVOKE/CREATE ROLE) is not modeled by drizzle-kit.
+// ---------------------------------------------------------------------------
+
+// REQ-20: team_metrics_daily — flat per-(org, team, day) rollup. NO
+// metric_set discriminator (B6 lock — collapsed to one row, all metric
+// columns flat; the discriminator was architecturally wasteful).
+export const teamMetricsDaily = pgTable(
+  'team_metrics_daily',
+  {
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id, { onDelete: 'cascade' }),
+    teamId: uuid('team_id')
+      .notNull()
+      .references(() => teams.id, { onDelete: 'cascade' }),
+    day: date('day').notNull(),
+    cacheHitRatioAvg: numeric('cache_hit_ratio_avg', { precision: 5, scale: 4 }),
+    goodSessionPct: numeric('good_session_pct', { precision: 5, scale: 2 }),
+    subagentAdoptionPct: numeric('subagent_adoption_pct', { precision: 5, scale: 2 }),
+    compositeAvg: numeric('composite_avg', { precision: 5, scale: 2 }),
+    totalSessions: integer('total_sessions').notNull().default(0),
+    totalDevs: integer('total_devs').notNull().default(0),
+    toolMixJson: jsonb('tool_mix_json'),
+    computedAt: timestamp('computed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.orgId, t.teamId, t.day] }),
+    teamDayIdx: index('idx_tmd_team_day').on(t.teamId, t.day.desc()),
+  }),
+);
+
+// REQ-15: manager_drilldown_audit — append-only audit. UNIQUE on
+// (manager_user_id, target_user_id, viewed_on, reason) drives the
+// idempotent ON CONFLICT upsert. RLS column grants (postlude) make
+// the table append-only at the DB layer; writeAudit() enforces it
+// at the code layer too as defense in depth.
+export const managerDrilldownAudit = pgTable(
+  'manager_drilldown_audit',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id, { onDelete: 'cascade' }),
+    managerUserId: uuid('manager_user_id')
+      .notNull()
+      .references(() => users.id),
+    targetUserId: uuid('target_user_id')
+      .notNull()
+      .references(() => users.id),
+    reason: text('reason').notNull(),
+    reasonText: text('reason_text'),
+    sourceRoute: text('source_route').notNull(),
+    // /24 IPv4 or /48 IPv6 truncated CIDR string; NULLed by cleanup cron
+    // after 30d (matches spec 3 REQ-27 retention policy).
+    ipAddressTrunc: text('ip_address_trunc'),
+    viewedOn: date('viewed_on').notNull(),
+    viewedAt: timestamp('viewed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    reasonCheck: check(
+      'manager_drilldown_audit_reason_check',
+      sql`${t.reason} IN ('training-check','quota-investigation','cost-investigation','other')`,
+    ),
+    uniqDay: unique('manager_drilldown_audit_unique_day').on(
+      t.managerUserId,
+      t.targetUserId,
+      t.viewedOn,
+      t.reason,
+    ),
+    targetViewedIdx: index('idx_mda_target_viewed').on(t.targetUserId, t.viewedAt.desc()),
+    managerViewedIdx: index('idx_mda_manager_viewed').on(t.managerUserId, t.viewedAt.desc()),
+  }),
+);
+
+// REQ-22: manager_anomalies — nightly cron output. Idempotent on
+// (org, team, dev, kind, day). 'knowledge-sharing' kind is reserved
+// for forward-compat (currently computed live).
+export const managerAnomalies = pgTable(
+  'manager_anomalies',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id, { onDelete: 'cascade' }),
+    teamId: uuid('team_id')
+      .notNull()
+      .references(() => teams.id, { onDelete: 'cascade' }),
+    targetUserId: uuid('target_user_id')
+      .notNull()
+      .references(() => users.id),
+    kind: text('kind').notNull(),
+    detectedOn: date('detected_on').notNull(),
+    contextJson: jsonb('context_json'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    kindCheck: check(
+      'manager_anomalies_kind_check',
+      sql`${t.kind} IN ('spend-spike-30d','spend-spike-wow','dropoff-wow','knowledge-sharing')`,
+    ),
+    uniqRow: unique('manager_anomalies_unique_row').on(
+      t.orgId,
+      t.teamId,
+      t.targetUserId,
+      t.kind,
+      t.detectedOn,
+    ),
+  }),
+);
+
+// REQ-22 (dismiss): manager_dismissed_anomalies — per-manager 7-day
+// dismissals. The UNIQUE key intentionally includes manager_user_id —
+// dismissals are PER MANAGER, not org-wide. The partial index on
+// (manager_user_id, dismissed_until) WHERE dismissed_until > now() is
+// in the migration's raw-SQL postlude (Drizzle's index().on() does NOT
+// support .where() clauses).
+export const managerDismissedAnomalies = pgTable(
+  'manager_dismissed_anomalies',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id, { onDelete: 'cascade' }),
+    managerUserId: uuid('manager_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    targetUserId: uuid('target_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    dismissedUntil: timestamp('dismissed_until', { withTimezone: true }).notNull(),
+    dismissedAt: timestamp('dismissed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqRow: unique('manager_dismissed_anomalies_unique_row').on(
+      t.orgId,
+      t.managerUserId,
+      t.targetUserId,
+      t.kind,
+    ),
+  }),
+);
+
+// REQ-20: org_settings — org-wide configuration. NEW (does not exist
+// in spec 1 / spec 3). One row per org, FK CASCADE on org_id.
+export const orgSettings = pgTable('org_settings', {
+  orgId: uuid('org_id')
+    .primaryKey()
+    .references(() => orgs.id, { onDelete: 'cascade' }),
+  drilldownNotificationEnabled: boolean('drilldown_notification_enabled').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// REQ-23: cron_runs — every cron invocation regardless of outcome.
+// NEW (does not exist in spec 1 / spec 3).
+export const cronRuns = pgTable(
+  'cron_runs',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    jobName: text('job_name').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    status: text('status').notNull(),
+    rowsWritten: integer('rows_written'),
+    errorMessage: text('error_message'),
+  },
+  (t) => ({
+    statusCheck: check(
+      'cron_runs_status_check',
+      sql`${t.status} IN ('running','ok','failed')`,
+    ),
+    jobStartedIdx: index('idx_cron_runs_job_started').on(t.jobName, t.startedAt.desc()),
+  }),
+);
+
+// REQ-16: manager_notifications — DB-backed notification queue stub.
+// THIS spec writes 'pending' rows; a follow-up spec adds the actual
+// delivery worker. Tests verify rows present (NO mock channels —
+// Q9 lock). Partial index on `WHERE status = 'pending'` lives in the
+// migration's raw-SQL postlude.
+export const managerNotifications = pgTable(
+  'manager_notifications',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id, { onDelete: 'cascade' }),
+    targetUserId: uuid('target_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    template: text('template').notNull(),
+    payloadJson: jsonb('payload_json').notNull(),
+    enqueuedAt: timestamp('enqueued_at', { withTimezone: true }).notNull().defaultNow(),
+    status: text('status').notNull().default('pending'),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+    errorMessage: text('error_message'),
+  },
+  (t) => ({
+    statusCheck: check(
+      'manager_notifications_status_check',
+      sql`${t.status} IN ('pending','sent','failed')`,
+    ),
+    targetEnqueuedIdx: index('idx_mn_target_enqueued').on(
+      t.targetUserId,
+      t.enqueuedAt.desc(),
+    ),
   }),
 );

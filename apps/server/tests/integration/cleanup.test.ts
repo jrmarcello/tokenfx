@@ -29,6 +29,8 @@ skipDescribe('cleanupOldIps (Postgres integration)', () => {
     // sensitive: if a neighbour TRUNCATEs after our seed, `testUserId`
     // points at a deleted row and assertions become silently vacuous.
     await db.execute(sql`TRUNCATE TABLE
+      manager_dismissed_anomalies, manager_anomalies, manager_drilldown_audit,
+      manager_notifications, team_metrics_daily, cron_runs, org_settings,
       onboarding_redemption_log, onboarding_audit_log, onboarding_invites,
       ingestion_log, model_breakdown_agg, tool_count_agg, sessions_agg,
       cost_calibration_per_user, user_machines, users, teams, orgs

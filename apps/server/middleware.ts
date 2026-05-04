@@ -18,5 +18,8 @@ export const { auth: middleware } = NextAuth(authConfig);
 export default middleware;
 
 export const config = {
-  matcher: ['/manager/:path*'],
+  // manager-dashboard-v2 (REQ-17): `/me/visibility` is gated to authenticated
+  // users (any role) so devs can see what their manager sees about them and
+  // the chronological drilldown audit log.
+  matcher: ['/manager/:path*', '/me/:path*'],
 };

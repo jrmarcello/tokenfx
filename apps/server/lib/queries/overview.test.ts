@@ -83,6 +83,8 @@ const wipeAll = async (): Promise<void> => {
   // Postgres container is shared across the suite — without this, leftovers
   // from neighbours create FK / unique constraint violations here.
   await db.execute(sql`TRUNCATE TABLE
+    manager_dismissed_anomalies, manager_anomalies, manager_drilldown_audit,
+    manager_notifications, team_metrics_daily, cron_runs, org_settings,
     onboarding_redemption_log, onboarding_audit_log, onboarding_invites,
     ingestion_log, model_breakdown_agg, tool_count_agg, sessions_agg,
     cost_calibration_per_user, user_machines, users, teams, orgs
