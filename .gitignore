@@ -61,3 +61,6 @@ apps/server/node_modules/
 apps/server/.next/
 apps/server/test-results/
 apps/server/playwright-report/
+
+# Personal roadmap — local-only planning notes, not source of truth
+/roadmap.md
