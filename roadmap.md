@@ -6,7 +6,7 @@ Lista flat das fases planejadas. Cada fase corresponde a uma spec em `.specs/` q
 >
 > **Atualização**: este arquivo é atualizado quando uma spec muda de status (DRAFT → APPROVED → IN_PROGRESS → DONE). Commit com `docs(roadmap): …` ou junto do commit da própria spec.
 
-Last updated: **2026-05-01** (post `central-server-onboarding` ship)
+Last updated: **2026-05-04** (post `manager-dashboard-v2` ship)
 
 ---
 
@@ -14,9 +14,9 @@ Last updated: **2026-05-01** (post `central-server-onboarding` ship)
 
 | Status | Count | Specs |
 |---|---|---|
-| ✅ DONE | 25 | Ver "Shipped" + checkboxes por fase abaixo |
-| 📝 DRAFT (next up) | 1 | `manager-dashboard-v2` (Fase 4) |
-| 🔮 Backlog (sem spec) | 4 | Fase 5+ |
+| ✅ DONE | 26 | Ver "Shipped" + checkboxes por fase abaixo |
+| 📝 DRAFT (next up) | 0 | — |
+| 🔮 Backlog (sem spec) | 6 | Fase 5+ (ver lista abaixo) |
 | 📐 TEMPLATE | 1 | `.specs/TEMPLATE.md` (não é spec real) |
 
 ---
@@ -105,20 +105,30 @@ Fluxo de provisionamento do reporter: manager emite invite tokens, dev resgata v
 
 ---
 
-## Fase 4 — Manager dashboard v2 (effectiveness + health) — DRAFT
+## Fase 4 — Manager dashboard v2 (effectiveness + health) (DONE)
 
-Spec: [`.specs/manager-dashboard-v2.md`](.specs/manager-dashboard-v2.md) — DRAFT, aguardando aprovação
+Spec: [`.specs/manager-dashboard-v2.md`](.specs/manager-dashboard-v2.md) — `feat(manager-dashboard-v2)` (commit `95c0f43`, 2026-05-04)
 
 Profundidade Q2-C (effectiveness) + Q2-D (health signals) com **anti-surveillance design** load-bearing: aggregated by default, audit-with-pause-and-notify on individual drilldown.
 
-- [ ] Schema: `team_metrics_daily` (rollups, PK composta), `manager_drilldown_audit` (UNIQUE `(manager, target, viewed_on, reason)` — idempotência mata CSRF + duplicação), `manager_anomalies`, `manager_dismissed_anomalies`, `org_settings.drilldown_notification_enabled`
-- [ ] **Effectiveness** `/manager/effectiveness`: cache_hit_ratio, % good sessions (composite ≥60 OR rating ≥0; threshold via `MANAGER_GOOD_SESSION_THRESHOLD`), tool mix stacked, subagent adoption, comparison radar (5-axis, normalized to manager's teams) — TUDO computado direto de `sessions_agg` + `tool_count_agg` (sem intermediários)
-- [ ] **Composite score** divergente do local `scoring.ts` (cache+output 30/30 vs 10/10) — documentado inline
-- [ ] **Health** `/manager/health`: check-in cards (3σ OR +50% WoW), drop-off cards (>50% WoW drop + active prior week), knowledge-sharing opportunities (≥2× median + ≥4× lowest)
-- [ ] **Anti-surveillance**: copy verbatim ("Check-in opportunity" / "May need support" — sem alert/warning/flag/violation), no public dev rankings, alfabético por `display_name`, audit row antes de fetch (mesma tx), notification reuse spec 3 channel
-- [ ] `/me/visibility` para devs: KPIs próprios + chronological audit log (mesmo se org disable notification, history persists)
-- [ ] **Cron via HTTP endpoints protegidos** (`POST /api/internal/cron/{aggregate-team-metrics,detect-anomalies,cleanup-audit-ips}` com `x-internal-cron-secret`) — portátil, sem in-process scheduler
-- [ ] Depends on: Fase 2 (DONE) + Fase 3 (DONE) — v0 reporter v2 outcome data deferred (TASK-PR de Fase 0 ainda pendente)
+- [x] Schema: `team_metrics_daily` (rollups, PK composta), `manager_drilldown_audit` (UNIQUE `(manager, target, viewed_on, reason)` — idempotência mata CSRF + duplicação), `manager_anomalies`, `manager_dismissed_anomalies`, `org_settings.drilldown_notification_enabled`, `manager_notifications`, `cron_runs`, `users.display_name`
+- [x] **Effectiveness** `/manager/effectiveness` + `/manager/teams/[id]/effectiveness`: cache_hit_ratio, % good sessions (composite ≥60; threshold via `MANAGER_GOOD_SESSION_THRESHOLD`), tool mix stacked, subagent adoption, comparison radar (normalized to manager's teams; null/hidden quando 1-team — Q13 lock)
+- [x] **Composite score** divergente do local `scoring.ts` (cache+output 40/40 vs 10/10 — `correction_density` dropped na Pause-1 v2 rewrite); `getTeamCompositeTrend` lê `team_metrics_daily.composite_avg` populado pelo cron de 15min
+- [x] **Health** `/manager/health`: check-in cards (3σ OR +50% WoW strict), drop-off cards (>50% WoW drop strict + active prior week), knowledge-sharing opportunities (≥2× median AND ≥4× lowest, both gates)
+- [x] **Anti-surveillance**: 5 princípios load-bearing — typed `audit: AuditContext` em manager-drilldown queries, ordering alfabético via `COALESCE(display_name, split_part(email,'@',1)) ASC`, audit row antes de fetch (atomic tx), `/me/visibility` history immutable, CI tone-word lint (`.github/workflows/lint-tone.yml`) com allow-list pra REQ-11 spec-locked phrase "It's not a flag."
+- [x] `/me/visibility` (paginated 25/page): KPIs próprios + chronological audit log; persiste mesmo se `drilldown_notification_enabled = false` (REQ-17)
+- [x] **Cron via HTTP endpoints protegidos** (`POST /api/internal/cron/{aggregate-team-metrics,detect-anomalies,cleanup-audit-ips}` com `assertInternalCronAuth` + boot-time guard pra empty `INTERNAL_CRON_SECRET` em production)
+- [x] **Drilldown route** Server Component com Zod validation, idempotente same-day via UNIQUE+ON CONFLICT, `RETURNING (xmax = 0) AS inserted` discrimina insert real vs no-op, notification gated em `inserted=true` AND org setting; IP truncado /24 IPv4 / /48 IPv6 nulificado após 30d
+- [x] **RLS column GRANTs** em `manager_drilldown_audit` (SELECT/INSERT all + UPDATE só em `viewed_at`/`ip_address_trunc` + REVOKE DELETE); TC-I-55/56 fazem live SET ROLE app_runtime + assert Postgres error 42501
+- [x] 24 REQs + ~127 TCs + 19 tasks em 6 batches; **504/505 vitest pass**, typecheck + lint clean. E2E specs (4 specs Playwright) compilam clean — execução **DEFERRED**: `seed-manager-v2.ts` precisa ser wired em `apps/server/tests/e2e/global-setup.ts` (1 linha) antes do primeiro `pnpm test:e2e`.
+
+**Carve-outs documentados (escalados em Pause 2)**:
+
+- M4: `viewed_on` UTC midnight boundary pode emitir notification duplicada — matches spec REQ-15 (locked).
+- Code MAJOR: `aggregate-team-metrics.ts` emptiness probe global, não per-org — JSDoc inline; net effect = idêntico até 2º org existir.
+- Code MAJOR: dismiss SQL duplicado entre Server Action e Route Handler — refactor pra `lib/queries/manager-dismissed.ts` é Fase 5+.
+- Code MAJOR: `_drilldown/render.tsx` `org_settings` read dentro do `after()` — hoist trivial, não bloqueante.
+- E2E TASK-SMOKE: 4 specs Playwright compilam mas execução está deferred — wirar `seed-manager-v2.ts` no `global-setup.ts` + rodar `pnpm test:e2e`.
 
 ---
 
@@ -129,7 +139,12 @@ Items planejados mas que ainda precisam de design + spec dedicada.
 - [ ] **outcome-integration-git v2** (TASK-PR): merged PR cross-reference via `gh api commits/{sha}/pulls`, gated `TOKENFX_GH_PR_LOOKUP=1`
 - [ ] **manager-dashboard-v3-outcomes**: tokens-per-merged-LOC per team, depende de outcome data fluindo no reporter payload (Fase 2 + Fase 0 já em produção)
 - [ ] **central-server-onboarding-v2-sso**: SSO-based auto-machine provisioning (a dev's Google login → user_machines row criada automaticamente). Carved out dos anti-goals da Fase 3; precisa de threat model.
-- [ ] **manager-dashboard-v2 follow-ups (LOW severity registrados em PAUSE 2 da Fase 3)**:
+- [ ] **manager-dashboard-v2 follow-ups (registrados em PAUSE 2 da Fase 4)**:
+  - [ ] **TASK-SMOKE wiring + execution**: wirar `seed-manager-v2.ts` em `apps/server/tests/e2e/global-setup.ts` (1 `execFileSync` ou `await seedManagerV2(db)` após o `seed-server.ts --e2e`), rodar `pnpm test:e2e`, capturar TC-E2E-01..13 results, abrir PR com fixes mínimos se algum spec falhar. **Ainda DEFERRED**.
+  - [ ] Dismiss SQL DRY: extrair UPSERT de `app/manager/health/dismiss-action.ts` + `app/api/manager/dismiss-anomaly/route.ts` pra um helper compartilhado em `lib/queries/manager-dismissed.ts`.
+  - [ ] `aggregate-team-metrics.ts` per-org emptiness probe (atualmente global) — diverge da spec REQ-21 quando 2º org onboards após o 1º estar ativo.
+  - [ ] `_drilldown/render.tsx`: hoist `org_settings.drilldown_notification_enabled` read pra antes do response flush (atualmente dentro do `after()`).
+- [ ] **central-server-onboarding follow-ups (LOW severity de PAUSE 2 da Fase 3)**:
   - [ ] `/api/health` rate limiter usa janela fixa — refatorar pra reusar sliding `lib/queries/rate-limit.ts`
   - [ ] IP truncation duplicada em 3 routes — extrair pra `lib/util/ip.ts`
   - [ ] `flash-cookie.ts:getSecret()` sem boot guard independente do `AUTH_SECRET`
@@ -145,7 +160,8 @@ Em ordem reversa (mais recentes no topo). Specs do dashboard local pré-Fase-0 n
 
 | Fase | Spec | Commit | Resumo |
 |---|---|---|---|
-| 3 | [central-server-onboarding](./.specs/central-server-onboarding.md) | (este) | Invite-token onboarding (`/manager/invites`, `pnpm reporter:setup`, `/onboard`) + auth refactor HMAC → Bearer + bcrypt. 39 REQs, 14 tasks, ~75 unit/integration + 10 fuzz + 7 E2E. |
+| 4 | [manager-dashboard-v2](./.specs/manager-dashboard-v2.md) | `95c0f43` | Manager effectiveness + health surfaces (anti-surveillance design). 6 new tables + RLS column GRANTs, 3 cron endpoints, drilldown audit (atomic tx), `/me/visibility`, CI tone-word lint. 24 REQs + ~127 TCs + 19 tasks em 6 batches; 504/505 vitest pass. E2E execução deferred. |
+| 3 | [central-server-onboarding](./.specs/central-server-onboarding.md) | `0594e39` | Invite-token onboarding (`/manager/invites`, `pnpm reporter:setup`, `/onboard`) + auth refactor HMAC → Bearer + bcrypt. 39 REQs, 14 tasks, ~75 unit/integration + 10 fuzz + 7 E2E. |
 | 2 | [central-reporter-server](./.specs/central-reporter-server.md) | `1ded383` | Servidor central Postgres + manager dashboard MVP (cost + adoption). Reporter privacy-allowlisted + HMAC. NextAuth v5 split Edge/Node. 22 tasks, 73 TCs + 4 E2E. |
 | 1 | [effectiveness-personal-v2](./.specs/effectiveness-personal-v2.md) | `a64a771` | Personal AI use effectiveness dashboard. |
 | 0 | [outcome-integration-git](./.specs/outcome-integration-git.md) | `faa2c33` | Per-session git outcomes (LOC, commits, reverts, status). |
