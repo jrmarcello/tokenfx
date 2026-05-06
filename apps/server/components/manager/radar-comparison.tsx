@@ -106,6 +106,12 @@ export const RadarComparison = ({
       className="h-80 w-full rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900"
       style={{ minHeight: '20rem' }}
       data-testid={testId}
+      // Deterministic source-of-truth count for E2E (TC-E2E-02): exposes
+      // the team count from server-rendered props, independent of Recharts'
+      // ResponsiveContainer/ResizeObserver render timing in headless
+      // Chromium. A zero-height container can transiently suppress the
+      // legend + polygon paths, but this attribute is always present.
+      data-team-count={comparison.length}
     >
       <ResponsiveContainer>
         <RadarChart data={data} outerRadius="75%">

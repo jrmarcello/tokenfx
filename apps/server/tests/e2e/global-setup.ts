@@ -94,6 +94,18 @@ const setup = async (): Promise<void> => {
     stdio: 'inherit',
     cwd,
   });
+  // Manager-dashboard-v2 fixture: 3-team Alpha + 1-team Gamma + 30d of
+  // team_metrics_daily rollups. Required for TC-E2E-02 (3-polygon radar)
+  // and TC-E2E-13 (1-team radar absent). Idempotent — re-runs safely
+  // via `onConflictDoNothing`/`onConflictDoUpdate` inside seedManagerV2.
+  // Run as a child process (mirrors seed-server.ts above) so a failure
+  // surfaces as a non-zero exit + thrown ChildProcessError, propagating
+  // cleanly to globalSetup → Playwright (run aborts; container is torn
+  // down by the SIGTERM/beforeExit handlers below).
+  execFileSync('tsx', ['scripts/seed-manager-v2.ts'], {
+    stdio: 'inherit',
+    cwd,
+  });
 
   // Spawn the dev server with the container URI + auth-bypass env vars. The
   // secret here MUST match `manager.spec.ts:E2E_SECRET` — the test mints

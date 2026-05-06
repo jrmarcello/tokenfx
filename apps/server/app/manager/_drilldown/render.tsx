@@ -38,8 +38,12 @@ import { headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
 import { after } from 'next/server';
 import { eq } from 'drizzle-orm';
+import type { Session } from 'next-auth';
 import { log as logger } from '@root/logger';
-import { auth } from '@/lib/auth/auth';
+// `auth` is lazy-loaded inside `loadDrilldownData` (default `authFn` path)
+// so vitest doesn't pull next-auth into integration tests that inject
+// `opts.authFn`. Mirrors the `lazyDefaultAuth` pattern in
+// `app/api/manager/dismiss-anomaly/route.ts`.
 import { writeAudit, type AuditContext } from '@/lib/audit/drilldown-audit';
 import { getDb } from '@/lib/db/client';
 import { orgSettings, users } from '@/lib/db/schema';
@@ -111,7 +115,16 @@ const truncateIp = (raw: string): string | null => {
  * is present / parseable (TC-I-41 — null is a valid value, no crash).
  */
 const extractTruncatedIp = async (): Promise<string | null> => {
-  const h = await headers();
+  // `headers()` throws "outside a request scope" in vitest integration
+  // tests (no request) — treat as a missing-IP scenario, matching
+  // TC-I-41's null-valid contract. Production (Next.js request) always
+  // has a scope.
+  let h: Awaited<ReturnType<typeof headers>>;
+  try {
+    h = await headers();
+  } catch {
+    return null;
+  }
   const forwarded = h.get('x-forwarded-for');
   if (forwarded) {
     const first = forwarded.split(',')[0]?.trim();
@@ -149,6 +162,21 @@ export type DrilldownData = {
   tools: DevToolUsage;
 };
 
+/**
+ * DI seam for the auth boundary. Tests inject a hand-written stub
+ * returning a fake `Session`; production uses the lazy `auth()` import.
+ * Mirrors the pattern in `app/api/manager/dismiss-anomaly/route.ts`.
+ */
+export type AuthFn = () => Promise<Session | null>;
+
+/**
+ * DI seam for `next/server`'s `after`. Tests inject either an executing
+ * stub `(cb) => { void cb(); }` (run callback synchronously) or a
+ * capturing stub `(_cb) => {}` (verify "registered N times" without
+ * side-effects). Production uses the imported `after`.
+ */
+export type AfterFn = typeof after;
+
 export type RenderDrilldownOptions = {
   /**
    * The route file's source path used to attribute each audit row to the
@@ -162,6 +190,17 @@ export type RenderDrilldownOptions = {
    * `manager_notifications`.
    */
   notifyChannel?: NotificationChannel;
+  /**
+   * DI seam for the auth boundary. Default = lazy `auth()` import.
+   * Tests inject a stub session function.
+   */
+  authFn?: AuthFn;
+  /**
+   * DI seam for `next/server`'s `after()`. Default = imported `after`.
+   * Tests inject either an executing or capturing variant — see
+   * `tests/integration/drilldown-notification.test.ts`.
+   */
+  afterFn?: AfterFn;
 };
 
 /**
@@ -182,7 +221,15 @@ export const loadDrilldownData = async (
 ): Promise<DrilldownData> => {
   // 1. Auth + role gate (defense in depth — the layout already enforces
   //    this, but Server Components must not assume the layout ran).
-  const session = await auth();
+  //    `opts.authFn` is the DI seam (tests inject a stub); production
+  //    lazy-loads `auth()` from `@/lib/auth/auth` to keep next-auth out
+  //    of vitest's module graph for tests that bypass the seam.
+  const session = opts.authFn
+    ? await opts.authFn()
+    : await (async (): Promise<Session | null> => {
+        const mod = await import('@/lib/auth/auth');
+        return mod.auth();
+      })();
   if (!session?.user?.id || !session.user.orgId) {
     redirect('/api/auth/signin');
   }
@@ -314,55 +361,69 @@ export const loadDrilldownData = async (
     return { audit, spend, sessions, tools };
   });
 
-  // 6. Notification enqueue (REQ-16). Only on real INSERT AND when the
-  //    org has the toggle enabled. Wrapped in `after()` so the response
-  //    is not blocked on notification deliverability.
+  // 6. Notification enqueue (REQ-13..16, manager-dashboard-v2-followups).
+  //    The `org_settings.drilldown_notification_enabled` read is hoisted
+  //    BEFORE `afterFn(...)` so the gate is evaluated synchronously; if
+  //    the toggle is OFF (or this read throws), `afterFn` is NEVER
+  //    registered. Only on `result.audit.inserted === true` AND
+  //    `notifyEnabled === true` do we schedule the post-response
+  //    `channel.enqueue` via the DI-seam `afterFn` (default = `after`
+  //    from `next/server`).
   if (result.audit.inserted) {
-    const channel = opts.notifyChannel ?? dbBackedNotificationChannel;
-    const managerDisplay = displayLabelFor({
-      display_name: manager.displayName,
-      email: manager.email,
-    });
-    const enqueueParams: EnqueueNotificationParams = {
-      orgId,
-      targetUserId: dev.id,
-      template: 'MANAGER_DRILLDOWN_VIEW',
-      payload: {
-        managerName: managerDisplay,
-        viewedOn,
-        reason,
-        ...(reasonTextForAudit ? { reasonText: reasonTextForAudit } : {}),
-      },
-    };
+    // Hoisted read: REQ-13 (sync gate) + REQ-15b (missing row → default
+    // ON, matches Q9 lock of parent spec). Errors propagate to the
+    // caller (TC-I-20) — `after()` is never registered.
+    const settingsRows = await db
+      .select({ enabled: orgSettings.drilldownNotificationEnabled })
+      .from(orgSettings)
+      .where(eq(orgSettings.orgId, orgId))
+      .limit(1);
+    const notifyEnabled = settingsRows[0]?.enabled !== false;
 
-    after(async () => {
-      try {
-        const settingsRows = await db
-          .select({ enabled: orgSettings.drilldownNotificationEnabled })
-          .from(orgSettings)
-          .where(eq(orgSettings.orgId, orgId))
-          .limit(1);
-        // Default ON: missing row OR `true` → enqueue. `false` → skip.
-        if (settingsRows[0]?.enabled === false) return;
-        // Use the top-level db handle here — `after()` runs after the
-        // response is flushed, so the request transaction is gone.
-        // Failures are best-effort (REQ-16 + TC-I-53): log warn, never
-        // re-throw, so a deliverability hiccup never bubbles into the
-        // already-returned manager response.
-        await channel.enqueue(db, enqueueParams);
-      } catch (err) {
-        // Privacy: log structured metadata only. Never include the
-        // dev's email or PII payload — orgId + targetUserId are
-        // sufficient to correlate with the audit row.
-        logger.warn('manager_drilldown.notification.enqueue_failed', {
-          orgId,
-          targetUserId: dev.id,
-          template: 'MANAGER_DRILLDOWN_VIEW',
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    });
+    if (notifyEnabled) {
+      const channel = opts.notifyChannel ?? dbBackedNotificationChannel;
+      const managerDisplay = displayLabelFor({
+        display_name: manager.displayName,
+        email: manager.email,
+      });
+      const enqueueParams: EnqueueNotificationParams = {
+        orgId,
+        targetUserId: dev.id,
+        template: 'MANAGER_DRILLDOWN_VIEW',
+        payload: {
+          managerName: managerDisplay,
+          viewedOn,
+          reason,
+          ...(reasonTextForAudit ? { reasonText: reasonTextForAudit } : {}),
+        },
+      };
+
+      const afterFn: AfterFn = opts.afterFn ?? after;
+      afterFn(async () => {
+        try {
+          // `after()` runs after the response is flushed, so the request
+          // transaction is gone — use the top-level db handle.
+          // Failures are best-effort (REQ-16 + TC-I-53): log warn, never
+          // re-throw, so a deliverability hiccup never bubbles into the
+          // already-returned manager response.
+          await channel.enqueue(db, enqueueParams);
+        } catch (err) {
+          // Privacy: log structured metadata only. Never include the
+          // dev's email or PII payload — orgId + targetUserId are
+          // sufficient to correlate with the audit row.
+          logger.warn('manager_drilldown.notification.enqueue_failed', {
+            orgId,
+            targetUserId: dev.id,
+            template: 'MANAGER_DRILLDOWN_VIEW',
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      });
+    }
+    // notifyEnabled === false → afterFn NOT registered (REQ-15).
   }
+  // result.audit.inserted === false (ON CONFLICT no-op, same-day refresh)
+  // → afterFn NOT registered (REQ-16, idempotency preserved).
 
   return {
     manager: {

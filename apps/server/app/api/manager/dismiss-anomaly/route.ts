@@ -22,13 +22,10 @@
  * graph. Same pattern as `app/manager/invites/actions.ts`.
  */
 import { NextResponse, type NextRequest } from 'next/server';
-import { eq, sql } from 'drizzle-orm';
 import type { Session } from 'next-auth';
 import { getDb } from '@/lib/db/client';
-import { managerDismissedAnomalies, users } from '@/lib/db/schema';
+import { performDismissAnomaly } from '@/lib/queries/manager-dismissed';
 import { dismissAnomalySchema } from '@/lib/zod/manager-v2-schemas';
-
-const DISMISS_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 const FORBIDDEN_BODY = Object.freeze({
   error: { message: 'forbidden', code: 'forbidden' },
@@ -75,44 +72,22 @@ export const dismissAnomalyImpl = async (
   }
   const { target_user_id: targetUserId, kind } = parsed.data;
 
-  // 3. Cross-org guard (TC-I-78): the target dev MUST belong to the
-  // manager's org. Same 403 status as the role gate to avoid an
-  // information leak about user-existence in other orgs.
-  const db = getDb();
-  const [target] = await db
-    .select({ orgId: users.orgId })
-    .from(users)
-    .where(eq(users.id, targetUserId))
-    .limit(1);
-  if (!target || target.orgId !== orgId) {
+  // 3. Delegate cross-org guard + UPSERT to the shared helper
+  //    (`performDismissAnomaly`). The helper owns DISMISS_DURATION_MS,
+  //    the user-lookup, and the ON CONFLICT idempotency — single source
+  //    of truth (REQ-4 of manager-dashboard-v2-followups). DB errors
+  //    throw (helper contract); we let them propagate to the runtime's
+  //    500 path. `cross-org` maps to 403 (same status as the role gate,
+  //    anti-probing — TC-I-78 contract preserved).
+  const result = await performDismissAnomaly(getDb(), {
+    orgId,
+    managerUserId,
+    targetUserId,
+    kind,
+  });
+  if (!result.ok) {
     return NextResponse.json(FORBIDDEN_BODY, { status: 403 });
   }
-
-  // 4. UPSERT: idempotent on (org_id, manager_user_id, target_user_id, kind).
-  // ON CONFLICT extends `dismissed_until` to a fresh now+7d AND refreshes
-  // `dismissed_at` so the audit trail reflects the latest action.
-  const dismissedUntil = new Date(Date.now() + DISMISS_DURATION_MS);
-  await db
-    .insert(managerDismissedAnomalies)
-    .values({
-      orgId,
-      managerUserId,
-      targetUserId,
-      kind,
-      dismissedUntil,
-    })
-    .onConflictDoUpdate({
-      target: [
-        managerDismissedAnomalies.orgId,
-        managerDismissedAnomalies.managerUserId,
-        managerDismissedAnomalies.targetUserId,
-        managerDismissedAnomalies.kind,
-      ],
-      set: {
-        dismissedUntil,
-        dismissedAt: sql`now()`,
-      },
-    });
 
   return NextResponse.json({ ok: true });
 };

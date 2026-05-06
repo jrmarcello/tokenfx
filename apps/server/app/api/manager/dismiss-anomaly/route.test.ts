@@ -17,6 +17,18 @@
  *                            extra field (.strict) → 400.
  *   - TC-I-78 (cross-org):   manager in org A POSTs target in org B →
  *                            403, no row written.
+ *
+ * Manager-dashboard-v2-followups note (TC-I-08, TC-I-08b — REQ-8):
+ *   The `performDismissAnomaly` helper extraction (TASK-1/3 of that
+ *   spec) preserves this route's observable contract. TC-I-08 (happy
+ *   delegation → 200 with row written) is subsumed by TC-I-77, and
+ *   TC-I-08b (cross-org → 403 with FORBIDDEN_BODY) is subsumed by
+ *   TC-I-78. No new TCs are added because the route's surface is
+ *   tested end-to-end against real Postgres — any regression in the
+ *   helper delegation (wrong arg order, missing await, swallowed
+ *   error) would be caught by the existing 5 TCs. Adding mock-style
+ *   delegation tests would violate the project rule "hand-written
+ *   stubs only, no mocking framework" and weaken the contract.
  */
 import {
   afterAll,

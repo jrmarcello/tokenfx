@@ -634,6 +634,672 @@ skipDescribe('aggregateTeamMetrics — TC-I-70 (concurrency)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// TC-I-09: per-org probe — populated org keeps rolling 2d window;
+//          empty org gets 90d backfill; both in same invocation
+// ---------------------------------------------------------------------------
+
+skipDescribe('aggregateTeamMetrics — TC-I-09 (per-org probe: mixed orgs)', () => {
+  let orgAId = '';
+  let orgBId = '';
+  let teamAId = '';
+  let teamBId = '';
+  let userAId = '';
+  let userBId = '';
+
+  beforeAll(async () => {
+    await wipeAll();
+    const db = getDb();
+    const orgRows = await db
+      .insert(orgs)
+      .values([{ name: 'Org-PerOrg-A' }, { name: 'Org-PerOrg-B' }])
+      .returning({ id: orgs.id, name: orgs.name });
+    orgAId = orgRows.find((r) => r.name === 'Org-PerOrg-A')!.id;
+    orgBId = orgRows.find((r) => r.name === 'Org-PerOrg-B')!.id;
+
+    const teamRows = await db
+      .insert(teams)
+      .values([
+        { orgId: orgAId, name: 'TeamA' },
+        { orgId: orgBId, name: 'TeamB' },
+      ])
+      .returning({ id: teams.id, name: teams.name });
+    teamAId = teamRows.find((r) => r.name === 'TeamA')!.id;
+    teamBId = teamRows.find((r) => r.name === 'TeamB')!.id;
+
+    const userRows = await db
+      .insert(users)
+      .values([
+        {
+          orgId: orgAId,
+          teamId: teamAId,
+          email: 'perorg-a@example.com',
+          ssoProvider: 'google',
+          ssoSubject: 'sub-perorg-a',
+          role: 'member',
+        },
+        {
+          orgId: orgBId,
+          teamId: teamBId,
+          email: 'perorg-b@example.com',
+          ssoProvider: 'google',
+          ssoSubject: 'sub-perorg-b',
+          role: 'member',
+        },
+      ])
+      .returning({ id: users.id, email: users.email });
+    userAId = userRows.find((r) => r.email === 'perorg-a@example.com')!.id;
+    userBId = userRows.find((r) => r.email === 'perorg-b@example.com')!.id;
+
+    const today = new Date();
+    today.setUTCHours(12, 0, 0, 0);
+
+    // Org A: 5 pre-existing rows in team_metrics_daily for days 30..26 ago
+    // (well outside the 2-day rolling window). Direct INSERT to bypass
+    // aggregator and lock `computed_at` to a known past timestamp.
+    const oldComputedAt = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+    for (let i = 0; i < 5; i += 1) {
+      const day = new Date(today);
+      day.setUTCDate(day.getUTCDate() - (30 - i));
+      await db.insert(teamMetricsDaily).values({
+        orgId: orgAId,
+        teamId: teamAId,
+        day: isoDay(day),
+        cacheHitRatioAvg: '0.5',
+        goodSessionPct: '50.0',
+        subagentAdoptionPct: '0.0',
+        compositeAvg: '50.0',
+        totalSessions: 1,
+        totalDevs: 1,
+        toolMixJson: { Edit: 1 },
+        computedAt: oldComputedAt,
+      });
+    }
+
+    // Org A: 1 session today (within 2d rolling window).
+    await insertSession({
+      userId: userAId,
+      sessionId: 'pa-today',
+      startedAt: today,
+      totalCostUsd: 1,
+      cacheHitRatio: 0.7,
+      outputInputRatio: 2,
+      subagentUsageRatio: null,
+      avgRating: null,
+    });
+    // Org B: 1 session 5 days ago (only seen if 90d backfill kicks in).
+    await insertSession({
+      userId: userBId,
+      sessionId: 'pb-5d',
+      startedAt: dayBefore(today, 5),
+      totalCostUsd: 1,
+      cacheHitRatio: 0.4,
+      outputInputRatio: 2,
+      subagentUsageRatio: null,
+      avgRating: null,
+    });
+  });
+
+  afterAll(async () => {
+    await wipeAll();
+  });
+
+  it('TC-I-09: org-A old rows untouched (rolling 2d window); org-B (empty) gets 90d backfill', async () => {
+    const db = getDb();
+
+    // Snapshot org-A's old computed_at values BEFORE the run.
+    const beforeA = await db
+      .select({
+        day: teamMetricsDaily.day,
+        computedAt: teamMetricsDaily.computedAt,
+      })
+      .from(teamMetricsDaily)
+      .where(sql`${teamMetricsDaily.orgId} = ${orgAId}`);
+    expect(beforeA.length).toBe(5);
+    const oldComputedAtMs = beforeA.map((r) => r.computedAt.getTime());
+
+    const result = await aggregateTeamMetrics(db);
+    expect(result.status).toBe('ok');
+
+    // Org A: the 5 historical rows must be UNCHANGED (computed_at frozen)
+    // because the rolling 2d window does not include them.
+    const afterA = await db
+      .select({
+        day: teamMetricsDaily.day,
+        computedAt: teamMetricsDaily.computedAt,
+      })
+      .from(teamMetricsDaily)
+      .where(sql`${teamMetricsDaily.orgId} = ${orgAId}`);
+    const todayKey = isoDay(
+      (() => {
+        const d = new Date();
+        d.setUTCHours(0, 0, 0, 0);
+        return d;
+      })(),
+    );
+    // Old rows (day < today) keep their computed_at.
+    for (const row of afterA) {
+      if (row.day < todayKey) {
+        expect(oldComputedAtMs).toContain(row.computedAt.getTime());
+      }
+    }
+    // Today's session triggered a new row for Org A.
+    const todayRowA = afterA.find((r) => r.day === todayKey);
+    expect(todayRowA).toBeDefined();
+
+    // Org B: empty before, so 90d backfill applied. The 5-day-ago session
+    // becomes a row.
+    const afterB = await db
+      .select({
+        day: teamMetricsDaily.day,
+      })
+      .from(teamMetricsDaily)
+      .where(sql`${teamMetricsDaily.orgId} = ${orgBId}`);
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const fiveDaysAgoKey = isoDay(dayBefore(today, 5));
+    expect(afterB.find((r) => r.day === fiveDaysAgoKey)).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TC-I-10: fresh DB — every org gets 90d backfill
+// ---------------------------------------------------------------------------
+
+skipDescribe('aggregateTeamMetrics — TC-I-10 (fresh DB, all orgs backfill)', () => {
+  let orgAId = '';
+  let orgBId = '';
+  let userAId = '';
+  let userBId = '';
+
+  beforeAll(async () => {
+    await wipeAll();
+    const db = getDb();
+    const orgRows = await db
+      .insert(orgs)
+      .values([{ name: 'Org-Fresh-A' }, { name: 'Org-Fresh-B' }])
+      .returning({ id: orgs.id, name: orgs.name });
+    orgAId = orgRows.find((r) => r.name === 'Org-Fresh-A')!.id;
+    orgBId = orgRows.find((r) => r.name === 'Org-Fresh-B')!.id;
+
+    const teamRows = await db
+      .insert(teams)
+      .values([
+        { orgId: orgAId, name: 'TF-A' },
+        { orgId: orgBId, name: 'TF-B' },
+      ])
+      .returning({ id: teams.id, name: teams.name });
+    const teamAId = teamRows.find((r) => r.name === 'TF-A')!.id;
+    const teamBId = teamRows.find((r) => r.name === 'TF-B')!.id;
+
+    const userRows = await db
+      .insert(users)
+      .values([
+        {
+          orgId: orgAId,
+          teamId: teamAId,
+          email: 'fresh-a@example.com',
+          ssoProvider: 'google',
+          ssoSubject: 'sub-fresh-a',
+          role: 'member',
+        },
+        {
+          orgId: orgBId,
+          teamId: teamBId,
+          email: 'fresh-b@example.com',
+          ssoProvider: 'google',
+          ssoSubject: 'sub-fresh-b',
+          role: 'member',
+        },
+      ])
+      .returning({ id: users.id, email: users.email });
+    userAId = userRows.find((r) => r.email === 'fresh-a@example.com')!.id;
+    userBId = userRows.find((r) => r.email === 'fresh-b@example.com')!.id;
+
+    const today = new Date();
+    today.setUTCHours(12, 0, 0, 0);
+    // Each org gets 1 session 30 days back — only reachable via 90d backfill.
+    await insertSession({
+      userId: userAId,
+      sessionId: 'fa-30d',
+      startedAt: dayBefore(today, 30),
+      totalCostUsd: 1,
+      cacheHitRatio: 0.5,
+      outputInputRatio: 2,
+      subagentUsageRatio: null,
+      avgRating: null,
+    });
+    await insertSession({
+      userId: userBId,
+      sessionId: 'fb-30d',
+      startedAt: dayBefore(today, 30),
+      totalCostUsd: 1,
+      cacheHitRatio: 0.5,
+      outputInputRatio: 2,
+      subagentUsageRatio: null,
+      avgRating: null,
+    });
+  });
+
+  afterAll(async () => {
+    await wipeAll();
+  });
+
+  it('TC-I-10: with team_metrics_daily empty across all orgs, both orgs get 90d backfill', async () => {
+    const db = getDb();
+    const result = await aggregateTeamMetrics(db);
+    expect(result.status).toBe('ok');
+
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const thirtyDaysAgoKey = isoDay(dayBefore(today, 30));
+
+    const rowsA = await db
+      .select({ day: teamMetricsDaily.day })
+      .from(teamMetricsDaily)
+      .where(sql`${teamMetricsDaily.orgId} = ${orgAId}`);
+    expect(rowsA.find((r) => r.day === thirtyDaysAgoKey)).toBeDefined();
+
+    const rowsB = await db
+      .select({ day: teamMetricsDaily.day })
+      .from(teamMetricsDaily)
+      .where(sql`${teamMetricsDaily.orgId} = ${orgBId}`);
+    expect(rowsB.find((r) => r.day === thirtyDaysAgoKey)).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TC-I-11: explicit `since` overrides per-org probe uniformly
+// ---------------------------------------------------------------------------
+
+skipDescribe('aggregateTeamMetrics — TC-I-11 (explicit since override)', () => {
+  let orgAId = '';
+  let orgBId = '';
+  let teamAId = '';
+  let teamBId = '';
+  let userAId = '';
+  let userBId = '';
+
+  beforeAll(async () => {
+    await wipeAll();
+    const db = getDb();
+    const orgRows = await db
+      .insert(orgs)
+      .values([{ name: 'Org-Override-A' }, { name: 'Org-Override-B' }])
+      .returning({ id: orgs.id, name: orgs.name });
+    orgAId = orgRows.find((r) => r.name === 'Org-Override-A')!.id;
+    orgBId = orgRows.find((r) => r.name === 'Org-Override-B')!.id;
+
+    const teamRows = await db
+      .insert(teams)
+      .values([
+        { orgId: orgAId, name: 'TO-A' },
+        { orgId: orgBId, name: 'TO-B' },
+      ])
+      .returning({ id: teams.id, name: teams.name });
+    teamAId = teamRows.find((r) => r.name === 'TO-A')!.id;
+    teamBId = teamRows.find((r) => r.name === 'TO-B')!.id;
+
+    const userRows = await db
+      .insert(users)
+      .values([
+        {
+          orgId: orgAId,
+          teamId: teamAId,
+          email: 'over-a@example.com',
+          ssoProvider: 'google',
+          ssoSubject: 'sub-over-a',
+          role: 'member',
+        },
+        {
+          orgId: orgBId,
+          teamId: teamBId,
+          email: 'over-b@example.com',
+          ssoProvider: 'google',
+          ssoSubject: 'sub-over-b',
+          role: 'member',
+        },
+      ])
+      .returning({ id: users.id, email: users.email });
+    userAId = userRows.find((r) => r.email === 'over-a@example.com')!.id;
+    userBId = userRows.find((r) => r.email === 'over-b@example.com')!.id;
+
+    const today = new Date();
+    today.setUTCHours(12, 0, 0, 0);
+
+    // Org A is "populated" — pre-existing TMD row (so default would be 2d).
+    await db.insert(teamMetricsDaily).values({
+      orgId: orgAId,
+      teamId: teamAId,
+      day: isoDay(dayBefore(today, 30)),
+      cacheHitRatioAvg: '0.5',
+      goodSessionPct: '50.0',
+      subagentAdoptionPct: '0.0',
+      compositeAvg: '50.0',
+      totalSessions: 1,
+      totalDevs: 1,
+      toolMixJson: { Edit: 1 },
+    });
+
+    // Org A: session 5 days ago (would be skipped under default 2d window
+    // for Org A; covered by override 7d window).
+    await insertSession({
+      userId: userAId,
+      sessionId: 'oa-5d',
+      startedAt: dayBefore(today, 5),
+      totalCostUsd: 1,
+      cacheHitRatio: 0.5,
+      outputInputRatio: 2,
+      subagentUsageRatio: null,
+      avgRating: null,
+    });
+
+    // Org B (empty): session 30 days ago (would be picked up by 90d default
+    // backfill, but should NOT under 7d override).
+    await insertSession({
+      userId: userBId,
+      sessionId: 'ob-30d',
+      startedAt: dayBefore(today, 30),
+      totalCostUsd: 1,
+      cacheHitRatio: 0.5,
+      outputInputRatio: 2,
+      subagentUsageRatio: null,
+      avgRating: null,
+    });
+    // Org B: session 3 days ago (within 7d override).
+    await insertSession({
+      userId: userBId,
+      sessionId: 'ob-3d',
+      startedAt: dayBefore(today, 3),
+      totalCostUsd: 1,
+      cacheHitRatio: 0.5,
+      outputInputRatio: 2,
+      subagentUsageRatio: null,
+      avgRating: null,
+    });
+  });
+
+  afterAll(async () => {
+    await wipeAll();
+  });
+
+  it('TC-I-11: explicit since=now-7d applies uniformly; org-B does NOT get 90d backfill', async () => {
+    const db = getDb();
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const since = dayBefore(today, 7);
+
+    const result = await aggregateTeamMetrics(db, { since });
+    expect(result.status).toBe('ok');
+
+    // Org A: session at 5d ago should now be aggregated (override expanded
+    // its window from 2d to 7d).
+    const fiveDaysAgoKey = isoDay(dayBefore(today, 5));
+    const rowsA = await db
+      .select({ day: teamMetricsDaily.day })
+      .from(teamMetricsDaily)
+      .where(sql`${teamMetricsDaily.orgId} = ${orgAId}`);
+    expect(rowsA.find((r) => r.day === fiveDaysAgoKey)).toBeDefined();
+
+    // Org B: 3d-ago session aggregated; 30d-ago session NOT (override
+    // narrowed the window from 90d to 7d).
+    const threeDaysAgoKey = isoDay(dayBefore(today, 3));
+    const thirtyDaysAgoKey = isoDay(dayBefore(today, 30));
+    const rowsB = await db
+      .select({ day: teamMetricsDaily.day })
+      .from(teamMetricsDaily)
+      .where(sql`${teamMetricsDaily.orgId} = ${orgBId}`);
+    expect(rowsB.find((r) => r.day === threeDaysAgoKey)).toBeDefined();
+    expect(rowsB.find((r) => r.day === thirtyDaysAgoKey)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TC-I-12: org with 0 users in `users` is excluded from the universe
+// ---------------------------------------------------------------------------
+
+skipDescribe('aggregateTeamMetrics — TC-I-12 (org with no users)', () => {
+  let orgXId = '';
+  let orgYId = '';
+  let userYId = '';
+
+  beforeAll(async () => {
+    await wipeAll();
+    const db = getDb();
+    const orgRows = await db
+      .insert(orgs)
+      .values([{ name: 'Org-NoUsers-X' }, { name: 'Org-Pop-Y' }])
+      .returning({ id: orgs.id, name: orgs.name });
+    orgXId = orgRows.find((r) => r.name === 'Org-NoUsers-X')!.id;
+    orgYId = orgRows.find((r) => r.name === 'Org-Pop-Y')!.id;
+
+    // Org X: NO team, NO user — should be skipped entirely.
+    const [teamY] = await db
+      .insert(teams)
+      .values({ orgId: orgYId, name: 'TY' })
+      .returning({ id: teams.id });
+    const [uY] = await db
+      .insert(users)
+      .values({
+        orgId: orgYId,
+        teamId: teamY.id,
+        email: 'no-users-y@example.com',
+        ssoProvider: 'google',
+        ssoSubject: 'sub-no-users-y',
+        role: 'member',
+      })
+      .returning({ id: users.id });
+    userYId = uY.id;
+
+    const today = new Date();
+    today.setUTCHours(12, 0, 0, 0);
+    await insertSession({
+      userId: userYId,
+      sessionId: 'y-today',
+      startedAt: today,
+      totalCostUsd: 1,
+      cacheHitRatio: 0.5,
+      outputInputRatio: 2,
+      subagentUsageRatio: null,
+      avgRating: null,
+    });
+  });
+
+  afterAll(async () => {
+    await wipeAll();
+  });
+
+  it('TC-I-12: org X (0 users) does not appear in result; aggregator does not error', async () => {
+    const db = getDb();
+    const result = await aggregateTeamMetrics(db);
+    expect(result.status).toBe('ok');
+
+    const rowsX = await db
+      .select({ id: teamMetricsDaily.orgId })
+      .from(teamMetricsDaily)
+      .where(sql`${teamMetricsDaily.orgId} = ${orgXId}`);
+    expect(rowsX.length).toBe(0);
+
+    const rowsY = await db
+      .select({ id: teamMetricsDaily.orgId })
+      .from(teamMetricsDaily)
+      .where(sql`${teamMetricsDaily.orgId} = ${orgYId}`);
+    expect(rowsY.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TC-I-18: probe DB error → cron_runs marked failed; team_metrics_daily intact
+// ---------------------------------------------------------------------------
+
+skipDescribe('aggregateTeamMetrics — TC-I-18 (probe DB failure)', () => {
+  beforeEach(async () => {
+    if (SKIP) return;
+    await wipeAll();
+  });
+
+  it('TC-I-18: when the per-org probe execute throws, run is marked failed and team_metrics_daily is unchanged', async () => {
+    const db = getDb();
+    // Seed a populated baseline so we can prove team_metrics_daily was
+    // not mutated by the failed run.
+    const [org] = await db
+      .insert(orgs)
+      .values({ name: 'Org-Probe-Fail' })
+      .returning({ id: orgs.id });
+    const [team] = await db
+      .insert(teams)
+      .values({ orgId: org.id, name: 'TPF' })
+      .returning({ id: teams.id });
+    await db.insert(teamMetricsDaily).values({
+      orgId: org.id,
+      teamId: team.id,
+      day: '2024-01-01',
+      cacheHitRatioAvg: '0.5',
+      goodSessionPct: '50.0',
+      subagentAdoptionPct: '0.0',
+      compositeAvg: '50.0',
+      totalSessions: 1,
+      totalDevs: 1,
+      toolMixJson: { Edit: 1 },
+    });
+
+    const beforeRows = await db.select({ day: teamMetricsDaily.day }).from(teamMetricsDaily);
+    const beforeCount = beforeRows.length;
+
+    // Stub: forward everything to real db EXCEPT the first `execute` call —
+    // which is the probe SELECT in resolveWindowStartsByOrg — throws.
+    let execCount = 0;
+    const stub: StubDb = {
+      insert: (table) => db.insert(table as never) as never,
+      update: (table) => db.update(table as never) as never,
+      execute: async (q) => {
+        execCount += 1;
+        if (execCount === 1) {
+          throw new Error('simulated probe failure');
+        }
+        return db.execute(q as never);
+      },
+    };
+
+    const result = await aggregateTeamMetrics(stub as never);
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('simulated probe failure');
+
+    const runs = await db
+      .select({
+        status: cronRuns.status,
+        errorMessage: cronRuns.errorMessage,
+        finishedAt: cronRuns.finishedAt,
+      })
+      .from(cronRuns)
+      .where(sql`${cronRuns.jobName} = 'aggregate-team-metrics'`);
+    expect(runs.length).toBe(1);
+    expect(runs[0].status).toBe('failed');
+    expect(runs[0].errorMessage).toContain('simulated probe failure');
+    expect(runs[0].finishedAt).not.toBeNull();
+
+    const afterRows = await db.select({ day: teamMetricsDaily.day }).from(teamMetricsDaily);
+    expect(afterRows.length).toBe(beforeCount);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TC-I-19: org with users but 0 sessions → 0 rows written, no error
+// ---------------------------------------------------------------------------
+
+skipDescribe('aggregateTeamMetrics — TC-I-19 (org with users but no sessions)', () => {
+  let orgYId = '';
+  let orgZId = '';
+  let userZId = '';
+
+  beforeAll(async () => {
+    await wipeAll();
+    const db = getDb();
+    const orgRows = await db
+      .insert(orgs)
+      .values([{ name: 'Org-NoSess-Y' }, { name: 'Org-Sess-Z' }])
+      .returning({ id: orgs.id, name: orgs.name });
+    orgYId = orgRows.find((r) => r.name === 'Org-NoSess-Y')!.id;
+    orgZId = orgRows.find((r) => r.name === 'Org-Sess-Z')!.id;
+
+    const teamRows = await db
+      .insert(teams)
+      .values([
+        { orgId: orgYId, name: 'TNS-Y' },
+        { orgId: orgZId, name: 'TNS-Z' },
+      ])
+      .returning({ id: teams.id, name: teams.name });
+    const teamYId = teamRows.find((r) => r.name === 'TNS-Y')!.id;
+    const teamZId = teamRows.find((r) => r.name === 'TNS-Z')!.id;
+
+    // Org Y: user exists, NO session.
+    await db.insert(users).values({
+      orgId: orgYId,
+      teamId: teamYId,
+      email: 'nosess-y@example.com',
+      ssoProvider: 'google',
+      ssoSubject: 'sub-nosess-y',
+      role: 'member',
+    });
+
+    // Org Z: user + 1 session today.
+    const [uZ] = await db
+      .insert(users)
+      .values({
+        orgId: orgZId,
+        teamId: teamZId,
+        email: 'sess-z@example.com',
+        ssoProvider: 'google',
+        ssoSubject: 'sub-sess-z',
+        role: 'member',
+      })
+      .returning({ id: users.id });
+    userZId = uZ.id;
+
+    const today = new Date();
+    today.setUTCHours(12, 0, 0, 0);
+    await insertSession({
+      userId: userZId,
+      sessionId: 'z-today',
+      startedAt: today,
+      totalCostUsd: 1,
+      cacheHitRatio: 0.5,
+      outputInputRatio: 2,
+      subagentUsageRatio: null,
+      avgRating: null,
+    });
+  });
+
+  afterAll(async () => {
+    await wipeAll();
+  });
+
+  it('TC-I-19: 0 rows written for Y; Z processed normally; cron status=ok', async () => {
+    const db = getDb();
+    const result = await aggregateTeamMetrics(db);
+    expect(result.status).toBe('ok');
+
+    const rowsY = await db
+      .select({ id: teamMetricsDaily.orgId })
+      .from(teamMetricsDaily)
+      .where(sql`${teamMetricsDaily.orgId} = ${orgYId}`);
+    expect(rowsY.length).toBe(0);
+
+    const rowsZ = await db
+      .select({ id: teamMetricsDaily.orgId })
+      .from(teamMetricsDaily)
+      .where(sql`${teamMetricsDaily.orgId} = ${orgZId}`);
+    expect(rowsZ.length).toBeGreaterThan(0);
+
+    const runs = await db
+      .select({ status: cronRuns.status })
+      .from(cronRuns)
+      .where(sql`${cronRuns.jobName} = 'aggregate-team-metrics'`);
+    expect(runs.length).toBeGreaterThanOrEqual(1);
+    expect(runs[runs.length - 1].status).toBe('ok');
+  });
+});
+
 // ---------- Lifecycle: shut down the DB connection -------------------------
 
 skipDescribe('aggregate-team-metrics (Postgres lifecycle)', () => {

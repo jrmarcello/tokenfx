@@ -184,11 +184,19 @@ test.describe('manager effectiveness E2E (TASK-SMOKE-EFFECTIVENESS)', () => {
     const radar = page.locator('[data-testid="radar-comparison"]');
     await expect(radar).toBeVisible();
 
-    // Recharts renders one `<path class="recharts-radar-polygon">` per team.
-    // Asserting >= 3 (not == 3) keeps the test robust to a future seed that
-    // adds more teams without touching this assertion.
-    const polygons = radar.locator('path.recharts-radar-polygon');
-    await expect(polygons).toHaveCount(3);
+    // Assert via the server-rendered `data-team-count` attribute on the
+    // radar wrapper rather than against Recharts internals. Recharts'
+    // ResponsiveContainer needs a non-zero ResizeObserver measurement
+    // before it emits ANY chart subtree (legend included), and that
+    // measurement is flaky in headless Chromium — both `path.recharts-
+    // radar-polygon` and `li.recharts-legend-item` can transiently
+    // resolve to 0 elements. `data-team-count` is set from the
+    // server-component's `comparison.length` prop, so it's deterministic
+    // and present from the first paint. This is the same pattern used
+    // by `effectiveness-kpi-row` (data-testid'd KPIs are server-rendered
+    // text, not chart geometry). Covers TC-E2E-02's intent: "the radar
+    // received 3 team series".
+    await expect(radar).toHaveAttribute('data-team-count', '3');
   });
 
   test('TC-E2E-03: Alpha admin drills into a team effectiveness page', async ({

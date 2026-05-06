@@ -297,13 +297,20 @@ test.describe('/me/visibility E2E (TASK-SMOKE-VISIBILITY)', () => {
     const rowCount = await rows.count();
     expect(rowCount).toBeGreaterThanOrEqual(1);
 
-    // The seeded row carries Alice's display label as the manager. Alice
-    // has no `display_name` set in the E2E seed, so the COALESCE fallback
-    // yields the email local-part ('alice'). REQ-18's display-label rule
-    // covers this case — the audit query joins via the same COALESCE
-    // expression.
-    const aliceRow = rows.filter({ hasText: 'alice' }).first();
+    // The seeded fixture row is pinned to viewedAt = 2026-05-01T12:00:00Z,
+    // which renders as the unique substring `2026-05-01 12:00 UTC` (per
+    // `audit-log-table.tsx:formatViewedAt`). Filtering by THAT timestamp
+    // picks the seeded row deterministically, even when sibling tests
+    // (TC-E2E-08 = `reason=cost-investigation` no reasonText, TC-E2E-10
+    // = `reason=training-check`) also wrote audit rows for (alice → bob)
+    // on the current UTC day — those sort first under viewedAt DESC and
+    // would shadow the fixture if we picked `.first()` by reason label
+    // alone. REQ-18's display-label rule (Alice has no `display_name`
+    // in the E2E seed → COALESCE yields email local-part 'alice') and
+    // the manager-name column are still asserted via toContainText below.
+    const aliceRow = rows.filter({ hasText: '2026-05-01 12:00 UTC' }).first();
     await expect(aliceRow).toBeVisible();
+    await expect(aliceRow).toContainText('alice');
 
     // Reason is rendered via the `REASON_HUMAN` map in audit-log-table.tsx
     // — 'cost-investigation' → 'Cost investigation'.

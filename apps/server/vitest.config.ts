@@ -15,11 +15,35 @@ export default defineConfig({
     // the same tables in their `beforeAll`). Serializing keeps them coherent.
     fileParallelism: false,
     sequence: { concurrent: false },
+    // next-auth's internal `import 'next/server'` (no `.js`) breaks under
+    // vitest's default external resolution because Node's ESM resolver
+    // expects the explicit extension. Inlining next-auth + next forces
+    // vitest to transform them through Vite's bundler, which respects the
+    // `exports` map in their package.json. Without this, any test file
+    // that imports a Server Component touching `auth` or `after` fails
+    // with "Cannot find module .../next/server".
+    server: {
+      deps: {
+        // Match `next` AND every `next/*` subpath (next/server, next/headers, etc.).
+        inline: [/^next-auth/, /^next($|\/)/],
+      },
+    },
   },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, '.'),
       '@root': path.resolve(__dirname, '../../lib'),
+    },
+  },
+  // tsconfig.json uses `jsx: preserve` for the Next.js compiler. Vitest
+  // imports `.tsx` files (e.g. `_drilldown/render.tsx` exports
+  // `loadDrilldownData` consumed by integration tests) — override the JSX
+  // transform via Vite 8's `oxc` config so JSX is compiled to plain JS
+  // instead of left preserved. Production / Next.js build is unaffected
+  // (Next reads tsconfig.json directly, not vitest config).
+  oxc: {
+    jsx: {
+      runtime: 'automatic',
     },
   },
 });

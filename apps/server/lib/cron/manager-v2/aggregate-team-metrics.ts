@@ -25,7 +25,7 @@
  * concatenation / template-string literals with user data.
  */
 import { sql } from 'drizzle-orm';
-import { cronRuns, teamMetricsDaily } from '@/lib/db/schema';
+import { cronRuns } from '@/lib/db/schema';
 import type { getDb } from '@/lib/db/client';
 
 type Db = ReturnType<typeof getDb>;
@@ -97,35 +97,63 @@ const finishCronRun = async (
 };
 
 /**
- * Decide the lower bound of the aggregation window.
+ * Decide the per-org lower bound of the aggregation window.
  *
- * If `options.since` is provided, use it. Otherwise: peek at `team_metrics_daily`
- * — if it's empty, treat this as a first run and backfill 90 days; if rows
- * exist, refresh only the last 2 days.
+ * Universe = `SELECT DISTINCT org_id FROM users` (REQ-12). Orgs with no
+ * users have nothing to aggregate and are skipped — they never appear in
+ * the returned Map.
  *
- * NOTE: emptiness is checked **globally** across all orgs. Per the spec
- * ("If team_metrics_daily empty for that org, backfill 90 days on first
- * run"), the first ever run does the wide window, subsequent runs use the
- * rolling tail. Per-org first-run detection would require an extra GROUP BY
- * pass and the win is small — the cost of a 90-day pass once is bounded.
+ * For each org in the universe, if `team_metrics_daily` already has any
+ * row for that org → use the rolling 2-day window; otherwise (first time
+ * this org is being aggregated) → backfill 90 days. Both windows execute
+ * in the **same** `runAggregation` invocation via a `windows(org_id, since)`
+ * CTE, so different orgs at different stages share a single SQL pass and
+ * a single `cron_runs` row (REQ-9).
+ *
+ * If `options.since` is provided, that override is applied uniformly to
+ * every org (REQ-11) — the per-org branching is skipped.
+ *
+ * SECURITY: every value injected into SQL goes through Drizzle's `sql`
+ * template tag → bound parameters (REQ-19 of spec mãe).
  */
-const resolveWindowStart = async (db: Db, options: AggregateOptions): Promise<Date> => {
-  if (options.since) return options.since;
+const resolveWindowStartsByOrg = async (
+  db: Db,
+  options: AggregateOptions,
+): Promise<Map<string, Date>> => {
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const rolling = new Date(today);
+  rolling.setUTCDate(rolling.getUTCDate() - (DEFAULT_WINDOW_DAYS - 1));
+  const backfill = new Date(today);
+  backfill.setUTCDate(backfill.getUTCDate() - (BACKFILL_DAYS - 1));
 
-  const probe = await db.execute<{ exists: boolean }>(
-    sql`SELECT EXISTS (SELECT 1 FROM ${teamMetricsDaily} LIMIT 1) AS "exists"`,
-  );
-  // `db.execute` returns a `pg`-style result object; `.rows` holds the data.
-  // Drizzle's typing for `execute` varies across driver adapters, so we
-  // narrow defensively without `any`.
-  const rowsField = (probe as unknown as { rows?: { exists: boolean }[] }).rows;
-  const probeRows = rowsField ?? (probe as unknown as { exists: boolean }[]);
-  const hasAny = Array.isArray(probeRows) && probeRows.length > 0 && probeRows[0]?.exists === true;
-  const days = hasAny ? DEFAULT_WINDOW_DAYS : BACKFILL_DAYS;
-  const start = new Date();
-  start.setUTCHours(0, 0, 0, 0);
-  start.setUTCDate(start.getUTCDate() - (days - 1));
-  return start;
+  // Universe of orgs (`users.org_id`) joined with a per-org existence check
+  // against `team_metrics_daily`. Single round-trip — N orgs is single-digit
+  // for the foreseeable deployment but the LATERAL-equivalent EXISTS scales
+  // linearly anyway.
+  const probe = await db.execute<{ org_id: string; has_rows: boolean }>(sql`
+    SELECT u.org_id::text AS org_id,
+           EXISTS (
+             SELECT 1 FROM team_metrics_daily tmd
+             WHERE tmd.org_id = u.org_id
+             LIMIT 1
+           ) AS has_rows
+    FROM (SELECT DISTINCT org_id FROM users) AS u
+  `);
+  // `db.execute` returns a `pg`-style result object on the node-postgres
+  // adapter (`.rows`) and a bare array on others. Mirror the existing
+  // narrowing pattern from `runAggregation`.
+  const rowsField = (probe as unknown as { rows?: { org_id: string; has_rows: boolean }[] }).rows;
+  const probeRows = rowsField ?? (probe as unknown as { org_id: string; has_rows: boolean }[]);
+  const map = new Map<string, Date>();
+  for (const r of Array.isArray(probeRows) ? probeRows : []) {
+    if (options.since) {
+      map.set(r.org_id, options.since);
+    } else {
+      map.set(r.org_id, r.has_rows ? rolling : backfill);
+    }
+  }
+  return map;
 };
 
 /**
@@ -152,10 +180,28 @@ const resolveWindowStart = async (db: Db, options: AggregateOptions): Promise<Da
  * thresholds would make the rollup unstable).
  *
  * Returns the affected row count from the INSERT statement.
+ *
+ * Per-org windows are injected via a `windows(org_id, since)` CTE built
+ * from a `VALUES (...)` list, with every value parameter-bound through
+ * Drizzle's `sql` template (REQ-19 of spec mãe). When `windowsByOrg` is
+ * empty (zero orgs in `users`), Postgres' `VALUES` clause cannot be empty
+ * — we short-circuit and return `0` without executing SQL.
  */
-const runAggregation = async (db: Db, since: Date): Promise<number> => {
+const runAggregation = async (db: Db, windowsByOrg: Map<string, Date>): Promise<number> => {
+  if (windowsByOrg.size === 0) return 0;
+
+  // Build the VALUES list for the windows CTE. Each fragment is
+  // `(${id}::uuid, ${date}::timestamptz)` with bound parameters.
+  const windowFragments = Array.from(windowsByOrg.entries()).map(
+    ([orgId, since]) => sql`(${orgId}::uuid, ${since}::timestamptz)`,
+  );
+  const windowsValues = sql.join(windowFragments, sql`, `);
+
   const result = await db.execute(sql`
-    WITH session_metrics AS (
+    WITH windows(org_id, since) AS (
+      VALUES ${windowsValues}
+    ),
+    session_metrics AS (
       SELECT
         u.org_id,
         u.team_id,
@@ -168,7 +214,7 @@ const runAggregation = async (db: Db, since: Date): Promise<number> => {
         s.avg_rating::float AS avg_rating
       FROM sessions_agg s
       INNER JOIN users u ON u.id = s.user_id
-      WHERE s.started_at >= ${since}::timestamptz
+      INNER JOIN windows w ON w.org_id = u.org_id AND s.started_at >= w.since
     ),
     composite AS (
       SELECT
@@ -247,7 +293,7 @@ const runAggregation = async (db: Db, since: Date): Promise<number> => {
          ON s.user_id = tc.user_id
         AND s.session_id = tc.session_id
       INNER JOIN users u ON u.id = tc.user_id
-      WHERE s.started_at >= ${since}::timestamptz
+      INNER JOIN windows w ON w.org_id = u.org_id AND s.started_at >= w.since
       GROUP BY u.org_id, u.team_id, date_trunc('day', s.started_at AT TIME ZONE 'UTC'), bucket
     ),
     tool_mix AS (
@@ -310,8 +356,8 @@ export const aggregateTeamMetrics = async (
 ): Promise<AggregateResult> => {
   const runId = await startCronRun(db);
   try {
-    const since = await resolveWindowStart(db, options);
-    const rowsWritten = await runAggregation(db, since);
+    const windowsByOrg = await resolveWindowStartsByOrg(db, options);
+    const rowsWritten = await runAggregation(db, windowsByOrg);
     await finishCronRun(db, runId, 'ok', rowsWritten, null);
     return { status: 'ok', rowsWritten };
   } catch (e) {

@@ -22,23 +22,42 @@
  * `kind`. We re-validate both with Zod here because Server Actions accept
  * raw FormData and we never trust client-controlled fields.
  */
-import { revalidatePath } from 'next/cache';
-import { eq, sql } from 'drizzle-orm';
-import { auth } from '@/lib/auth/auth';
+import { revalidatePath as nextRevalidatePath } from 'next/cache';
+import type { Session } from 'next-auth';
 import { getDb } from '@/lib/db/client';
-import { managerDismissedAnomalies, users } from '@/lib/db/schema';
+import { performDismissAnomaly } from '@/lib/queries/manager-dismissed';
 import { dismissAnomalySchema } from '@/lib/zod/manager-v2-schemas';
-
-const DISMISS_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 export type DismissResult =
   | { ok: true }
   | { ok: false; code: 'forbidden' | 'invalid_input' };
 
-export const dismissAnomalyAction = async (
+export type AuthFn = () => Promise<Session | null>;
+
+export type DismissAnomalyImplDeps = {
+  authFn: AuthFn;
+  /**
+   * `revalidatePath` requires a Next.js request context (static generation
+   * store) which vitest does not provide. The DI seam lets tests pass a
+   * no-op while production keeps the real revalidation. Mirrors the
+   * `notifyChannel`/`afterFn` seam pattern from `_drilldown/render.tsx`.
+   */
+  revalidatePathFn: (path: string) => void;
+};
+
+/**
+ * Pure-ish core. Tests inject `authFn` + `revalidatePathFn` so vitest
+ * never has to drag NextAuth or the static-generation store into its
+ * module graph. Mirrors the `dismissAnomalyImpl` pattern in
+ * `app/api/manager/dismiss-anomaly/route.ts`. (Self-review M-code: this
+ * replaces the earlier `vi.mock`-based test approach with the same DI
+ * seam pattern the rest of the codebase already uses.)
+ */
+export const dismissAnomalyImpl = async (
   formData: FormData,
+  deps: DismissAnomalyImplDeps,
 ): Promise<DismissResult> => {
-  const session = await auth();
+  const session = await deps.authFn();
   const role = session?.user?.role;
   const orgId = session?.user?.orgId;
   const managerUserId = session?.user?.id;
@@ -56,42 +75,45 @@ export const dismissAnomalyAction = async (
   }
   const { target_user_id: targetUserId, kind } = parsed.data;
 
-  const db = getDb();
-  const [target] = await db
-    .select({ orgId: users.orgId })
-    .from(users)
-    .where(eq(users.id, targetUserId))
-    .limit(1);
-  if (!target || target.orgId !== orgId) {
+  // Delegate to the shared helper. `performDismissAnomaly` owns the
+  // cross-org guard + UPSERT + DISMISS_DURATION_MS — single source of
+  // truth (REQ-4 of manager-dashboard-v2-followups). DB errors throw
+  // (helper contract); we don't catch — Server Action runtime surfaces
+  // a 500 and the form re-renders, which is the right UX for an
+  // infrastructure failure.
+  const result = await performDismissAnomaly(getDb(), {
+    orgId,
+    managerUserId,
+    targetUserId,
+    kind,
+  });
+  if (!result.ok) {
+    // `cross-org` from the helper maps to `forbidden` at this surface
+    // (same status the role gate uses, anti-probing).
     return { ok: false, code: 'forbidden' };
   }
 
-  const dismissedUntil = new Date(Date.now() + DISMISS_DURATION_MS);
-  await db
-    .insert(managerDismissedAnomalies)
-    .values({
-      orgId,
-      managerUserId,
-      targetUserId,
-      kind,
-      dismissedUntil,
-    })
-    .onConflictDoUpdate({
-      target: [
-        managerDismissedAnomalies.orgId,
-        managerDismissedAnomalies.managerUserId,
-        managerDismissedAnomalies.targetUserId,
-        managerDismissedAnomalies.kind,
-      ],
-      set: {
-        dismissedUntil,
-        dismissedAt: sql`now()`,
-      },
-    });
-
-  revalidatePath('/manager/health');
+  deps.revalidatePathFn('/manager/health');
   return { ok: true };
 };
+
+/**
+ * Lazy-loaded `auth()` — keeps NextAuth out of vitest's module graph for
+ * unit tests that import `dismissAnomalyImpl` directly. Same pattern as
+ * `app/api/manager/dismiss-anomaly/route.ts:lazyDefaultAuth`.
+ */
+const lazyDefaultAuth: AuthFn = async () => {
+  const mod = await import('@/lib/auth/auth');
+  return mod.auth();
+};
+
+export const dismissAnomalyAction = async (
+  formData: FormData,
+): Promise<DismissResult> =>
+  dismissAnomalyImpl(formData, {
+    authFn: lazyDefaultAuth,
+    revalidatePathFn: nextRevalidatePath,
+  });
 
 /**
  * Form-action adapter for `<form action={...}>` consumers.

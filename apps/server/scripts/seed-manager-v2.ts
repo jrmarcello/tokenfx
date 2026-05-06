@@ -32,6 +32,7 @@
 
 import bcrypt from 'bcrypt';
 import { createHash } from 'node:crypto';
+import { sql } from 'drizzle-orm';
 import { closeDb, getDb } from '@/lib/db/client';
 import { BCRYPT_COST } from '@/lib/auth/bearer-auth';
 import {
@@ -324,9 +325,7 @@ const seedTeamMetrics = async (db: Db, spec: OrgSpec): Promise<number> => {
   return rowsWritten;
 };
 
-// Drizzle helper — `excluded.<col>` for ON CONFLICT DO UPDATE. Imported
-// inline so seed callers don't need to depend on drizzle-orm sql tag.
-import { sql } from 'drizzle-orm';
+// Drizzle helper — `excluded.<col>` for ON CONFLICT DO UPDATE.
 const sqlExcluded = (col: string): ReturnType<typeof sql.raw> =>
   sql.raw(`excluded.${col}`);
 
@@ -337,8 +336,52 @@ const sqlExcluded = (col: string): ReturnType<typeof sql.raw> =>
 /**
  * Seed manager-dashboard-v2 fixtures. Idempotent. Safe to call from
  * Playwright globalSetup AFTER `seed-server.ts --e2e` has run.
+ *
+ * Guard: refuses to run if the Alpha org has not been seeded yet — the
+ * frontend/backend teams (added by `seed-server.ts --e2e`) are FK
+ * targets for the metrics rows we write below, and silent FK violations
+ * would surface as confusing Postgres errors mid-Playwright run. Added
+ * by `manager-dashboard-v2-followups.md` (TASK-6) for deterministic
+ * fail-fast in TC-I-02.
  */
 export const seedManagerV2 = async (db: Db): Promise<void> => {
+  // Defense-in-depth production guard. The CLI shim below also gates on
+  // this, but importing this function as a library bypasses the CLI
+  // path — re-checking here keeps a future direct-import caller from
+  // accidentally seeding production. (Self-review M1, security.)
+  if (
+    process.env.NODE_ENV === 'production' &&
+    process.env.ALLOW_PRODUCTION_SEED !== '1'
+  ) {
+    throw new Error(
+      'seedManagerV2: refusing to run with NODE_ENV=production. ' +
+        'Set ALLOW_PRODUCTION_SEED=1 to override.',
+    );
+  }
+
+  // Verify seed-server.ts --e2e ran first (Alpha Co must exist in orgs).
+  // We probe by name rather than slug because the orgs table doesn't
+  // store a `slug` column — the deterministic UUID derivation
+  // (`stableUuid('org:org-alpha')`) makes this lookup unambiguous, but
+  // the human-readable `name` is also stable across both seeds.
+  const alphaCheck = await db.execute<{ count: number }>(
+    sql`SELECT COUNT(*)::int AS count FROM orgs WHERE name = 'Alpha Co'`,
+  );
+  // Defensive narrowing: driver-adapter typing returns `{ rows: T[] }`
+  // under node-postgres but some drizzle-orm builds flatten this on
+  // generic execute. Same pattern reused throughout the codebase.
+  const rows = (alphaCheck as unknown as { rows?: { count: number }[] }).rows
+    ?? (alphaCheck as unknown as { count: number }[]);
+  const count = Array.isArray(rows) && rows.length > 0
+    ? Number(rows[0].count)
+    : 0;
+  if (count === 0) {
+    throw new Error(
+      'seed-manager-v2: seed-server.ts --e2e must run first '
+        + '(Alpha Co not found in orgs)',
+    );
+  }
+
   await seedOrgAndUsers(db, ALPHA_SPEC);
   await seedOrgAndUsers(db, GAMMA_SPEC);
 
