@@ -162,4 +162,104 @@ describe('listTranscriptFiles', () => {
     const files = await listTranscriptFiles(tmpDir);
     expect(files).toEqual([]);
   });
+
+  // Subagent-filter TCs (fix-ingest-skip-subagent-jsonls).
+  // Subagent JSONLs at <root>/<sessionId>/subagents/agent-*.jsonl share
+  // the parent's sessionId and would inflate session windows on UPSERT.
+  // Filter excludes them path-segment-style (NOT substring), pre-realpath,
+  // so symlinked subagents/ dirs are still excluded by naming convention.
+
+  // TC-U-01 (subagent-inflation REQ-1)
+  it('excludes subagent JSONLs at <sessionId>/subagents/agent-*.jsonl', async () => {
+    const sessionDir = path.join(tmpDir, 'proj', 'session-1');
+    const subagentsDir = path.join(sessionDir, 'subagents');
+    fs.mkdirSync(subagentsDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, 'parent.jsonl'), '');
+    fs.writeFileSync(path.join(subagentsDir, 'agent-1.jsonl'), '');
+    fs.writeFileSync(path.join(subagentsDir, 'agent-2.jsonl'), '');
+
+    const files = await listTranscriptFiles(tmpDir);
+    expect(files).toHaveLength(1);
+    expect(files[0]?.endsWith('parent.jsonl')).toBe(true);
+    for (const f of files) expect(f.includes('/subagents/')).toBe(false);
+  });
+
+  // TC-U-02 (subagent-inflation REQ-1)
+  it('excludes subagent JSONLs nested arbitrarily deep in the tree', async () => {
+    const deep = path.join(tmpDir, 'proj', 'session-1', 'foo', 'subagents');
+    fs.mkdirSync(deep, { recursive: true });
+    fs.writeFileSync(path.join(deep, 'agent.jsonl'), '');
+    fs.writeFileSync(path.join(tmpDir, 'proj', 'session-1', 'parent.jsonl'), '');
+
+    const files = await listTranscriptFiles(tmpDir);
+    expect(files).toHaveLength(1);
+    expect(files[0]?.endsWith('parent.jsonl')).toBe(true);
+  });
+
+  // TC-U-03 (subagent-inflation REQ-3): segment-match, not substring
+  it('includes a root-level subagents.jsonl file but excludes files under subagents/ directory', async () => {
+    const subagentsDir = path.join(tmpDir, 'subagents');
+    fs.mkdirSync(subagentsDir, { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'subagents.jsonl'), ''); // root-level file
+    fs.writeFileSync(path.join(subagentsDir, 'agent.jsonl'), ''); // dir-level subagent
+
+    const files = await listTranscriptFiles(tmpDir);
+    expect(files).toHaveLength(1);
+    // The file `subagents.jsonl` (NOT in a subagents directory) IS included.
+    expect(files[0]?.endsWith('subagents.jsonl')).toBe(true);
+    // The file under subagents/ IS NOT.
+    expect(files.some((f) => f.includes('/subagents/'))).toBe(false);
+  });
+
+  // TC-U-04 (subagent-inflation REQ-2)
+  it('returns every file when no subagents/ directory exists in the tree', async () => {
+    const a = path.join(tmpDir, 'proj-a');
+    const b = path.join(tmpDir, 'proj-b');
+    fs.mkdirSync(a, { recursive: true });
+    fs.mkdirSync(b, { recursive: true });
+    fs.writeFileSync(path.join(a, 's1.jsonl'), '');
+    fs.writeFileSync(path.join(b, 's2.jsonl'), '');
+
+    const files = await listTranscriptFiles(tmpDir);
+    expect(files).toHaveLength(2);
+  });
+
+  // TC-U-05 (subagent-inflation REQ-4): escape guard composes with subagent filter
+  it('rejects a symlink inside subagents/ pointing outside the projects root', async () => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'outside-'));
+    const outsideFile = path.join(outsideDir, 'leak.jsonl');
+    fs.writeFileSync(outsideFile, '');
+
+    const subagentsDir = path.join(tmpDir, 'proj', 'session-1', 'subagents');
+    fs.mkdirSync(subagentsDir, { recursive: true });
+    try {
+      fs.symlinkSync(outsideFile, path.join(subagentsDir, 'leak.jsonl'));
+    } catch {
+      // some test runners disallow symlinks; skip silently
+      return;
+    }
+
+    const files = await listTranscriptFiles(tmpDir);
+    // Either filter (subagent OR realpath escape) must drop the symlinked file.
+    expect(files.some((f) => f.includes('leak.jsonl'))).toBe(false);
+    fs.rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  // TC-U-06 (subagent-inflation REQ-1+REQ-4): pre-realpath segment filter wins
+  it('rejects symlinks within subagents/ that point to other files within subagents/', async () => {
+    const subagentsDir = path.join(tmpDir, 'proj', 'session-1', 'subagents');
+    fs.mkdirSync(subagentsDir, { recursive: true });
+    const real = path.join(subagentsDir, 'real.jsonl');
+    const link = path.join(subagentsDir, 'link.jsonl');
+    fs.writeFileSync(real, '');
+    try {
+      fs.symlinkSync(real, link);
+    } catch {
+      return;
+    }
+
+    const files = await listTranscriptFiles(tmpDir);
+    // Both the real file AND the symlink are inside subagents/ — both excluded.
+    expect(files).toEqual([]);
+  });
 });

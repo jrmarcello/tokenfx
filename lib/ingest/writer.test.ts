@@ -17,6 +17,116 @@ import type {
 } from './transcript/types';
 import type { OtelScrape } from './otel/parser';
 
+// ---- subagent-inflation fixture helpers (TASK-2 of fix-ingest-skip-subagent-jsonls) ----
+//
+// Used by the subagent-inflation regression TCs at the bottom of the
+// `ingestAll` describe block. Build a minimal but valid two-turn JSONL
+// transcript whose MIN(timestamp) is `startedAt` and MAX(timestamp) is
+// `endedAt` — the writer's reconcileSession rollup recomputes the session
+// window from MIN/MAX(turns.timestamp), and only assistant events become
+// `turns` rows (user events fold into turns.user_prompt). So two assistant
+// turns at the boundary timestamps are needed to pin started_at/ended_at
+// to exact epoch-ms values. See .specs/fix-ingest-skip-subagent-jsonls.md.
+
+type SubagentInflationJsonlEntry = {
+  type: 'user' | 'assistant';
+  uuid: string;
+  parentUuid: string | null;
+  sessionId: string;
+  timestamp: number;
+  cwd: string;
+  assistantText?: string;
+};
+
+const buildUserEvent = (e: SubagentInflationJsonlEntry): string =>
+  JSON.stringify({
+    type: 'user',
+    parentUuid: e.parentUuid,
+    uuid: e.uuid,
+    sessionId: e.sessionId,
+    timestamp: new Date(e.timestamp).toISOString(),
+    cwd: e.cwd,
+    version: '2.0.0',
+    gitBranch: 'main',
+    message: { role: 'user', content: 'hello' },
+  });
+
+const buildAssistantEvent = (e: SubagentInflationJsonlEntry): string =>
+  JSON.stringify({
+    type: 'assistant',
+    parentUuid: e.parentUuid,
+    uuid: e.uuid,
+    sessionId: e.sessionId,
+    timestamp: new Date(e.timestamp).toISOString(),
+    cwd: e.cwd,
+    version: '2.0.0',
+    message: {
+      id: `msg_${e.uuid}`,
+      role: 'assistant',
+      model: 'claude-sonnet-4-5',
+      content: [{ type: 'text', text: e.assistantText ?? 'ok' }],
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        service_tier: 'standard',
+      },
+      stop_reason: 'end_turn',
+    },
+  });
+
+const buildSubagentInflationJsonl = (params: {
+  sessionId: string;
+  cwd: string;
+  startedAt: number;
+  endedAt: number;
+  uuidPrefix: string;
+}): string => {
+  const { sessionId, cwd, startedAt, endedAt, uuidPrefix } = params;
+  const u1 = `${uuidPrefix}-u1`;
+  const a1 = `${uuidPrefix}-a1`;
+  const u2 = `${uuidPrefix}-u2`;
+  const a2 = `${uuidPrefix}-a2`;
+  const lines = [
+    buildUserEvent({
+      type: 'user',
+      uuid: u1,
+      parentUuid: null,
+      sessionId,
+      timestamp: startedAt,
+      cwd,
+    }),
+    buildAssistantEvent({
+      type: 'assistant',
+      uuid: a1,
+      parentUuid: u1,
+      sessionId,
+      timestamp: startedAt,
+      cwd,
+      assistantText: 'first response',
+    }),
+    buildUserEvent({
+      type: 'user',
+      uuid: u2,
+      parentUuid: a1,
+      sessionId,
+      timestamp: endedAt,
+      cwd,
+    }),
+    buildAssistantEvent({
+      type: 'assistant',
+      uuid: a2,
+      parentUuid: u2,
+      sessionId,
+      timestamp: endedAt,
+      cwd,
+      assistantText: 'second response',
+    }),
+  ];
+  return lines.join('\n') + '\n';
+};
+
 function makeSession(overrides?: Partial<ParsedSession>): ParsedSession {
   return {
     id: 'sess-test-001',
@@ -629,5 +739,266 @@ describe('ingestAll', () => {
     expect(summary.errors.some((e) => e.error.includes('connection refused'))).toBe(
       true,
     );
+  });
+
+  // TC-I-01 (subagent-inflation REQ-1, happy): parent JSONL window must NOT
+  // be inflated by subagent JSONLs that share the parent sessionId. Pre-fix,
+  // the writer would UPSERT the sessions row with each subagent's events,
+  // collapsing started_at to T3 (way before parent). Post-fix,
+  // listTranscriptFiles filters subagents/ entirely so the row reflects
+  // ONLY the parent's [T1, T2] window.
+  it('parent window reflects parent JSONL only, never subagents', async () => {
+    const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'subagent-tc01-'));
+    try {
+      const sessionId = 'sess-subagent-parent';
+      const cwd = '/Users/dev/proj-A';
+      const T1 = 1_700_000_000_000; // parent started_at
+      const T2 = 1_700_000_600_000; // parent ended_at (T1 + 10 min)
+      const T3 = 1_690_000_000_000; // subagent timestamps — way before parent
+
+      fs.writeFileSync(
+        path.join(treeRoot, `${sessionId}.jsonl`),
+        buildSubagentInflationJsonl({
+          sessionId,
+          cwd,
+          startedAt: T1,
+          endedAt: T2,
+          uuidPrefix: 'parent',
+        }),
+      );
+
+      const subagentDir = path.join(treeRoot, sessionId, 'subagents');
+      fs.mkdirSync(subagentDir, { recursive: true });
+      for (const tag of ['a', 'b', 'c']) {
+        fs.writeFileSync(
+          path.join(subagentDir, `agent-${tag}.jsonl`),
+          buildSubagentInflationJsonl({
+            sessionId, // shares parent's sessionId — that's the inflation footgun
+            cwd,
+            startedAt: T3,
+            endedAt: T3 + 1_000,
+            uuidPrefix: `sub-${tag}`,
+          }),
+        );
+      }
+
+      const summary = await ingestAll({
+        db,
+        transcriptsRoot: treeRoot,
+        otelUrl: undefined,
+      });
+      expect(summary.filesProcessed).toBe(1);
+      expect(summary.sessionsUpserted).toBe(1);
+
+      const row = db
+        .prepare('SELECT id, started_at, ended_at FROM sessions WHERE id = ?')
+        .get(sessionId) as
+        | { id: string; started_at: number; ended_at: number }
+        | undefined;
+      expect(row).toBeDefined();
+      // Hard equality on epoch-ms: pre-fix this would be `started_at === T3`.
+      expect(row?.started_at).toBe(T1);
+      expect(row?.ended_at).toBe(T2);
+    } finally {
+      fs.rmSync(treeRoot, { recursive: true, force: true });
+    }
+  });
+
+  // TC-I-02 (subagent-inflation REQ-1 + REQ-2, business): two distinct parent
+  // sessions in the same tree, only S1 has subagents. Both parents' windows
+  // must reflect their OWN events, never the union. Guards against any
+  // global "skip subagents but keep their events somewhere" regression.
+  it('multi-session tree: each session window reflects its own parent only', async () => {
+    const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'subagent-tc02-'));
+    try {
+      const S1 = 'sess-multi-A';
+      const S2 = 'sess-multi-B';
+
+      const S1_T1 = 1_700_000_000_000;
+      const S1_T2 = 1_700_000_600_000;
+      const S1_OUT = 1_690_000_000_000; // S1 subagent: outside S1 window
+
+      const S2_T1 = 1_710_000_000_000;
+      const S2_T2 = 1_710_000_300_000;
+
+      fs.writeFileSync(
+        path.join(treeRoot, `${S1}.jsonl`),
+        buildSubagentInflationJsonl({
+          sessionId: S1,
+          cwd: '/Users/dev/proj-A',
+          startedAt: S1_T1,
+          endedAt: S1_T2,
+          uuidPrefix: 's1-parent',
+        }),
+      );
+      fs.writeFileSync(
+        path.join(treeRoot, `${S2}.jsonl`),
+        buildSubagentInflationJsonl({
+          sessionId: S2,
+          cwd: '/Users/dev/proj-B',
+          startedAt: S2_T1,
+          endedAt: S2_T2,
+          uuidPrefix: 's2-parent',
+        }),
+      );
+
+      const s1SubDir = path.join(treeRoot, S1, 'subagents');
+      fs.mkdirSync(s1SubDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(s1SubDir, 'agent-a.jsonl'),
+        buildSubagentInflationJsonl({
+          sessionId: S1,
+          cwd: '/Users/dev/proj-A',
+          startedAt: S1_OUT,
+          endedAt: S1_OUT + 1_000,
+          uuidPrefix: 's1-sub-a',
+        }),
+      );
+      fs.writeFileSync(
+        path.join(s1SubDir, 'agent-b.jsonl'),
+        buildSubagentInflationJsonl({
+          sessionId: S1,
+          cwd: '/Users/dev/proj-A',
+          startedAt: S1_OUT + 2_000,
+          endedAt: S1_OUT + 3_000,
+          uuidPrefix: 's1-sub-b',
+        }),
+      );
+
+      const summary = await ingestAll({
+        db,
+        transcriptsRoot: treeRoot,
+        otelUrl: undefined,
+      });
+      expect(summary.filesProcessed).toBe(2);
+      expect(summary.sessionsUpserted).toBe(2);
+
+      const rows = db
+        .prepare('SELECT id, started_at, ended_at FROM sessions ORDER BY id')
+        .all() as Array<{ id: string; started_at: number; ended_at: number }>;
+      expect(rows).toHaveLength(2);
+
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      const s1 = byId.get(S1);
+      const s2 = byId.get(S2);
+      expect(s1?.started_at).toBe(S1_T1);
+      expect(s1?.ended_at).toBe(S1_T2);
+      expect(s2?.started_at).toBe(S2_T1);
+      expect(s2?.ended_at).toBe(S2_T2);
+    } finally {
+      fs.rmSync(treeRoot, { recursive: true, force: true });
+    }
+  });
+
+  // TC-I-07 (subagent-inflation REQ-5, regression): after cleanup, re-ingest
+  // from the same fixture tree (in-process via ingestAll, NOT pnpm subprocess)
+  // produces a clean DB with windows reflecting parents only and no orphans
+  // in any child table. Composes TASK-1 (filter) + TASK-3 (cleanup script).
+  it('post-cleanup-then-reingest: end-to-end loop yields clean state', async () => {
+    const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'subagent-tc07-'));
+    try {
+      const sessionId = 'sess-tc07-parent';
+      const cwd = '/Users/dev/proj-tc07';
+      const T1 = 1_700_000_000_000;
+      const T2 = 1_700_000_600_000;
+      const T3 = 1_690_000_000_000;
+
+      // Initial fixture: parent + subagent JSONLs (subagent files exist on
+      // disk but TASK-1's filter excludes them from listTranscriptFiles).
+      fs.writeFileSync(
+        path.join(treeRoot, `${sessionId}.jsonl`),
+        buildSubagentInflationJsonl({
+          sessionId,
+          cwd,
+          startedAt: T1,
+          endedAt: T2,
+          uuidPrefix: 'tc07-parent',
+        }),
+      );
+      const subagentDir = path.join(treeRoot, sessionId, 'subagents');
+      fs.mkdirSync(subagentDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(subagentDir, 'agent-x.jsonl'),
+        buildSubagentInflationJsonl({
+          sessionId,
+          cwd,
+          startedAt: T3,
+          endedAt: T3 + 1_000,
+          uuidPrefix: 'tc07-sub',
+        }),
+      );
+
+      // First ingest pass — populates sessions/turns/ingested_files.
+      await ingestAll({ db, transcriptsRoot: treeRoot, otelUrl: undefined });
+      const ingestedBefore = (
+        db.prepare('SELECT COUNT(*) AS c FROM ingested_files').get() as {
+          c: number;
+        }
+      ).c;
+      // Tight equality: only the parent JSONL should be tracked. If the
+      // subagent filter regresses, this would be 2 (parent + subagent).
+      expect(ingestedBefore).toBe(1);
+
+      // Run cleanup (real run) — wipes 8 tables in dependency order.
+      const { cleanupSubagentInflation } = await import(
+        '@/scripts/cleanup-subagent-inflation'
+      );
+      cleanupSubagentInflation(db, { dryRun: false });
+
+      // Confirm DB is wiped before re-ingest.
+      for (const t of [
+        'sessions',
+        'turns',
+        'tool_calls',
+        'session_outcomes',
+        'compaction_events',
+        'ratings',
+        'reporter_pushed_sessions',
+        'ingested_files',
+      ] as const) {
+        const c = (
+          db.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get() as { c: number }
+        ).c;
+        expect(c).toBe(0);
+      }
+
+      // Re-ingest from the same JSONL tree (in-process, NOT subprocess).
+      const summary = await ingestAll({
+        db,
+        transcriptsRoot: treeRoot,
+        otelUrl: undefined,
+      });
+      expect(summary.filesProcessed).toBe(1);
+      expect(summary.sessionsUpserted).toBe(1);
+
+      // Window reflects parent only — same contract as TC-I-01.
+      const row = db
+        .prepare('SELECT id, started_at, ended_at FROM sessions WHERE id = ?')
+        .get(sessionId) as
+        | { id: string; started_at: number; ended_at: number }
+        | undefined;
+      expect(row?.started_at).toBe(T1);
+      expect(row?.ended_at).toBe(T2);
+
+      // ingested_files repopulated (post-cleanup state recovered).
+      const ingestedAfter = (
+        db.prepare('SELECT COUNT(*) AS c FROM ingested_files').get() as {
+          c: number;
+        }
+      ).c;
+      expect(ingestedAfter).toBeGreaterThan(0);
+
+      // No orphan turns: every turn references the one session.
+      const orphanTurns = (
+        db
+          .prepare(
+            'SELECT COUNT(*) AS c FROM turns WHERE session_id NOT IN (SELECT id FROM sessions)',
+          )
+          .get() as { c: number }
+      ).c;
+      expect(orphanTurns).toBe(0);
+    } finally {
+      fs.rmSync(treeRoot, { recursive: true, force: true });
+    }
   });
 });

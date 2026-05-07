@@ -73,6 +73,13 @@ export async function listTranscriptFiles(root?: string): Promise<string[]> {
         (entry as unknown as { path?: string }).path ??
         base;
       const candidate = path.resolve(parent, entry.name);
+      // Skip subagent JSONLs (e.g. <sessionId>/subagents/agent-XXX.jsonl).
+      // They share the parent's sessionId and would inflate the parent's
+      // session window on UPSERT (started_at/ended_at union across all
+      // subagents). The check is on `candidate` (pre-realpath) so a
+      // symlinked subagents/ directory can't escape the naming convention.
+      // See .specs/fix-ingest-skip-subagent-jsonls.md.
+      if (/\/subagents\//.test(candidate)) continue;
       try {
         const real = fs.realpathSync(candidate);
         if (real !== realBase && !real.startsWith(realBase + path.sep)) {
