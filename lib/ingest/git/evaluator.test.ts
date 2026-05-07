@@ -14,7 +14,13 @@ import { openDatabase, type DB } from '@/lib/db/client';
 import { migrate } from '@/lib/db/migrate';
 import { evaluateSessionOutcome, type EvaluatorSession } from './evaluator';
 import { log } from '@/lib/logger';
+import { lookupMergedPrCount, type PrRunResult } from './pr-lookup';
 import { runGit } from './run-git';
+
+/** Per-commit runImpl fixture for v3 422-as-not-found integration TCs.
+ * Either a static `PrRunResult` or a callback that interpolates the
+ * commit SHA into the fixture (used to embed the canonical 422 stderr). */
+type RunFixture = PrRunResult | ((sha: string) => PrRunResult);
 import { setupTestRepo, type TestRepo, TEST_USER_EMAIL } from './test-helpers';
 import type { OutcomeStatus } from './types';
 
@@ -1326,4 +1332,140 @@ describe('evaluateSessionOutcome', () => {
       }
     },
   );
+
+  // ---- v3 422-as-not-found integration TCs ------------------------------
+  // These TCs wire stubs at the `runImpl` level (NOT at lookupPrCountImpl)
+  // so the classifier's new arm actually fires from real-shape gh stderr.
+  // We compose lookupMergedPrCount with a fake runImpl that emits the
+  // canonical 422 stderr; downstream feeds into evaluator's anyFailure
+  // accumulator just like real gh would.
+  // See .specs/outcome-integration-git-v3-422-as-not-found.md.
+
+  /**
+   * Build a `lookupPrCountImpl` that wraps the production
+   * `lookupMergedPrCount` with a fake `runImpl`. The runImpl emits the
+   * supplied `PrRunResult` fixtures in iteration-call order (one per
+   * commit visited by computeMergedPrCount). Tests asserting the v3
+   * classifier path use this so the stderr/exit-code shape actually
+   * flows through `classifyGhResult` end-to-end.
+   *
+   * Returned object exposes a `callCount()` for tests to assert exact
+   * fixture consumption (guards against silent under-consumption if
+   * computeMergedPrCount enumerates fewer commits than expected).
+   */
+  const makeRunImplLookup = (
+    fixtures: ReadonlyArray<RunFixture>,
+  ): {
+    impl: NonNullable<
+      Parameters<typeof evaluateSessionOutcome>[2]
+    >['lookupPrCountImpl'];
+    callCount: () => number;
+  } => {
+    let idx = 0;
+    const impl: NonNullable<
+      Parameters<typeof evaluateSessionOutcome>[2]
+    >['lookupPrCountImpl'] = (input) => {
+      const next = fixtures[idx];
+      if (next === undefined) {
+        throw new Error(
+          `runImpl fixture exhausted: got ${idx + 1} calls, plan has ${fixtures.length}`,
+        );
+      }
+      idx += 1;
+      const fixture = typeof next === 'function' ? next(input.sha) : next;
+      // Fresh per-call options so cache/rate-limit state doesn't leak —
+      // each commit must independently flow through classifyGhResult.
+      return lookupMergedPrCount(input, {
+        runImpl: () => fixture,
+        shaCache: new Map(),
+        rateLimitRef: { limitedUntil: null },
+        nowMs: () => 1_700_000_000_000,
+        loggedReasons: new Set(),
+      });
+    };
+    return { impl, callCount: () => idx };
+  };
+
+  // TC-I-01 (v3): mix of real-422 stderr + ok JSON via runImpl. The
+  // 422-bearing commit (which previously produced 'error' → NULL collapse)
+  // must now classify as 'not-found' and contribute empty prNumbers; the
+  // session's merged_pr_count reflects ONLY the ok-result PR numbers.
+  it('runImpl-level: mixed real-422-stderr + ok JSON → merged_pr_count from ok results only', () => {
+    process.env.TOKENFX_GH_PR_LOOKUP = '1';
+    try {
+      const { session, r } = setupSessionWithCommits(3);
+      addGithubRemote(r.path);
+
+      const lookup = makeRunImplLookup([
+        // First commit: real gh 422 stderr (local-only commit not pushed)
+        (sha): PrRunResult => ({
+          stdout: '',
+          stderr: `gh: No commit found for SHA: ${sha} (HTTP 422)\n`,
+          status: 1,
+          signal: null,
+        }),
+        // Second commit: ok JSON with PR 42
+        {
+          stdout: '[42]',
+          stderr: '',
+          status: 0,
+          signal: null,
+        },
+        // Third commit: ok JSON with PR 99
+        {
+          stdout: '[99]',
+          stderr: '',
+          status: 0,
+          signal: null,
+        },
+      ]);
+
+      evaluateSessionOutcome(db, session, { lookupPrCountImpl: lookup.impl });
+      // Pre-fix this would be NULL (anyFailure due to 'error' classification).
+      // Post-fix: 422 → 'not-found' → empty contribution; Set is {42, 99} → 2.
+      expect(lookup.callCount()).toBe(3);
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBe(2);
+    } finally {
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+  });
+
+  // TC-I-02 (v3): rate-limited still dominates failure mode at integration
+  // level after the new classifier arm is in place. Confirms anyFailure
+  // accumulator propagates correctly.
+  it('runImpl-level: rate-limited + 422-not-found + ok mix → merged_pr_count = NULL (rate-limit dominates)', () => {
+    process.env.TOKENFX_GH_PR_LOOKUP = '1';
+    try {
+      const { session, r } = setupSessionWithCommits(3);
+      addGithubRemote(r.path);
+
+      const lookup = makeRunImplLookup([
+        (sha): PrRunResult => ({
+          stdout: '',
+          stderr: `gh: No commit found for SHA: ${sha} (HTTP 422)\n`,
+          status: 1,
+          signal: null,
+        }),
+        {
+          stdout: '',
+          stderr: 'API rate limit exceeded.\n',
+          status: 1,
+          signal: null,
+        },
+        {
+          stdout: '[7]',
+          stderr: '',
+          status: 0,
+          signal: null,
+        },
+      ]);
+
+      evaluateSessionOutcome(db, session, { lookupPrCountImpl: lookup.impl });
+      // rate-limited → anyFailure → NULL collapse (REQ-2 + REQ-15 from v2).
+      expect(lookup.callCount()).toBe(3);
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBeNull();
+    } finally {
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+  });
 });

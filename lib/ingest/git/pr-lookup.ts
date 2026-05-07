@@ -136,6 +136,18 @@ export const classifyGhResult = (result: PrRunResult): PrLookupResult => {
     return { status: 'rate-limited', prNumbers: [] };
   }
 
+  // SHA not on remote → permanent 'not-found' (count contribution 0). gh
+  // emits this for HTTP 422 when the commit isn't on origin, typical for
+  // local-only commits not yet pushed. Distinct from the catch-all 'error'
+  // (NULL collapse). See .specs/outcome-integration-git-v3-422-as-not-found.md.
+  // Rate-limited check above fires first if both patterns are present.
+  if (
+    result.status !== 0 &&
+    /no commit found for sha: [0-9a-f]{7,40}/i.test(stderr)
+  ) {
+    return { status: 'not-found', prNumbers: [] };
+  }
+
   if (result.status === 0) {
     let parsed: unknown;
     try {

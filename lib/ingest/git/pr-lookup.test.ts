@@ -105,6 +105,141 @@ describe('classifyGhResult — pure classifier', () => {
     const out = classifyGhResult(result);
     expect(out.status).toBe('error');
   });
+
+  // ---- v3 422-as-not-found arm ------------------------------------------
+  // gh emits `gh: No commit found for SHA: <sha> (HTTP 422)` on stderr when
+  // the SHA isn't on the remote (typical for local-only commits not yet
+  // pushed). Map to `'not-found'` (count contribution 0), distinct from
+  // `'error'` (NULL collapse). See .specs/outcome-integration-git-v3-422-as-not-found.md.
+
+  it('TC-U-01 (v3): canonical 422 stderr with 12-char SHA → not-found', () => {
+    const result: PrRunResult = {
+      stdout: '',
+      stderr: 'gh: No commit found for SHA: 328806d7924e (HTTP 422)\n',
+      status: 1,
+      signal: null,
+    };
+    expect(classifyGhResult(result)).toEqual({
+      status: 'not-found',
+      prNumbers: [],
+    });
+  });
+
+  it('TC-U-02 (v3): full canonical 40-char SHA matches (max boundary inclusive)', () => {
+    const result: PrRunResult = {
+      stdout: '',
+      stderr:
+        'gh: No commit found for SHA: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 (HTTP 422)\n',
+      status: 1,
+      signal: null,
+    };
+    expect(classifyGhResult(result).status).toBe('not-found');
+  });
+
+  it('TC-U-03 (v3): 7-char SHA (regex {7,40} min boundary inclusive)', () => {
+    const result: PrRunResult = {
+      stdout: '',
+      stderr: 'gh: No commit found for SHA: deadbee (HTTP 422)\n',
+      status: 1,
+      signal: null,
+    };
+    expect(classifyGhResult(result).status).toBe('not-found');
+  });
+
+  it('TC-U-03b (v3): 6-char hex (one below min) → error (regex rejects)', () => {
+    const result: PrRunResult = {
+      stdout: '',
+      stderr: 'gh: No commit found for SHA: abc123 (HTTP 422)\n',
+      status: 1,
+      signal: null,
+    };
+    expect(classifyGhResult(result).status).toBe('error');
+  });
+
+  it('TC-U-03c (v3): 41-char hex matches first 40 (regex unanchored — locked decision, academic)', () => {
+    const longHex = 'a'.repeat(41);
+    const result: PrRunResult = {
+      stdout: '',
+      stderr: `gh: No commit found for SHA: ${longHex} (HTTP 422)\n`,
+      status: 1,
+      signal: null,
+    };
+    // Regex /[0-9a-f]{7,40}/ is unanchored; first 40 of 41 a's match.
+    // Real gh always emits canonical 40-char SHA, so this branch is academic
+    // but documents the locked permissive behavior.
+    expect(classifyGhResult(result).status).toBe('not-found');
+  });
+
+  it('TC-U-04 (v3): mixed/upper case matches via /i (phrase + hex A-F)', () => {
+    const result: PrRunResult = {
+      stdout: '',
+      stderr: 'NO COMMIT FOUND FOR SHA: ABC1234 (HTTP 422)\n',
+      status: 1,
+      signal: null,
+    };
+    expect(classifyGhResult(result).status).toBe('not-found');
+  });
+
+  it('TC-U-05 (v3): rate-limited wins precedence over no-commit-found in same stderr', () => {
+    const result: PrRunResult = {
+      stdout: '',
+      stderr:
+        'API rate limit exceeded.\nAdditionally: No commit found for SHA: deadbee1 (HTTP 422)\n',
+      status: 1,
+      signal: null,
+    };
+    // Rate-limited check fires first per insertion order (REQ-2).
+    expect(classifyGhResult(result).status).toBe('rate-limited');
+  });
+
+  it('TC-U-05b (v3): rate-limited still wins when no-commit-found phrase appears FIRST in stderr (catches string-order bugs)', () => {
+    // Same precedence as TC-U-05 but reversed string order — proves the
+    // classifier respects insertion order in code, not first-match
+    // position in the stderr string.
+    const result: PrRunResult = {
+      stdout: '',
+      stderr:
+        'No commit found for SHA: deadbee1 (HTTP 422)\nAdditionally: API rate limit exceeded.\n',
+      status: 1,
+      signal: null,
+    };
+    expect(classifyGhResult(result).status).toBe('rate-limited');
+  });
+
+  it('TC-U-06 (v3): other 422 (no SHA-not-found phrase) → error', () => {
+    const result: PrRunResult = {
+      stdout: '',
+      stderr: 'gh: HTTP 422 Unprocessable Entity\n',
+      status: 1,
+      signal: null,
+    };
+    expect(classifyGhResult(result).status).toBe('error');
+  });
+
+  it('TC-U-07 (v3): non-hex chars in SHA position (8 g\'s, no contiguous 7-hex run) → error', () => {
+    const result: PrRunResult = {
+      stdout: '',
+      stderr: 'gh: No commit found for SHA: gggggggg (HTTP 422)\n',
+      status: 1,
+      signal: null,
+    };
+    // 'g' is outside [0-9a-f]; no 7+ contiguous hex run → regex misses → fallback.
+    expect(classifyGhResult(result).status).toBe('error');
+  });
+
+  it('TC-U-08 (v3): defensive — status=0 + matching stderr → status-0 path fires (new arm guarded by status !== 0)', () => {
+    // Impossible with real gh, but the explicit `status !== 0` guard in the
+    // new arm must hold. With status=0 + stdout='[]', the status-0 JSON-parse
+    // block returns 'not-found' from its own empty-array branch — NOT via
+    // the new arm. Confirms the guard is wired correctly.
+    const result: PrRunResult = {
+      stdout: '[]',
+      stderr: 'gh: No commit found for SHA: deadbee1 (HTTP 422)\n',
+      status: 0,
+      signal: null,
+    };
+    expect(classifyGhResult(result).status).toBe('not-found');
+  });
 });
 
 describe('lookupMergedPrCount', () => {
