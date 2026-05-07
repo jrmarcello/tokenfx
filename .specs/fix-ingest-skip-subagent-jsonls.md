@@ -1,6 +1,6 @@
 # Spec: fix-ingest-skip-subagent-jsonls
 
-## Status: DONE (pending commit)
+## Status: DONE
 
 ## Context
 
