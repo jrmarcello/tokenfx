@@ -289,7 +289,7 @@ None new. `child_process` is Node stdlib; we already use `better-sqlite3`, `zod`
   - files: components/overview/outcomes-card.tsx, app/page.tsx
   - depends: TASK-6
 
-- [ ] **TASK-PR** (optional v2, marked `[ ]` and not required for spec DONE): GitHub PR cross-reference behind `TOKENFX_GH_PR_LOOKUP=1`. New helper `lib/ingest/git/gh-prs.ts` runs `gh api repos/{owner}/{repo}/commits/{sha}/pulls --jq '[.[] | select(.merged_at != null) | .number]'` per session-commit (the GitHub commits→PRs endpoint — finds PRs that contain a given commit, NOT PRs whose title/body mentions the sha). Repo `{owner}/{repo}` is derived from `git remote get-url origin` (parse GitHub URL — bail on non-GitHub remotes). Dedupes by PR number across all session-commits, returns count or null on any failure (gh missing, network error, no remote, non-GitHub remote, rate-limited). Wired into the evaluator only when the env flag is set. Tests use a stub `gh` binary placed on PATH via fixture (no real GitHub calls in CI).
+- [x] **TASK-PR** (closed 2026-05-06 via `.specs/outcome-integration-git-v2-pr-lookup.md`): GitHub PR cross-reference behind `TOKENFX_GH_PR_LOOKUP=1`. New helper `lib/ingest/git/gh-prs.ts` runs `gh api repos/{owner}/{repo}/commits/{sha}/pulls --jq '[.[] | select(.merged_at != null) | .number]'` per session-commit (the GitHub commits→PRs endpoint — finds PRs that contain a given commit, NOT PRs whose title/body mentions the sha). Repo `{owner}/{repo}` is derived from `git remote get-url origin` (parse GitHub URL — bail on non-GitHub remotes). Dedupes by PR number across all session-commits, returns count or null on any failure (gh missing, network error, no remote, non-GitHub remote, rate-limited). Wired into the evaluator only when the env flag is set. Tests use a stub `gh` binary placed on PATH via fixture (no real GitHub calls in CI).
   - files: lib/ingest/git/gh-prs.ts, lib/ingest/git/gh-prs.test.ts, lib/ingest/git/evaluator.ts (extension)
   - depends: TASK-4
   - tests: TC-I-14 (already covers null round-trip; live `gh` test added in this task)
@@ -395,3 +395,19 @@ Batch 5: [TASK-SMOKE]
 ## Final state
 
 - 2026-04-28: Status `IN_PROGRESS` → **DONE**. User approved the implementation after PAUSE 2 review (live validation against real DB + UI grep + 743 tests/5 E2E green). Committed as `feat(outcome-integration-git)`.
+
+- **2026-05-06: TASK-PR (v2 deferred) → DONE**. Closed via separate spec
+  `.specs/outcome-integration-git-v2-pr-lookup.md`. The deferred GitHub
+  merged-PR cross-reference (REQ-8 of this spec) is now implemented
+  behind `TOKENFX_GH_PR_LOOKUP=1`. New helper `lib/ingest/git/pr-lookup.ts`
+  calls `gh api repos/{owner}/{repo}/commits/{sha}/pulls --jq '[.[] |
+  select(.merged_at != null) | .number]'`; new helper
+  `lib/ingest/git/git-remote.ts` parses `git remote get-url origin` to
+  derive owner/repo. The evaluator wires both via a `lookupPrCountImpl?`
+  DI seam; `session_outcomes.merged_pr_count` is populated from a
+  deduplicated `Set<number>` across session-commits. Failure modes
+  (rate-limited / unauthorized / error) collapse the partial result to
+  NULL; `'not-found'` is treated as success. Idempotent via per-process
+  SHA cache. 50+ TCs added across `git-remote.test.ts`,
+  `pr-lookup.test.ts`, and `evaluator.test.ts`. See the v2 spec's
+  Execution Log for full task-level detail.

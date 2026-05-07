@@ -4,6 +4,7 @@ import {
   expect,
   beforeEach,
   afterEach,
+  vi,
 } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -12,6 +13,7 @@ import path from 'node:path';
 import { openDatabase, type DB } from '@/lib/db/client';
 import { migrate } from '@/lib/db/migrate';
 import { evaluateSessionOutcome, type EvaluatorSession } from './evaluator';
+import { log } from '@/lib/logger';
 import { runGit } from './run-git';
 import { setupTestRepo, type TestRepo, TEST_USER_EMAIL } from './test-helpers';
 import type { OutcomeStatus } from './types';
@@ -912,4 +914,416 @@ describe('evaluateSessionOutcome', () => {
   it('uses TEST_USER_EMAIL helper export', () => {
     expect(TEST_USER_EMAIL).toContain('@');
   });
+
+  // ──────────────────────────────────────────────────────────
+  // v2-pr-lookup TCs (TC-I-11..26 from
+  // `.specs/outcome-integration-git-v2-pr-lookup.md`).
+  // ──────────────────────────────────────────────────────────
+
+  /**
+   * Configure a GitHub remote in a test repo so `resolveGitHubRepo` finds
+   * something. We use `git remote add origin <url>` via spawnSync. Without
+   * this, TC-I-13 (no GitHub remote) is the path that fires by default.
+   */
+  const addGithubRemote = (cwd: string): void => {
+    const result = spawnSync(
+      'git',
+      ['remote', 'add', 'origin', 'git@github.com:foo/bar.git'],
+      { cwd, encoding: 'utf8' },
+    );
+    if (result.status !== 0) {
+      throw new Error(
+        `git remote add failed in ${cwd}: ${result.stderr ?? ''}`,
+      );
+    }
+  };
+
+  /**
+   * Build a `lookupPrCountImpl` stub whose answer is keyed by SHA. Tests
+   * pass a SHA → status+prNumbers map; if a SHA isn't in the map the stub
+   * throws (test bug — every commit must have a planned answer).
+   */
+  type StubResponse = {
+    status: 'ok' | 'rate-limited' | 'unauthorized' | 'not-found' | 'error';
+    prNumbers: readonly number[];
+  };
+  const makeLookupStub = (
+    plan: ReadonlyArray<StubResponse>,
+  ): {
+    impl: NonNullable<Parameters<typeof evaluateSessionOutcome>[2]>['lookupPrCountImpl'];
+    callCount: () => number;
+    seenShas: () => readonly string[];
+  } => {
+    let idx = 0;
+    const seen: string[] = [];
+    const impl: NonNullable<
+      Parameters<typeof evaluateSessionOutcome>[2]
+    >['lookupPrCountImpl'] = (input) => {
+      seen.push(input.sha);
+      if (idx >= plan.length) {
+        throw new Error(
+          `lookup stub exhausted: got ${seen.length} calls, plan has ${plan.length}`,
+        );
+      }
+      const next = plan[idx];
+      idx += 1;
+      return { ok: true, value: next };
+    };
+    return {
+      impl,
+      callCount: () => seen.length,
+      seenShas: () => seen,
+    };
+  };
+
+  const setupSessionWithCommits = (
+    n: number,
+  ): { session: EvaluatorSession; r: TestRepo } => {
+    const r = setupTestRepo('pr-lookup');
+    repo = r;
+    const t0 = Date.now() - 3_600_000;
+    seedCommit(r);
+    for (let i = 0; i < n; i += 1) {
+      r.commit({
+        message: `commit-${i}`,
+        files: { [`file-${i}.txt`]: `content-${i}\n` },
+        date: Math.floor((t0 + i * 60_000) / 1000),
+        authorEmail: TEST_USER_EMAIL,
+      });
+    }
+    const session: EvaluatorSession = {
+      id: `pr-session-${Date.now()}`,
+      cwd: r.path,
+      started_at: t0 - 30_000,
+      ended_at: t0 + n * 60_000 + 30_000,
+    };
+    insertSession(db, session);
+    return { session, r };
+  };
+
+  // TC-I-11: anti-regression — flag UNSET → mergedPrCount stays NULL,
+  // lookup never invoked.
+  it('TC-I-11: TOKENFX_GH_PR_LOOKUP unset → merged_pr_count = NULL, lookup not called', () => {
+    delete process.env.TOKENFX_GH_PR_LOOKUP;
+    const { session } = setupSessionWithCommits(2);
+    const stub = makeLookupStub([]);
+    evaluateSessionOutcome(db, session, { lookupPrCountImpl: stub.impl });
+    expect(stub.callCount()).toBe(0);
+    expect(readOutcome(db, session.id)?.merged_pr_count).toBeNull();
+  });
+
+  // TC-I-12: env value is `'0'` (literal string, NOT '1') → flag OFF.
+  it('TC-I-12: TOKENFX_GH_PR_LOOKUP=0 → flag OFF, lookup not called', () => {
+    process.env.TOKENFX_GH_PR_LOOKUP = '0';
+    try {
+      const { session } = setupSessionWithCommits(2);
+      const stub = makeLookupStub([]);
+      evaluateSessionOutcome(db, session, { lookupPrCountImpl: stub.impl });
+      expect(stub.callCount()).toBe(0);
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBeNull();
+    } finally {
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+  });
+
+  // TC-I-13: flag on but no GitHub remote → mergedPrCount = NULL,
+  // lookup not called (resolveGitHubRepo short-circuits) AND a single
+  // info log with reason='no-github-remote' is emitted (REQ-13).
+  it('flag on + no GitHub remote → merged_pr_count = NULL, lookup not called, logs no-github-remote', () => {
+    process.env.TOKENFX_GH_PR_LOOKUP = '1';
+    const logSpy = vi.spyOn(log, 'info').mockImplementation(() => {});
+    try {
+      const { session, r } = setupSessionWithCommits(2);
+      // No remote configured — the helper repo from setupTestRepo() has no
+      // origin remote.
+      void r;
+      const stub = makeLookupStub([]);
+      evaluateSessionOutcome(db, session, { lookupPrCountImpl: stub.impl });
+      expect(stub.callCount()).toBe(0);
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBeNull();
+
+      const noRemoteCalls = logSpy.mock.calls.filter((call) => {
+        const ctx = call[1];
+        return (
+          typeof ctx === 'object' &&
+          ctx !== null &&
+          (ctx as Record<string, unknown>).reason === 'no-github-remote'
+        );
+      });
+      expect(noRemoteCalls.length).toBe(1);
+    } finally {
+      logSpy.mockRestore();
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+  });
+
+  // TC-I-14: flag on, GitHub remote, 5 commits with 2 unique PRs across
+  // them — dedup via Set yields merged_pr_count = 2.
+  it('TC-I-14: dedup PR numbers across commits', () => {
+    process.env.TOKENFX_GH_PR_LOOKUP = '1';
+    try {
+      const { session, r } = setupSessionWithCommits(5);
+      addGithubRemote(r.path);
+      const stub = makeLookupStub([
+        { status: 'ok', prNumbers: [42] },
+        { status: 'ok', prNumbers: [] },
+        { status: 'not-found', prNumbers: [] },
+        { status: 'ok', prNumbers: [42, 99] },
+        { status: 'ok', prNumbers: [99] },
+      ]);
+      evaluateSessionOutcome(db, session, { lookupPrCountImpl: stub.impl });
+      expect(stub.callCount()).toBe(5);
+      // Lock the iteration order: every commit was visited exactly once.
+      // Set comparison guards against a future change in commit ordering
+      // that would shift plan-to-SHA attribution while still deduping to 2.
+      expect(new Set(stub.seenShas()).size).toBe(5);
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBe(2);
+    } finally {
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+  });
+
+  // TC-I-15: any rate-limited → discard partial → NULL.
+  // callCount=3 pins the full-iteration contract: anyFailure must NOT
+  // short-circuit the loop (otherwise a future early-break optimization
+  // silently passes).
+  it('rate-limited mid-session → merged_pr_count = NULL (full iteration)', () => {
+    process.env.TOKENFX_GH_PR_LOOKUP = '1';
+    try {
+      const { session, r } = setupSessionWithCommits(3);
+      addGithubRemote(r.path);
+      const stub = makeLookupStub([
+        { status: 'ok', prNumbers: [42] },
+        { status: 'rate-limited', prNumbers: [] },
+        { status: 'ok', prNumbers: [99] },
+      ]);
+      evaluateSessionOutcome(db, session, { lookupPrCountImpl: stub.impl });
+      expect(stub.callCount()).toBe(3);
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBeNull();
+    } finally {
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+  });
+
+  // TC-I-16: any unauthorized → NULL.
+  it('unauthorized mid-session → merged_pr_count = NULL (full iteration)', () => {
+    process.env.TOKENFX_GH_PR_LOOKUP = '1';
+    try {
+      const { session, r } = setupSessionWithCommits(3);
+      addGithubRemote(r.path);
+      const stub = makeLookupStub([
+        { status: 'ok', prNumbers: [42] },
+        { status: 'unauthorized', prNumbers: [] },
+        { status: 'ok', prNumbers: [99] },
+      ]);
+      evaluateSessionOutcome(db, session, { lookupPrCountImpl: stub.impl });
+      expect(stub.callCount()).toBe(3);
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBeNull();
+    } finally {
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+  });
+
+  // TC-I-17: any error → NULL.
+  it('error mid-session → merged_pr_count = NULL (full iteration)', () => {
+    process.env.TOKENFX_GH_PR_LOOKUP = '1';
+    try {
+      const { session, r } = setupSessionWithCommits(3);
+      addGithubRemote(r.path);
+      const stub = makeLookupStub([
+        { status: 'ok', prNumbers: [42] },
+        { status: 'error', prNumbers: [] },
+        { status: 'ok', prNumbers: [99] },
+      ]);
+      evaluateSessionOutcome(db, session, { lookupPrCountImpl: stub.impl });
+      expect(stub.callCount()).toBe(3);
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBeNull();
+    } finally {
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+  });
+
+  // TC-I-18: ok + not-found mix (no failures) → success contributes;
+  // not-found contributes empty. Set is { 42 } → merged_pr_count = 1.
+  it('ok + not-found mix → not-found is success', () => {
+    process.env.TOKENFX_GH_PR_LOOKUP = '1';
+    try {
+      const { session, r } = setupSessionWithCommits(3);
+      addGithubRemote(r.path);
+      const stub = makeLookupStub([
+        { status: 'ok', prNumbers: [42] },
+        { status: 'not-found', prNumbers: [] },
+        { status: 'not-found', prNumbers: [] },
+      ]);
+      evaluateSessionOutcome(db, session, { lookupPrCountImpl: stub.impl });
+      expect(stub.callCount()).toBe(3);
+      expect(new Set(stub.seenShas()).size).toBe(3);
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBe(1);
+    } finally {
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+  });
+
+  // TC-I-19: zero session-commits + flag on → no lookups, NULL.
+  it('TC-I-19: zero commits + flag on → merged_pr_count = NULL, lookup not called', () => {
+    process.env.TOKENFX_GH_PR_LOOKUP = '1';
+    try {
+      const r = setupTestRepo('pr-lookup');
+      repo = r;
+      addGithubRemote(r.path);
+      seedCommit(r);
+      const session: EvaluatorSession = {
+        id: `empty-session-${Date.now()}`,
+        cwd: r.path,
+        // Window outside any commits — enumerate yields []
+        started_at: 0,
+        ended_at: 1000,
+      };
+      insertSession(db, session);
+      const stub = makeLookupStub([]);
+      evaluateSessionOutcome(db, session, { lookupPrCountImpl: stub.impl });
+      expect(stub.callCount()).toBe(0);
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBeNull();
+    } finally {
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+  });
+
+  // TC-I-20: UPSERT idempotency — re-runs flip merged_pr_count
+  // (NULL → 2 → 3) without duplicating rows. Confirms the ON CONFLICT
+  // SET clause was extended to include the new column (REQ-16).
+  it('TC-I-20: UPSERT round-trips merged_pr_count NULL → 2 → 3', () => {
+    process.env.TOKENFX_GH_PR_LOOKUP = '1';
+    try {
+      const { session, r } = setupSessionWithCommits(2);
+      addGithubRemote(r.path);
+
+      // First run: flag OFF (override) → NULL.
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+      evaluateSessionOutcome(db, session, {
+        lookupPrCountImpl: makeLookupStub([]).impl,
+      });
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBeNull();
+
+      // Second run: flag ON, 2 PRs.
+      process.env.TOKENFX_GH_PR_LOOKUP = '1';
+      evaluateSessionOutcome(db, session, {
+        lookupPrCountImpl: makeLookupStub([
+          { status: 'ok', prNumbers: [10] },
+          { status: 'ok', prNumbers: [20] },
+        ]).impl,
+      });
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBe(2);
+
+      // Third run: flag ON, 3 PRs.
+      evaluateSessionOutcome(db, session, {
+        lookupPrCountImpl: makeLookupStub([
+          { status: 'ok', prNumbers: [10, 20] },
+          { status: 'ok', prNumbers: [30] },
+        ]).impl,
+      });
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBe(3);
+
+      // Row count must remain 1 (UPSERT, not INSERT).
+      const rows = db
+        .prepare('SELECT COUNT(*) AS n FROM session_outcomes WHERE session_id = ?')
+        .get(session.id) as { n: number };
+      expect(rows.n).toBe(1);
+    } finally {
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+  });
+
+  // TC-I-24: TWO different failure statuses + 1 ok → NULL.
+  it('TC-I-24: rate-limited + unauthorized + ok → merged_pr_count = NULL', () => {
+    process.env.TOKENFX_GH_PR_LOOKUP = '1';
+    try {
+      const { session, r } = setupSessionWithCommits(3);
+      addGithubRemote(r.path);
+      const stub = makeLookupStub([
+        { status: 'ok', prNumbers: [42] },
+        { status: 'rate-limited', prNumbers: [] },
+        { status: 'unauthorized', prNumbers: [] },
+      ]);
+      evaluateSessionOutcome(db, session, { lookupPrCountImpl: stub.impl });
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBeNull();
+    } finally {
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+  });
+
+  // TC-I-25: ALL not-found → success path, set is {} → 0.
+  it('TC-I-25: all not-found → merged_pr_count = 0', () => {
+    process.env.TOKENFX_GH_PR_LOOKUP = '1';
+    try {
+      const { session, r } = setupSessionWithCommits(2);
+      addGithubRemote(r.path);
+      const stub = makeLookupStub([
+        { status: 'not-found', prNumbers: [] },
+        { status: 'not-found', prNumbers: [] },
+      ]);
+      evaluateSessionOutcome(db, session, { lookupPrCountImpl: stub.impl });
+      expect(readOutcome(db, session.id)?.merged_pr_count).toBe(0);
+    } finally {
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+  });
+
+  // TC-I-26: flag toggle re-evaluation — flag-OFF run AFTER a flag-ON
+  // run that wrote 2 must overwrite to NULL (do-not-evaluate semantics).
+  it('TC-I-26: flag toggle off → merged_pr_count overwrites to NULL', () => {
+    const { session, r } = setupSessionWithCommits(2);
+    addGithubRemote(r.path);
+
+    // First run: flag ON, 2 PRs.
+    process.env.TOKENFX_GH_PR_LOOKUP = '1';
+    try {
+      evaluateSessionOutcome(db, session, {
+        lookupPrCountImpl: makeLookupStub([
+          { status: 'ok', prNumbers: [10] },
+          { status: 'ok', prNumbers: [20] },
+        ]).impl,
+      });
+    } finally {
+      delete process.env.TOKENFX_GH_PR_LOOKUP;
+    }
+    expect(readOutcome(db, session.id)?.merged_pr_count).toBe(2);
+
+    // Second run: flag UNSET → overwrites to NULL.
+    evaluateSessionOutcome(db, session, {
+      lookupPrCountImpl: makeLookupStub([]).impl,
+    });
+    expect(readOutcome(db, session.id)?.merged_pr_count).toBeNull();
+  });
+
+  // TC-U-21..25 (v2 spec): strict env-flag boundary check — only the
+  // literal string '1' enables the lookup. Common false-positives must
+  // be rejected to avoid silently turning the feature on.
+  // (Different namespace from the parent spec's TC-U-21..25 commit-time
+  // boundaries; spec test names are natural English so the IDs only
+  // appear in this comment.)
+  it.each([
+    ['true'],
+    ['1 '],
+    [' 1'],
+    ['yes'],
+    ['TRUE'],
+  ])(
+    'TOKENFX_GH_PR_LOOKUP=%j → flag OFF (only literal "1" enables lookup)',
+    (flagValue) => {
+      process.env.TOKENFX_GH_PR_LOOKUP = flagValue;
+      try {
+        const { session, r } = setupSessionWithCommits(2);
+        addGithubRemote(r.path);
+        const stub = makeLookupStub([]);
+        evaluateSessionOutcome(db, session, {
+          lookupPrCountImpl: stub.impl,
+        });
+        expect(stub.callCount()).toBe(0);
+        expect(readOutcome(db, session.id)?.merged_pr_count).toBeNull();
+      } finally {
+        delete process.env.TOKENFX_GH_PR_LOOKUP;
+      }
+    },
+  );
 });

@@ -5,6 +5,11 @@ import type { Result } from '@/lib/result';
 import { parseNumstat } from './numstat';
 import { parseRevertGrep } from './reverts';
 import { runGit as defaultRunGit, type GitError } from './run-git';
+import { resolveGitHubRepo } from './git-remote';
+import {
+  lookupMergedPrCount as defaultLookupMergedPrCount,
+  type PrLookupResult,
+} from './pr-lookup';
 import type { OutcomeStatus } from './types';
 
 /**
@@ -34,8 +39,22 @@ export type RunGitImpl = (
   opts: { cwd: string; timeoutMs?: number },
 ) => Result<string, GitError>;
 
+/**
+ * DI seam for the merged-PR lookup. Defaults to the production
+ * `lookupMergedPrCount` from `./pr-lookup`. Tests inject a stub.
+ *
+ * Exposed as a typed alias rather than `typeof defaultLookupMergedPrCount`
+ * to keep the test surface narrow — tests should not need access to the
+ * cache/rate-limit/now seams of the underlying helper. They pass a
+ * function that takes `(input)` and returns the production-shaped Result.
+ */
+export type LookupPrCountImpl = (
+  input: { owner: string; repo: string; sha: string },
+) => Result<PrLookupResult, never>;
+
 export interface EvaluateOptions {
   readonly runGitImpl?: RunGitImpl;
+  readonly lookupPrCountImpl?: LookupPrCountImpl;
 }
 
 /** Well-known empty-tree SHA in git (REQ-6 fallback for parentless commits). */
@@ -46,13 +65,14 @@ const UPSERT_SQL = `
   INSERT INTO session_outcomes (
     session_id, commit_count, loc_added, loc_removed, files_changed,
     reverts_within_7d, merged_pr_count, status, last_evaluated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(session_id) DO UPDATE SET
     commit_count = excluded.commit_count,
     loc_added = excluded.loc_added,
     loc_removed = excluded.loc_removed,
     files_changed = excluded.files_changed,
     reverts_within_7d = excluded.reverts_within_7d,
+    merged_pr_count = excluded.merged_pr_count,
     status = excluded.status,
     last_evaluated_at = excluded.last_evaluated_at
 ` as const;
@@ -66,6 +86,7 @@ const upsertOutcome = (
     locRemoved: number;
     filesChanged: number;
     revertsWithin7d: number;
+    mergedPrCount: number | null;
     status: OutcomeStatus;
     lastEvaluatedAt: number;
   },
@@ -77,6 +98,7 @@ const upsertOutcome = (
     row.locRemoved,
     row.filesChanged,
     row.revertsWithin7d,
+    row.mergedPrCount,
     row.status,
     row.lastEvaluatedAt,
   );
@@ -94,6 +116,7 @@ const writeStatusOnly = (
     locRemoved: 0,
     filesChanged: 0,
     revertsWithin7d: 0,
+    mergedPrCount: null,
     status,
     lastEvaluatedAt: Date.now(),
   });
@@ -387,6 +410,19 @@ export const evaluateSessionOutcome = (
     runGitImpl,
   );
 
+  // v2-pr-lookup REQ-11..15: optional GitHub merged-PR cross-reference,
+  // gated by `TOKENFX_GH_PR_LOOKUP=1` (strict equality — REQ-12).
+  // The flag check uses literal `'1'`; ANY other value (including
+  // `'true'`, `' 1 '`, empty string, undefined) leaves the flag OFF
+  // and `mergedPrCount = null` is written (parent-spec contract).
+  const mergedPrCount = computeMergedPrCount({
+    cwd: realCwd,
+    sessionId: session.id,
+    commits,
+    runGitImpl,
+    lookupPrCountImpl: options.lookupPrCountImpl ?? defaultLookupMergedPrCount,
+  });
+
   upsertOutcome(db, {
     sessionId: session.id,
     commitCount: commits.length,
@@ -394,7 +430,78 @@ export const evaluateSessionOutcome = (
     locRemoved,
     filesChanged: filesUnion.size,
     revertsWithin7d,
+    mergedPrCount,
     status: 'evaluated',
     lastEvaluatedAt: Date.now(),
   });
+};
+
+/**
+ * Resolve `merged_pr_count` for the session. Returns `null` (the
+ * "not evaluated" sentinel) in three cases:
+ *   1. `TOKENFX_GH_PR_LOOKUP !== '1'` (flag off — REQ-12).
+ *   2. `resolveGitHubRepo(cwd)` returns null (no GitHub remote — REQ-13).
+ *   3. Any per-commit lookup returns a failure status
+ *      (`'rate-limited' | 'unauthorized' | 'error'` — REQ-15). Successes
+ *      including `'not-found'` (`prNumbers: []`) participate normally.
+ *
+ * Returns the deduplicated PR-number count when all lookups succeed.
+ *
+ * Idempotent in production via `pr-lookup`'s module-level SHA cache —
+ * re-runs over the same session reuse the cached `'ok'` results.
+ */
+const computeMergedPrCount = (input: {
+  cwd: string;
+  sessionId: string;
+  commits: ReadonlyArray<{ sha: string }>;
+  runGitImpl: RunGitImpl;
+  lookupPrCountImpl: LookupPrCountImpl;
+}): number | null => {
+  if (process.env.TOKENFX_GH_PR_LOOKUP !== '1') {
+    return null;
+  }
+  if (input.commits.length === 0) {
+    // No commits → no PRs to look up. Distinct from "lookup attempted
+    // but yielded zero" — write null so downstream can't confuse the
+    // two cases.
+    return null;
+  }
+  const repo = resolveGitHubRepo(input.cwd, input.runGitImpl);
+  if (repo === null) {
+    log.info('[git/evaluator] pr-lookup skip', {
+      sessionId: input.sessionId,
+      reason: 'no-github-remote',
+    });
+    return null;
+  }
+
+  const prSet = new Set<number>();
+  let anyFailure = false;
+  for (const c of input.commits) {
+    const result = input.lookupPrCountImpl({
+      owner: repo.owner,
+      repo: repo.repo,
+      sha: c.sha,
+    });
+    // `Result<T, never>` — unreachable today (helper never returns ok:false).
+    // Treat as failure rather than silently skipping, so a future signature
+    // widening (e.g. async refactor) doesn't eat errors as "no PR found".
+    if (!result.ok) {
+      anyFailure = true;
+      continue;
+    }
+    const { status, prNumbers } = result.value;
+    if (
+      status === 'rate-limited' ||
+      status === 'unauthorized' ||
+      status === 'error'
+    ) {
+      anyFailure = true;
+      continue;
+    }
+    // status is 'ok' or 'not-found' — both contribute their prNumbers
+    // (empty for 'not-found') to the dedup set.
+    for (const n of prNumbers) prSet.add(n);
+  }
+  return anyFailure ? null : prSet.size;
 };
