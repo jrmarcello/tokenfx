@@ -1468,4 +1468,109 @@ describe('evaluateSessionOutcome', () => {
       delete process.env.TOKENFX_GH_PR_LOOKUP;
     }
   });
+
+  // ---- WeakMap UPSERT cache TCs (refactor-prepared-statements-evaluator) ----
+  // Hand-written counting wrapper (no vi.spyOn / no mocking framework per
+  // project rule). Wrapper installed AFTER setupTestRepo + migrate + any
+  // session insert, so migration-time prepare calls aren't counted; filter
+  // narrows to /INSERT INTO session_outcomes/i so only the UPSERT prepare
+  // contributes. See .specs/refactor-prepared-statements-evaluator.md.
+
+  /** Patch `db.prepare` to count UPSERT prepares only. Returns a getter for the count. */
+  const installPrepareCounter = (target: DB): { count: () => number } => {
+    let upsertPrepareCount = 0;
+    const originalPrepare = target.prepare.bind(target);
+    // Cast to `typeof target.prepare`: better-sqlite3's prepare is a generic
+    // overload (`<T>(sql) => Statement<T>`) which can't be expressed by a
+    // single non-generic wrapper lambda. The wrapper delegates unchanged to
+    // originalPrepare, so the runtime contract is preserved.
+    target.prepare = ((sql: string) => {
+      if (/INSERT INTO session_outcomes/i.test(sql)) {
+        upsertPrepareCount += 1;
+      }
+      return originalPrepare(sql);
+    }) as typeof target.prepare;
+    return { count: () => upsertPrepareCount };
+  };
+
+  // TC-U-01: 50 calls on the same DB → exactly 1 UPSERT prepare (cache-miss
+  // on first call; cache-hit on calls 2-50). Both branches of the
+  // `if (stmt === undefined)` guard exercised in a single TC.
+  it('upsert prepare cached: 50 evaluateSessionOutcome calls → 1 db.prepare(INSERT INTO session_outcomes)', () => {
+    const r = setupTestRepo('upsert-prepare-cache');
+    repo = r;
+    seedCommit(r);
+    // Single seeded session reused across 50 invocations — keeps the test
+    // self-contained (no need to grow the repo or fixtures per call).
+    const now = Date.now();
+    const session: EvaluatorSession = {
+      id: 'sess-upsert-cache-01',
+      cwd: r.path,
+      started_at: now - 60_000,
+      ended_at: now,
+    };
+    insertSession(db, session);
+
+    const counter = installPrepareCounter(db);
+    for (let i = 0; i < 50; i += 1) {
+      evaluateSessionOutcome(db, session);
+    }
+    expect(counter.count()).toBe(1);
+  });
+
+  // TC-U-02: 2 distinct DBs, 1 call each → 2 prepares total (one per DB).
+  // Confirms each DB instance is keyed independently in the WeakMap.
+  it('upsert prepare cached per-DB: two DBs → two distinct cache entries', () => {
+    const dbA = openDatabase(':memory:');
+    const dbB = openDatabase(':memory:');
+    // Local repo (not the outer `repo`) so afterEach's repo.cleanup() still
+    // targets only what TC-U-01 created; this TC owns its lifecycle.
+    const localRepo = setupTestRepo('upsert-prepare-2db');
+    try {
+      migrate(dbA);
+      migrate(dbB);
+      seedCommit(localRepo);
+
+      const now = Date.now();
+      const sessionA: EvaluatorSession = {
+        id: 'sess-2db-A',
+        cwd: localRepo.path,
+        started_at: now - 60_000,
+        ended_at: now,
+      };
+      const sessionB: EvaluatorSession = {
+        id: 'sess-2db-B',
+        cwd: localRepo.path,
+        started_at: now - 60_000,
+        ended_at: now,
+      };
+      insertSession(dbA, sessionA);
+      insertSession(dbB, sessionB);
+
+      const counterA = installPrepareCounter(dbA);
+      const counterB = installPrepareCounter(dbB);
+      evaluateSessionOutcome(dbA, sessionA);
+      evaluateSessionOutcome(dbB, sessionB);
+
+      expect(counterA.count()).toBe(1);
+      expect(counterB.count()).toBe(1);
+      expect(counterA.count() + counterB.count()).toBe(2);
+    } finally {
+      dbA.close();
+      dbB.close();
+      localRepo.cleanup();
+    }
+  });
+
+  // TC-U-03: REQ-3 + REQ-4 — module-export shape assertion. The cache and
+  // helper are module-private. WeakMap-vs-Map is enforced by the source
+  // file's type annotation (compile-time check via pnpm typecheck).
+  it('module export shape: cache helper and WeakMap are private to evaluator.ts', async () => {
+    const evaluatorMod = await import('./evaluator');
+    const exportedKeys = Object.keys(evaluatorMod);
+    expect(exportedKeys).not.toContain('getUpsertOutcomeStmt');
+    expect(exportedKeys).not.toContain('upsertOutcomeStmtCache');
+    // Public surface from existing v2 + v3 specs is unchanged.
+    expect(exportedKeys).toContain('evaluateSessionOutcome');
+  });
 });

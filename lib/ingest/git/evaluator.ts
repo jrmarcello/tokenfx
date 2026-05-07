@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import type { Statement } from 'better-sqlite3';
 import type { DB } from '@/lib/db/client';
 import { log } from '@/lib/logger';
 import type { Result } from '@/lib/result';
@@ -77,6 +78,31 @@ const UPSERT_SQL = `
     last_evaluated_at = excluded.last_evaluated_at
 ` as const;
 
+/** Tuple shape mirrors UPSERT_SQL's 9 positional args. */
+type UpsertParams = [
+  string, // session_id
+  number, // commit_count
+  number, // loc_added
+  number, // loc_removed
+  number, // files_changed
+  number, // reverts_within_7d
+  number | null, // merged_pr_count
+  OutcomeStatus, // status
+  number, // last_evaluated_at
+];
+
+// Module-private cache. WeakMap (not Map) so DB GC eligibility is preserved.
+// See .specs/refactor-prepared-statements-evaluator.md.
+const upsertOutcomeStmtCache = new WeakMap<DB, Statement<UpsertParams>>();
+
+function getUpsertOutcomeStmt(db: DB): Statement<UpsertParams> {
+  const existing = upsertOutcomeStmtCache.get(db);
+  if (existing !== undefined) return existing;
+  const prepared = db.prepare<UpsertParams>(UPSERT_SQL);
+  upsertOutcomeStmtCache.set(db, prepared);
+  return prepared;
+}
+
 const upsertOutcome = (
   db: DB,
   row: {
@@ -91,7 +117,7 @@ const upsertOutcome = (
     lastEvaluatedAt: number;
   },
 ): void => {
-  db.prepare(UPSERT_SQL).run(
+  getUpsertOutcomeStmt(db).run(
     row.sessionId,
     row.commitCount,
     row.locAdded,
