@@ -1,6 +1,6 @@
 # Spec: refactor-prepared-statements-evaluator
 
-## Status: DONE (pending commit)
+## Status: DONE
 
 ## Context
 
