@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as dbClient from '@/lib/db/client';
 import { ensureFreshIngest } from './auto';
@@ -20,6 +23,8 @@ describe('ensureFreshIngest — watcher coexistence', () => {
   let savedWatcher: WatcherHandle | undefined;
   let savedDisableAutoIngest: string | undefined;
   let savedWatchMode: string | undefined;
+  let savedClaudeProjectsRoot: string | undefined;
+  let tmpProjectsRoot: string;
 
   beforeEach(() => {
     // Save & clear the watcher singleton so each test controls it explicitly.
@@ -32,6 +37,15 @@ describe('ensureFreshIngest — watcher coexistence', () => {
     savedWatchMode = process.env.TOKENFX_WATCH_MODE;
     delete process.env.TOKENFX_DISABLE_AUTO_INGEST;
     delete process.env.TOKENFX_WATCH_MODE;
+
+    // Override CLAUDE_PROJECTS_ROOT to a fresh tmpdir so `listTranscriptFiles`
+    // doesn't walk the developer's real ~/.claude/projects (which can hold
+    // 800+ JSONL files and blow past the 20s timeout). Tests don't need real
+    // transcripts — `ensureFreshIngest` only needs an empty walk to exercise
+    // the watcher-coexistence path.
+    savedClaudeProjectsRoot = process.env.CLAUDE_PROJECTS_ROOT;
+    tmpProjectsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-test-cp-'));
+    process.env.CLAUDE_PROJECTS_ROOT = tmpProjectsRoot;
   });
 
   afterEach(() => {
@@ -46,6 +60,12 @@ describe('ensureFreshIngest — watcher coexistence', () => {
     } else {
       process.env.TOKENFX_WATCH_MODE = savedWatchMode;
     }
+    if (savedClaudeProjectsRoot === undefined) {
+      delete process.env.CLAUDE_PROJECTS_ROOT;
+    } else {
+      process.env.CLAUDE_PROJECTS_ROOT = savedClaudeProjectsRoot;
+    }
+    fs.rmSync(tmpProjectsRoot, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
 
@@ -71,7 +91,7 @@ describe('ensureFreshIngest — watcher coexistence', () => {
       expect(stop).not.toHaveBeenCalled();
       expect(globalThis.__tokenfxWatcher).toBe(handle);
     },
-    20_000,
+    30_000,
   );
 
   // Extended timeout: the normal `ensureFreshIngest` path hits the filesystem
@@ -98,6 +118,6 @@ describe('ensureFreshIngest — watcher coexistence', () => {
       expect(handle.running).toBe(false);
       expect(stop).not.toHaveBeenCalled();
     },
-    20_000,
+    30_000,
   );
 });
