@@ -19,6 +19,19 @@ pnpm dev:server
 
 The dev server boots on `http://localhost:3232`. Sign in via the configured SSO provider; first user in an org is auto-promoted to `admin` until role assignment ships.
 
+### Re-installing deps from inside `apps/server/`
+
+`apps/server` is **not** declared in the root `pnpm-workspace.yaml` `packages:` array (deliberate — the two apps share no code, just a parent directory). This has a sharp edge: running `pnpm install` from inside `apps/server/` is a silent no-op, because pnpm sees the parent's `pnpm-workspace.yaml` and treats `apps/server` as a workspace member of an empty workspace. Result: existing `node_modules` symlinks aren't refreshed, and a `tsc --noEmit` will fail with `Cannot find module 'drizzle-orm'` / `next-auth` / `pg` — even though the packages are physically present in `.pnpm/`.
+
+Always use `--ignore-workspace` when installing from this directory:
+
+```bash
+cd apps/server
+pnpm install --ignore-workspace   # treats apps/server as a standalone project
+```
+
+The flag tells pnpm to ignore the parent workspace file and resolve deps using only `apps/server/package.json` + `apps/server/pnpm-lock.yaml`. After this, `pnpm typecheck` and `pnpm lint` should pass cleanly.
+
 ## Privacy boundary (REQ-23)
 
 This is the load-bearing contract between every dev's machine and the central
