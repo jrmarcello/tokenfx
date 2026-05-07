@@ -1,6 +1,6 @@
 # Spec: outcome-integration-git-v3-422-as-not-found
 
-## Status: DONE (pending commit)
+## Status: DONE
 
 ## Context
 
