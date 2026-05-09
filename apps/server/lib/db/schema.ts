@@ -488,3 +488,86 @@ export const managerNotifications = pgTable(
     ),
   }),
 );
+
+// ============================================================================
+// manager-dashboard-v3-outcomes (REQ-8): per-session outcome data.
+// ALL metric columns NULLABLE — preserves "not computed" vs "computed and 0"
+// distinction (REQ-9). Composite FK to sessions_agg(user_id, session_id)
+// added in raw SQL migration (same pattern as model_breakdown_agg).
+// No additional index — rollup queries drive from
+// sessions_agg.idx_sessions_agg_user_started.
+// ============================================================================
+export const sessionOutcomesAgg = pgTable(
+  'session_outcomes_agg',
+  {
+    userId: uuid('user_id').notNull(),
+    sessionId: text('session_id').notNull(),
+    commitCount: integer('commit_count'),
+    locAdded: integer('loc_added'),
+    locRemoved: integer('loc_removed'),
+    filesChanged: integer('files_changed'),
+    revertsWithin7d: integer('reverts_within_7d'),
+    mergedPrCount: integer('merged_pr_count'),
+    // Stored as text + CHECK constraint in migration (see 0003 raw SQL).
+    // Drizzle pgEnum was rejected to avoid coupling enum migrations to
+    // local-schema enum drift (manager-dashboard-v3-outcomes spec REQ-3).
+    outcomeStatus: text('outcome_status'),
+    ingestedAt: timestamp('ingested_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.sessionId] }),
+  }),
+);
+
+// Compound FK to sessions_agg(user_id, session_id) ON DELETE CASCADE is
+// added in 0003 migration raw SQL — same pattern as model_breakdown_agg.
+
+// ============================================================================
+// manager-dashboard-v3-outcomes (REQ-10): per (org, team, day) outcome
+// rollup. Computed by `aggregate-team-outcomes` cron from session_outcomes_agg
+// JOINed via sessions_agg → users → team_id. Filters to outcome_status =
+// 'evaluated' before SUM (non-evaluated rows excluded from rollup).
+// NO org-level aggregate row (Postgres PK columns can't be NULL; org-level
+// rollups are computed in JS at the page component, mirroring Fase 4
+// effectiveness/page.tsx).
+// ============================================================================
+export const teamOutcomesDaily = pgTable(
+  'team_outcomes_daily',
+  {
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id, { onDelete: 'cascade' }),
+    teamId: uuid('team_id')
+      .notNull()
+      .references(() => teams.id, { onDelete: 'cascade' }),
+    day: date('day').notNull(),
+    totalCommits: integer('total_commits').notNull().default(0),
+    totalLocAdded: integer('total_loc_added').notNull().default(0),
+    totalLocRemoved: integer('total_loc_removed').notNull().default(0),
+    totalFilesChanged: integer('total_files_changed').notNull().default(0),
+    totalRevertsWithin7d: integer('total_reverts_within_7d').notNull().default(0),
+    // NULL when ALL contributing sessions had merged_pr_count = NULL
+    // (preserves "feature off / no data" vs "feature on, 0 PRs").
+    totalMergedPrCount: integer('total_merged_pr_count'),
+    totalInputTokens: bigint('total_input_tokens', { mode: 'number' })
+      .notNull()
+      .default(0),
+    totalOutputTokens: bigint('total_output_tokens', { mode: 'number' })
+      .notNull()
+      .default(0),
+    totalCostUsd: numeric('total_cost_usd', { precision: 14, scale: 6 })
+      .notNull()
+      .default('0'),
+    // Denominator for `avg_merged_prs_per_session_with_outcome`. NOT the
+    // denominator for `revert_rate` (that uses total_commits).
+    sessionsWithOutcome: integer('sessions_with_outcome').notNull().default(0),
+    computedAt: timestamp('computed_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.orgId, t.teamId, t.day] }),
+  }),
+);

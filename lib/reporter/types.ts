@@ -19,6 +19,18 @@ const modelBreakdownEntry = z
   })
   .strict();
 
+// Outcome status enum — hardcoded 4 values from local `session_outcomes.status`.
+// Drift policy (manager-dashboard-v3-outcomes spec REQ-3): if the local schema
+// gains a 5th value, server-side Zod rejects ONLY that session item (per-item
+// parse, not batch). Operator discovers via ingestion_log error rows; no
+// graceful fallback — explicit failure beats silent data loss.
+const outcomeStatusEnum = z.enum([
+  'evaluated',
+  'cwd-missing',
+  'not-a-git-repo',
+  'no-user-email',
+]);
+
 export const SanitizedSessionPayload = z
   .object({
     session_id: z.string().min(1).max(128),
@@ -44,6 +56,20 @@ export const SanitizedSessionPayload = z
     cache_hit_ratio: z.number().min(0).max(1).finite().nullable(),
     output_input_ratio: z.number().min(0).finite().nullable(),
     subagent_usage_ratio: z.number().min(0).max(1).finite().nullable(),
+
+    // ---- v3 outcome fields ----------------------------------------------
+    // All 7 fields are `.optional().nullable()` (manager-dashboard-v3-outcomes
+    // REQ-7): old reporters omit the keys entirely (.optional handles absence);
+    // new reporters with no outcome row send literal null (.nullable handles
+    // null); new reporters with an evaluated outcome send the integer/enum.
+    // .optional() is LOAD-BEARING — without it, .strict() rejects old payloads.
+    commit_count: safeIntNonNeg.nullable().optional(),
+    loc_added: safeIntNonNeg.nullable().optional(),
+    loc_removed: safeIntNonNeg.nullable().optional(),
+    files_changed: safeIntNonNeg.nullable().optional(),
+    reverts_within_7d: safeIntNonNeg.nullable().optional(),
+    merged_pr_count: safeIntNonNeg.nullable().optional(),
+    outcome_status: outcomeStatusEnum.nullable().optional(),
   })
   .strict()
   .refine((p) => p.started_at <= p.ended_at, {

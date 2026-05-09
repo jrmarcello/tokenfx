@@ -87,6 +87,14 @@ type SessionRow = {
   tool_call_count: number;
   ingested_at: number;
   pushed_hash: string | null;
+  // v3 outcome columns from LEFT JOIN session_outcomes (NULL when no row).
+  commit_count: number | null;
+  loc_added: number | null;
+  loc_removed: number | null;
+  files_changed: number | null;
+  reverts_within_7d: number | null;
+  merged_pr_count: number | null;
+  outcome_status: string | null;
 };
 
 const selectCandidates = (
@@ -105,6 +113,11 @@ const selectCandidates = (
   //       part of the payload — TC-I-10).
   // The candidate set is bounded by branches (a)+(c)+(d); branch (b) is a
   // strict refinement when a re-ingest happened.
+  // v3 (manager-dashboard-v3-outcomes spec REQ-7b): LEFT JOIN session_outcomes
+  // — sessions without an outcome row still push (REQ-2 — `so.*` cols are
+  // NULL in that case). Adds (e) `so.last_evaluated_at > r.pushed_at` so a
+  // re-evaluation post-push triggers a re-push (e.g. merged_pr_count
+  // populated after gh api call eventually succeeded).
   const stmt = db.prepare<[number], SessionRow>(
     `SELECT s.id, s.cwd, s.git_branch, s.cc_version,
             s.started_at, s.ended_at,
@@ -113,9 +126,13 @@ const selectCandidates = (
             s.total_cost_usd, s.total_cost_usd_otel,
             s.turn_count, s.tool_call_count,
             s.ingested_at,
-            r.payload_hash AS pushed_hash
+            r.payload_hash AS pushed_hash,
+            so.commit_count, so.loc_added, so.loc_removed,
+            so.files_changed, so.reverts_within_7d, so.merged_pr_count,
+            so.status AS outcome_status
        FROM sessions s
        LEFT JOIN reporter_pushed_sessions r ON r.session_id = s.id
+       LEFT JOIN session_outcomes so ON so.session_id = s.id
       WHERE r.session_id IS NULL
          OR s.ingested_at > r.pushed_at
          OR s.started_at >= ?
@@ -126,6 +143,8 @@ const selectCandidates = (
                WHERE tn.session_id = s.id
                  AND rt.rated_at > r.pushed_at
             )
+         OR (so.last_evaluated_at IS NOT NULL
+             AND so.last_evaluated_at > r.pushed_at)
       ORDER BY s.started_at ASC`,
   );
   return stmt.all(cutoff);
@@ -368,6 +387,16 @@ export const runReporter = async (
         cache_hit_ratio: computeCacheHitRatio(row),
         output_input_ratio: computeOutputInputRatio(row),
         subagent_usage_ratio: subagentRatios.get(row.id) ?? null,
+        // v3 outcome fields piped through from LEFT JOIN session_outcomes.
+        // Narrow `outcome_status` to the enum (DB stores TEXT but the column
+        // has a CHECK constraint matching these 4 values; the cast is safe).
+        commit_count: row.commit_count,
+        loc_added: row.loc_added,
+        loc_removed: row.loc_removed,
+        files_changed: row.files_changed,
+        reverts_within_7d: row.reverts_within_7d,
+        merged_pr_count: row.merged_pr_count,
+        outcome_status: row.outcome_status as SessionWithAggs['outcome_status'],
       };
 
       const result = sanitizeSession(input, {

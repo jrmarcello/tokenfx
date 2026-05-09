@@ -36,6 +36,23 @@ export type SessionWithAggs = {
   cache_hit_ratio: number | null;
   output_input_ratio: number | null;
   subagent_usage_ratio: number | null;
+  // ---- v3 outcome fields (manager-dashboard-v3-outcomes spec REQ-1) ----
+  // All optional + nullable on the DB side too: a session may have no
+  // `session_outcomes` row (LEFT JOIN yields undefined/null for these
+  // columns), or have a row with status != 'evaluated' (status set,
+  // metric columns NULL). The sanitizer reads each explicitly, never spread.
+  commit_count?: number | null;
+  loc_added?: number | null;
+  loc_removed?: number | null;
+  files_changed?: number | null;
+  reverts_within_7d?: number | null;
+  merged_pr_count?: number | null;
+  outcome_status?:
+    | 'evaluated'
+    | 'cwd-missing'
+    | 'not-a-git-repo'
+    | 'no-user-email'
+    | null;
 };
 
 /**
@@ -102,6 +119,18 @@ export const sanitizeSession = (
     cache_hit_ratio: input.cache_hit_ratio,
     output_input_ratio: input.output_input_ratio,
     subagent_usage_ratio: input.subagent_usage_ratio,
+    // v3 outcome fields — copy each explicitly (NEVER spread). The
+    // `tool_counts` spread above is a pre-existing deviation covered by
+    // Zod downstream; do NOT replicate that pattern here. Allowlist
+    // enforcement is the contract: forbidden adjacent keys (commit_sha,
+    // file_path, pr_title) cannot leak via copy-each.
+    commit_count: input.commit_count ?? null,
+    loc_added: input.loc_added ?? null,
+    loc_removed: input.loc_removed ?? null,
+    files_changed: input.files_changed ?? null,
+    reverts_within_7d: input.reverts_within_7d ?? null,
+    merged_pr_count: input.merged_pr_count ?? null,
+    outcome_status: input.outcome_status ?? null,
   };
 
   const parsed = SanitizedSessionPayload.safeParse(candidate);

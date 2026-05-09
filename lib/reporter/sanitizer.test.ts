@@ -77,6 +77,14 @@ const ALLOWLIST_ROOT = new Set([
   'cache_hit_ratio',
   'output_input_ratio',
   'subagent_usage_ratio',
+  // v3 outcome fields (manager-dashboard-v3-outcomes spec REQ-1)
+  'commit_count',
+  'loc_added',
+  'loc_removed',
+  'files_changed',
+  'reverts_within_7d',
+  'merged_pr_count',
+  'outcome_status',
 ]);
 
 const ALLOWLIST_MODEL = new Set([
@@ -91,7 +99,7 @@ const ALLOWLIST_MODEL = new Set([
 // ---------- Tests ----------
 
 describe('sanitizeSession — happy path & allowlist', () => {
-  it('TC-U-01: produces all 20 allowlist root fields and types are correct', () => {
+  it('TC-U-01: produces all 27 allowlist root fields (20 base + 7 v3 outcome) and types are correct', () => {
     const result = sanitizeSession(baseInput(), { projectSecret: SECRET });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -508,5 +516,229 @@ describe('sanitizeSession — tool_counts', () => {
     input.tool_counts = { Edit: -1 };
     const result = sanitizeSession(input, { projectSecret: SECRET });
     expect(result.ok).toBe(false);
+  });
+});
+
+// ---- v3 outcome fields (manager-dashboard-v3-outcomes spec REQ-1..7) ----
+
+describe('sanitizeSession — v3 outcome fields', () => {
+  const evaluatedInput = (): SessionWithAggs => ({
+    ...baseInput(),
+    commit_count: 5,
+    loc_added: 120,
+    loc_removed: 30,
+    files_changed: 8,
+    reverts_within_7d: 0,
+    merged_pr_count: 2,
+    outcome_status: 'evaluated',
+  });
+
+  // TC-U-01-v3: 7 outcome fields populated → output reflects them
+  it('produces 7 outcome fields when input has evaluated session_outcomes data', () => {
+    const result = sanitizeSession(evaluatedInput(), { projectSecret: SECRET });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.commit_count).toBe(5);
+    expect(result.value.loc_added).toBe(120);
+    expect(result.value.loc_removed).toBe(30);
+    expect(result.value.files_changed).toBe(8);
+    expect(result.value.reverts_within_7d).toBe(0);
+    expect(result.value.merged_pr_count).toBe(2);
+    expect(result.value.outcome_status).toBe('evaluated');
+  });
+
+  // TC-U-02-v3 (REQ-2): no session_outcomes row → all 7 fields null
+  it('produces 7 null outcome fields when input has no outcome data', () => {
+    const result = sanitizeSession(baseInput(), { projectSecret: SECRET });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.commit_count).toBeNull();
+    expect(result.value.loc_added).toBeNull();
+    expect(result.value.loc_removed).toBeNull();
+    expect(result.value.files_changed).toBeNull();
+    expect(result.value.reverts_within_7d).toBeNull();
+    expect(result.value.merged_pr_count).toBeNull();
+    expect(result.value.outcome_status).toBeNull();
+  });
+
+  // TC-U-03-v3 (REQ-3): outcome_status = 'invalid-enum-value' → reject
+  it('rejects unknown outcome_status enum value', () => {
+    const input = {
+      ...evaluatedInput(),
+      outcome_status: 'invalid-enum-value' as never,
+    };
+    const result = sanitizeSession(input, { projectSecret: SECRET });
+    expect(result.ok).toBe(false);
+  });
+
+  // TC-U-03b-v3 (REQ-1, security): forbidden adjacent fields are stripped
+  it('strips forbidden privacy-adjacent fields (commit_sha, file_path, pr_title) — copy-each enforces allowlist', () => {
+    const input = {
+      ...evaluatedInput(),
+      commit_sha: 'abc123def456',
+      file_path: '/home/user/secret-project/src/auth.ts',
+      pr_title: 'fix: critical security bug in auth flow',
+    } as SessionWithAggs & Record<string, unknown>;
+    const result = sanitizeSession(input, { projectSecret: SECRET });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const keys = Object.keys(result.value);
+    expect(keys).not.toContain('commit_sha');
+    expect(keys).not.toContain('file_path');
+    expect(keys).not.toContain('pr_title');
+    // None of the forbidden values should appear anywhere in the output.
+    const serialized = JSON.stringify(result.value);
+    expect(serialized).not.toContain('abc123def456');
+    expect(serialized).not.toContain('/home/user/secret-project');
+    expect(serialized).not.toContain('critical security bug');
+  });
+
+  // TC-U-04-v3 (REQ-3): empty string outcome_status → reject
+  it('rejects empty string outcome_status', () => {
+    const input = { ...evaluatedInput(), outcome_status: '' as never };
+    const result = sanitizeSession(input, { projectSecret: SECRET });
+    expect(result.ok).toBe(false);
+  });
+
+  // TC-U-05-v3 (REQ-3): canonical 'evaluated' enum value accepted
+  it.each([
+    ['evaluated' as const],
+    ['cwd-missing' as const],
+    ['not-a-git-repo' as const],
+    ['no-user-email' as const],
+  ])('accepts canonical outcome_status=%j', (status) => {
+    const input = { ...evaluatedInput(), outcome_status: status };
+    const result = sanitizeSession(input, { projectSecret: SECRET });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.outcome_status).toBe(status);
+  });
+
+  // TC-U-06-v3 (REQ-4): merged_pr_count = null preserved as literal null
+  it('preserves merged_pr_count = null as literal null in output (not 0)', () => {
+    const input = { ...evaluatedInput(), merged_pr_count: null };
+    const result = sanitizeSession(input, { projectSecret: SECRET });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.merged_pr_count).toBeNull();
+    expect(result.value.merged_pr_count).not.toBe(0);
+  });
+
+  // TC-U-07-v3 (REQ-4): merged_pr_count = 0 distinct from null
+  it('preserves merged_pr_count = 0 as literal 0 (distinct from null)', () => {
+    const input = { ...evaluatedInput(), merged_pr_count: 0 };
+    const result = sanitizeSession(input, { projectSecret: SECRET });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.merged_pr_count).toBe(0);
+    expect(result.value.merged_pr_count).not.toBeNull();
+  });
+
+  // TC-U-07b-v3 (REQ-1, validation/boundary): merged_pr_count = -1 rejected
+  it('rejects merged_pr_count = -1 (safeIntNonNeg lower bound)', () => {
+    const input = { ...evaluatedInput(), merged_pr_count: -1 };
+    const result = sanitizeSession(input, { projectSecret: SECRET });
+    expect(result.ok).toBe(false);
+  });
+
+  // TC-U-08-v3 (REQ-1, validation/boundary): -1 rejected for each int field
+  it.each([
+    ['commit_count' as const],
+    ['loc_added' as const],
+    ['loc_removed' as const],
+    ['files_changed' as const],
+    ['reverts_within_7d' as const],
+  ])('rejects %s = -1 (safeIntNonNeg lower bound)', (field) => {
+    const input = { ...evaluatedInput(), [field]: -1 };
+    const result = sanitizeSession(input, { projectSecret: SECRET });
+    expect(result.ok).toBe(false);
+  });
+
+  // TC-U-09-v3 (REQ-1, validation/boundary): overflow above MAX_SAFE_INTEGER
+  // 2 ** 53 + 2 is definitively above the float64 safe range (2 ** 53 + 1
+  // rounds back to MAX_SAFE_INTEGER). Use the JS-safe overflow value.
+  it.each([
+    ['commit_count' as const],
+    ['loc_added' as const],
+    ['loc_removed' as const],
+    ['files_changed' as const],
+    ['reverts_within_7d' as const],
+    ['merged_pr_count' as const],
+  ])('rejects %s overflow (above MAX_SAFE_INTEGER)', (field) => {
+    const overflow = 2 ** 53 + 2;
+    const input = { ...evaluatedInput(), [field]: overflow };
+    const result = sanitizeSession(input, { projectSecret: SECRET });
+    expect(result.ok).toBe(false);
+  });
+
+  // TC-U-10-v3 (REQ-7): backward-compat — old reporter shape with NO outcome
+  // keys at all → Zod accepts (.optional().nullable() allows absent key);
+  // output omits the 7 keys (or has them as null — both shape-equivalent
+  // under Zod's strict mode since .optional() means absent is OK).
+  it('accepts old reporter shape with all outcome keys absent', () => {
+    // baseInput() doesn't set any outcome fields — verify Zod accepts.
+    const result = sanitizeSession(baseInput(), { projectSecret: SECRET });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The sanitizer always writes the 7 keys (set to null when input is
+    // absent), so they ARE present in the output. .optional() is the
+    // load-bearing modifier on the Zod side — verifies omission would
+    // also be accepted (covered by TC-U-10b below at the schema level).
+    expect(result.value.commit_count).toBeNull();
+  });
+
+  // TC-U-10b-v3 (REQ-7): bare Zod safeParse with key absent → accepts.
+  // This is the actual test of `.optional()` — the sanitizer always writes
+  // the keys, but a hand-crafted payload omitting them entirely (e.g. an
+  // old reporter wire format) must still pass Zod.
+  it('Zod schema accepts payload with outcome keys completely absent (.optional() contract)', () => {
+    // Construct a minimal valid payload with NO outcome keys.
+    const oldShape = {
+      session_id: 'sess-old-reporter',
+      started_at: 1_700_000_000_000,
+      ended_at: 1_700_000_001_000,
+      project_slug: 'slug:0123456789abcdef',
+      git_branch: 'main',
+      cc_version: '1.0.0',
+      total_input_tokens: 100,
+      total_output_tokens: 50,
+      total_cache_read_tokens: 20,
+      total_cache_creation_tokens: 10,
+      total_cost_usd: 0.01,
+      total_cost_usd_otel: null,
+      turn_count: 1,
+      tool_call_count: 0,
+      model_breakdown: [],
+      tool_counts: {},
+      avg_rating: null,
+      cache_hit_ratio: null,
+      output_input_ratio: null,
+      subagent_usage_ratio: null,
+      // No commit_count, loc_added, ... outcome_status — completely absent.
+    };
+    const parsed = SanitizedSessionPayload.safeParse(oldShape);
+    expect(parsed.success).toBe(true);
+  });
+});
+
+// TC-U-15-v3 (REQ-6): no new env vars introduced in lib/reporter/
+describe('sanitizeSession — REQ-6 zero new env vars', () => {
+  it('no process.env.OUTCOME_* references anywhere in lib/reporter/', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const reporterDir = path.resolve(__dirname);
+    // Production files only — the test file itself contains the regex
+    // literal `/process\.env\.OUTCOME/` which would match itself.
+    const files = fs
+      .readdirSync(reporterDir)
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
+    const offenders: string[] = [];
+    for (const f of files) {
+      const content = fs.readFileSync(path.join(reporterDir, f), 'utf-8');
+      if (/process\.env\.OUTCOME/.test(content)) {
+        offenders.push(f);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
