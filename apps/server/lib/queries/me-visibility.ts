@@ -297,3 +297,85 @@ export const getMyDrilldownAudit = async (
     total: Number.isFinite(total) ? total : 0,
   };
 };
+
+// ---- v3 outcome KPIs (manager-dashboard-v3-outcomes spec REQ-16) ----------
+
+/**
+ * Personal outcome KPIs for `/me/visibility` — paridade com o que o manager
+ * vê sobre o dev em `team_outcomes_daily` (REQ-16, anti-surveillance
+ * principle 5: o dev sabe exatamente o que o manager sabe).
+ *
+ * Strictly scoped to the authenticated user's `user_id` (horizontal-
+ * privilege-escalation guard). Window: last 30 days, joined to
+ * `sessions_agg.started_at` (NOT `session_outcomes_agg.ingested_at` —
+ * keeps day alignment consistent with manager rollup).
+ *
+ * Only `outcome_status='evaluated'` sessions contribute. Empty result
+ * (dev has 0 evaluated sessions in the window): all fields are `null`.
+ */
+export type MyOutcomeKpis = {
+  /** Total LOC added across the dev's evaluated sessions in the window. */
+  totalLocAdded: number;
+  /** Total commits across the dev's evaluated sessions in the window. */
+  totalCommits: number;
+  /** Total reverts within 7d across the dev's evaluated sessions. */
+  totalRevertsWithin7d: number;
+  /** Total cost (USD) — `effectiveCostForSession` cascade preserved at
+   *  the row layer in `sessions_agg.total_cost_usd`. */
+  totalCostUsd: number;
+  /** Total input + output tokens. */
+  totalTokens: number;
+  /** Sessions with outcome_status='evaluated' in the window. */
+  sessionsWithOutcome: number;
+  /** Total merged PRs — NULL when ALL contributing sessions had NULL
+   *  (PR lookup feature off / all rate-limited). */
+  totalMergedPrCount: number | null;
+};
+
+export const getMyOutcomeKpis = async (
+  db: Db,
+  userId: string,
+): Promise<MyOutcomeKpis> => {
+  type AggRow = {
+    totalLocAdded: number | null;
+    totalCommits: number | null;
+    totalRevertsWithin7d: number | null;
+    totalCostUsd: string | null;
+    totalInputTokens: number | null;
+    totalOutputTokens: number | null;
+    sessionsWithOutcome: number | null;
+    totalMergedPrCount: number | null;
+  };
+
+  const result = await db.execute<AggRow>(sql`
+    SELECT
+      COALESCE(SUM(so.loc_added), 0)::int           AS "totalLocAdded",
+      COALESCE(SUM(so.commit_count), 0)::int        AS "totalCommits",
+      COALESCE(SUM(so.reverts_within_7d), 0)::int   AS "totalRevertsWithin7d",
+      COALESCE(SUM(s.total_cost_usd), 0)::numeric(14,6) AS "totalCostUsd",
+      COALESCE(SUM(s.total_input_tokens), 0)::bigint    AS "totalInputTokens",
+      COALESCE(SUM(s.total_output_tokens), 0)::bigint   AS "totalOutputTokens",
+      COUNT(*)::int                                 AS "sessionsWithOutcome",
+      SUM(so.merged_pr_count) FILTER (WHERE so.merged_pr_count IS NOT NULL)::int
+                                                    AS "totalMergedPrCount"
+    FROM session_outcomes_agg so
+    INNER JOIN sessions_agg s
+      ON s.user_id = so.user_id AND s.session_id = so.session_id
+    WHERE so.user_id = ${userId}
+      AND so.outcome_status = 'evaluated'
+      AND s.started_at >= now() - INTERVAL '30 days'
+  `);
+  const rowsField = (result as unknown as { rows?: AggRow[] }).rows;
+  const rows = rowsField ?? (result as unknown as AggRow[]);
+  const row = (Array.isArray(rows) ? rows[0] : undefined) as AggRow | undefined;
+
+  return {
+    totalLocAdded: row?.totalLocAdded ?? 0,
+    totalCommits: row?.totalCommits ?? 0,
+    totalRevertsWithin7d: row?.totalRevertsWithin7d ?? 0,
+    totalCostUsd: row?.totalCostUsd ? Number(row.totalCostUsd) : 0,
+    totalTokens: (row?.totalInputTokens ?? 0) + (row?.totalOutputTokens ?? 0),
+    sessionsWithOutcome: row?.sessionsWithOutcome ?? 0,
+    totalMergedPrCount: row?.totalMergedPrCount ?? null,
+  };
+};

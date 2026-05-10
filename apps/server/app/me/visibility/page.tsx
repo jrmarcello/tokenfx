@@ -43,6 +43,7 @@ import {
   DEFAULT_AUDIT_PAGE_SIZE,
   getMyDrilldownAudit,
   getMyKpis,
+  getMyOutcomeKpis,
 } from '@/lib/queries/me-visibility';
 
 // `page` is the only knob — `pageSize` is fixed at 25 per spec REQ-17.
@@ -103,8 +104,9 @@ export default async function MyVisibilityPage({
 
   const db = getDb();
 
-  const [kpis, auditPage] = await Promise.all([
+  const [kpis, outcomeKpis, auditPage] = await Promise.all([
     getMyKpis(db, userId),
+    getMyOutcomeKpis(db, userId),
     getMyDrilldownAudit(db, { userId, page, pageSize }),
   ]);
 
@@ -167,6 +169,76 @@ export default async function MyVisibilityPage({
               kpis.toolMix.Agent,
             )} Agent · ${formatToolCount(kpis.toolMix.Other)} Other`}
             testId="kpi-tool-mix"
+          />
+        </div>
+      </section>
+
+      {/* manager-dashboard-v3-outcomes spec REQ-16: personal outcome KPIs.
+          Anti-surveillance principle 5 — dev sees what manager sees in
+          aggregate. Strictly scoped to authenticated userId by the query.
+          Empty state: each card renders "—" via the formatter helpers when
+          the dev has 0 evaluated sessions in the 30d window. */}
+      <section
+        aria-labelledby="my-outcomes-heading"
+        className="space-y-3"
+        data-testid="me-visibility-outcomes"
+      >
+        <h2
+          id="my-outcomes-heading"
+          className="text-sm font-semibold uppercase tracking-wide text-neutral-700 dark:text-neutral-300"
+        >
+          Your outcomes (last 30 days)
+        </h2>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <KpiCard
+            label="Cost / merged LOC"
+            value={
+              outcomeKpis.totalLocAdded === 0
+                ? '—'
+                : `$${(outcomeKpis.totalCostUsd / outcomeKpis.totalLocAdded).toFixed(4)}`
+            }
+            subtext={`${outcomeKpis.totalLocAdded.toLocaleString()} LOC added`}
+            testId="my-kpi-cost-per-merged-loc"
+          />
+          <KpiCard
+            label="Tokens / merged LOC"
+            value={
+              outcomeKpis.totalLocAdded === 0
+                ? '—'
+                : (outcomeKpis.totalTokens / outcomeKpis.totalLocAdded).toLocaleString(
+                    'en-US',
+                    { maximumFractionDigits: 0 },
+                  )
+            }
+            subtext={`${outcomeKpis.totalTokens.toLocaleString()} tokens`}
+            testId="my-kpi-tokens-per-merged-loc"
+          />
+          <KpiCard
+            label="Revert rate (7d)"
+            value={
+              outcomeKpis.totalCommits === 0
+                ? '—'
+                : `${(
+                    (outcomeKpis.totalRevertsWithin7d / outcomeKpis.totalCommits) *
+                    100
+                  ).toFixed(1)}%`
+            }
+            subtext={`${outcomeKpis.totalRevertsWithin7d} of ${outcomeKpis.totalCommits} commits`}
+            testId="my-kpi-revert-rate"
+          />
+          <KpiCard
+            label="Avg merged PRs / session"
+            value={
+              outcomeKpis.sessionsWithOutcome === 0 ||
+              outcomeKpis.totalMergedPrCount === null
+                ? '—'
+                : (
+                    outcomeKpis.totalMergedPrCount /
+                    outcomeKpis.sessionsWithOutcome
+                  ).toFixed(2)
+            }
+            subtext={`${outcomeKpis.sessionsWithOutcome} session(s) with outcome`}
+            testId="my-kpi-avg-merged-prs"
           />
         </div>
       </section>
