@@ -41,6 +41,7 @@ import { getDb } from '@/lib/db/client';
 import {
   ingestionLog,
   modelBreakdownAgg,
+  sessionOutcomesAgg,
   sessionsAgg,
   toolCountAgg,
   userMachines,
@@ -352,6 +353,40 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
             })),
           );
         }
+
+        // manager-dashboard-v3-outcomes (REQ-9): UPSERT outcome row in
+        // the SAME transaction. Backward-compat (REQ-7): when payload
+        // omits the 7 outcome keys (old reporter), all are undefined →
+        // we write SQL NULL via `?? null`. NULL ≠ 0 distinction
+        // load-bearing for cron's WHERE outcome_status='evaluated'
+        // filter (REQ-11).
+        const outcomeValues = {
+          userId: machine.userId,
+          sessionId: p.session_id,
+          commitCount: p.commit_count ?? null,
+          locAdded: p.loc_added ?? null,
+          locRemoved: p.loc_removed ?? null,
+          filesChanged: p.files_changed ?? null,
+          revertsWithin7d: p.reverts_within_7d ?? null,
+          mergedPrCount: p.merged_pr_count ?? null,
+          outcomeStatus: p.outcome_status ?? null,
+        };
+        await tx
+          .insert(sessionOutcomesAgg)
+          .values(outcomeValues)
+          .onConflictDoUpdate({
+            target: [sessionOutcomesAgg.userId, sessionOutcomesAgg.sessionId],
+            set: {
+              commitCount: outcomeValues.commitCount,
+              locAdded: outcomeValues.locAdded,
+              locRemoved: outcomeValues.locRemoved,
+              filesChanged: outcomeValues.filesChanged,
+              revertsWithin7d: outcomeValues.revertsWithin7d,
+              mergedPrCount: outcomeValues.mergedPrCount,
+              outcomeStatus: outcomeValues.outcomeStatus,
+              ingestedAt: new Date(),
+            },
+          });
 
         if (p.total_cost_usd_otel !== null && p.total_cost_usd_otel > 0) {
           triggeredCalibration = true;

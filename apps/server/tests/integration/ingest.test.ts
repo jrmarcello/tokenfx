@@ -21,6 +21,7 @@ import {
   ingestionLog,
   modelBreakdownAgg,
   orgs,
+  sessionOutcomesAgg,
   sessionsAgg,
   toolCountAgg,
   userMachines,
@@ -60,6 +61,21 @@ type SessionPayload = {
   cache_hit_ratio: number | null;
   output_input_ratio: number | null;
   subagent_usage_ratio: number | null;
+  // v3 outcome fields (manager-dashboard-v3-outcomes spec REQ-1).
+  // All 7 are optional — old reporters omit the keys entirely (REQ-7
+  // backward-compat verified by TC-I-01-v3 below).
+  commit_count?: number | null;
+  loc_added?: number | null;
+  loc_removed?: number | null;
+  files_changed?: number | null;
+  reverts_within_7d?: number | null;
+  merged_pr_count?: number | null;
+  outcome_status?:
+    | 'evaluated'
+    | 'cwd-missing'
+    | 'not-a-git-repo'
+    | 'no-user-email'
+    | null;
 };
 
 const makeSession = (overrides: Partial<SessionPayload> = {}): SessionPayload => ({
@@ -190,8 +206,13 @@ skipDescribe('POST /api/ingest (Postgres integration)', () => {
   afterEach(async () => {
     const db = getDb();
     // Wipe per-session aggregates between tests (keep org/user/machine).
+    // Order matters — outcome rows have a CASCADE FK on sessions_agg, but
+    // wiping the FK target last works either way; explicit order is for
+    // clarity, mirroring how Drizzle's delete order matches the schema
+    // dependency graph.
     await db.delete(toolCountAgg);
     await db.delete(modelBreakdownAgg);
+    await db.delete(sessionOutcomesAgg);
     await db.delete(sessionsAgg);
     await db.delete(ingestionLog);
   });
@@ -433,4 +454,249 @@ skipDescribe('POST /api/ingest (Postgres integration)', () => {
     expect(rows.length).toBeGreaterThan(0);
     expect(rows[0].rate).toBeGreaterThan(0);
   });
+
+  // ---- v3 outcome fields (manager-dashboard-v3-outcomes spec) -----------
+
+  // Helper: read the single outcome row for a session, with values cast to
+  // their natural shape. NULLs from PG come through as JS null.
+  const readOutcomeRow = async (
+    sessionId: string,
+  ): Promise<
+    | {
+        commit_count: number | null;
+        loc_added: number | null;
+        loc_removed: number | null;
+        files_changed: number | null;
+        reverts_within_7d: number | null;
+        merged_pr_count: number | null;
+        outcome_status: string | null;
+      }
+    | undefined
+  > => {
+    const db = getDb();
+    const rows = await db
+      .select({
+        commit_count: sessionOutcomesAgg.commitCount,
+        loc_added: sessionOutcomesAgg.locAdded,
+        loc_removed: sessionOutcomesAgg.locRemoved,
+        files_changed: sessionOutcomesAgg.filesChanged,
+        reverts_within_7d: sessionOutcomesAgg.revertsWithin7d,
+        merged_pr_count: sessionOutcomesAgg.mergedPrCount,
+        outcome_status: sessionOutcomesAgg.outcomeStatus,
+      })
+      .from(sessionOutcomesAgg)
+      .where(
+        and(
+          eq(sessionOutcomesAgg.userId, testUserId),
+          eq(sessionOutcomesAgg.sessionId, sessionId),
+        ),
+      );
+    return rows[0];
+  };
+
+  // TC-I-00a (REQ-8): CASCADE — DELETE parent sessions_agg removes child.
+  it('TC-I-00a-v3 (REQ-8): CASCADE from sessions_agg to session_outcomes_agg', async () => {
+    const payload = [makeSession({ session_id: 'sess-cascade', commit_count: 5 })];
+    const res = await POST(makeRequest(payload) as never);
+    expect(res.status).toBe(200);
+
+    expect(await readOutcomeRow('sess-cascade')).toBeDefined();
+
+    const db = getDb();
+    await db
+      .delete(sessionsAgg)
+      .where(
+        and(
+          eq(sessionsAgg.userId, testUserId),
+          eq(sessionsAgg.sessionId, 'sess-cascade'),
+        ),
+      );
+
+    expect(await readOutcomeRow('sess-cascade')).toBeUndefined();
+  });
+
+  // TC-I-01-v3 (REQ-7, REQ-9): backward-compat — old reporter omits outcome
+  // keys entirely. Server v3 must still UPSERT a row with all 7 columns
+  // as SQL NULL (not 0, not empty string). .optional() Zod modifier path.
+  it('TC-I-01-v3 (REQ-7): old payload (no outcome keys) → row with all 7 columns NULL', async () => {
+    // makeSession() base shape has NO outcome keys (they're optional).
+    const payload = [makeSession({ session_id: 'sess-old-shape' })];
+    const res = await POST(makeRequest(payload) as never);
+    expect(res.status).toBe(200);
+
+    const row = await readOutcomeRow('sess-old-shape');
+    expect(row).toBeDefined();
+    if (!row) return;
+    expect(row.commit_count).toBeNull();
+    expect(row.loc_added).toBeNull();
+    expect(row.loc_removed).toBeNull();
+    expect(row.files_changed).toBeNull();
+    expect(row.reverts_within_7d).toBeNull();
+    expect(row.merged_pr_count).toBeNull();
+    expect(row.outcome_status).toBeNull();
+  });
+
+  // TC-I-02-v3 (REQ-9): all 7 fields populated → reflected exactly.
+  it('TC-I-02-v3 (REQ-9): payload with all 7 outcome fields → row reflects each value', async () => {
+    const payload = [
+      makeSession({
+        session_id: 'sess-all-outcome',
+        commit_count: 5,
+        loc_added: 120,
+        loc_removed: 30,
+        files_changed: 8,
+        reverts_within_7d: 1,
+        merged_pr_count: 2,
+        outcome_status: 'evaluated',
+      }),
+    ];
+    const res = await POST(makeRequest(payload) as never);
+    expect(res.status).toBe(200);
+
+    const row = await readOutcomeRow('sess-all-outcome');
+    expect(row).toEqual({
+      commit_count: 5,
+      loc_added: 120,
+      loc_removed: 30,
+      files_changed: 8,
+      reverts_within_7d: 1,
+      merged_pr_count: 2,
+      outcome_status: 'evaluated',
+    });
+  });
+
+  // TC-I-02b-v3 (REQ-4, REQ-9): merged_pr_count = null preserved as SQL NULL.
+  it('TC-I-02b-v3 (REQ-4): merged_pr_count = null persisted as SQL NULL (not 0)', async () => {
+    const payload = [
+      makeSession({
+        session_id: 'sess-pr-null',
+        commit_count: 3,
+        loc_added: 50,
+        loc_removed: 10,
+        files_changed: 4,
+        reverts_within_7d: 0,
+        merged_pr_count: null,
+        outcome_status: 'evaluated',
+      }),
+    ];
+    const res = await POST(makeRequest(payload) as never);
+    expect(res.status).toBe(200);
+
+    const row = await readOutcomeRow('sess-pr-null');
+    expect(row?.merged_pr_count).toBeNull();
+    // The other metrics are populated — verifies null is field-scoped.
+    expect(row?.commit_count).toBe(3);
+  });
+
+  // TC-I-02c-v3 (REQ-4, REQ-9): merged_pr_count = 0 distinct from null.
+  it('TC-I-02c-v3 (REQ-4): merged_pr_count = 0 persisted as 0 (distinct from null)', async () => {
+    const payload = [
+      makeSession({
+        session_id: 'sess-pr-zero',
+        commit_count: 3,
+        loc_added: 50,
+        loc_removed: 10,
+        files_changed: 4,
+        reverts_within_7d: 0,
+        merged_pr_count: 0,
+        outcome_status: 'evaluated',
+      }),
+    ];
+    const res = await POST(makeRequest(payload) as never);
+    expect(res.status).toBe(200);
+
+    const row = await readOutcomeRow('sess-pr-zero');
+    expect(row?.merged_pr_count).toBe(0);
+  });
+
+  // TC-I-03-v3 (REQ-9, idempotency): re-push same envelope → second is a
+  // no-op (existing payloadHash skip). The outcome row remains.
+  it('TC-I-03-v3 (REQ-9): same envelope twice — outcome row stable, no duplicate', async () => {
+    const session = makeSession({
+      session_id: 'sess-idempotent',
+      commit_count: 7,
+      loc_added: 200,
+      loc_removed: 50,
+      files_changed: 12,
+      reverts_within_7d: 0,
+      merged_pr_count: 1,
+      outcome_status: 'evaluated',
+    });
+    const res1 = await POST(makeRequest([session]) as never);
+    expect(res1.status).toBe(200);
+    __resetRateLimiter();
+    const res2 = await POST(makeRequest([session]) as never);
+    expect(res2.status).toBe(200);
+
+    const db = getDb();
+    const rows = await db
+      .select()
+      .from(sessionOutcomesAgg)
+      .where(
+        and(
+          eq(sessionOutcomesAgg.userId, testUserId),
+          eq(sessionOutcomesAgg.sessionId, 'sess-idempotent'),
+        ),
+      );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].commitCount).toBe(7);
+  });
+
+  // TC-I-03b-v3 (REQ-9b): outcome change between pushes → re-push proceeds
+  // (different payloadHash since outcome fields are part of canonical JSON).
+  it('TC-I-03b-v3 (REQ-9b): outcome update between pushes → row reflects last write', async () => {
+    const first = makeSession({
+      session_id: 'sess-outcome-update',
+      commit_count: 1,
+      loc_added: 10,
+      loc_removed: 0,
+      files_changed: 1,
+      reverts_within_7d: 0,
+      merged_pr_count: null,
+      outcome_status: 'evaluated',
+    });
+    const res1 = await POST(makeRequest([first]) as never);
+    expect(res1.status).toBe(200);
+    expect((await readOutcomeRow('sess-outcome-update'))?.merged_pr_count).toBeNull();
+
+    __resetRateLimiter();
+    // Same session, but PR lookup eventually populated merged_pr_count.
+    const updated = { ...first, merged_pr_count: 3 };
+    const res2 = await POST(makeRequest([updated]) as never);
+    expect(res2.status).toBe(200);
+    expect((await readOutcomeRow('sess-outcome-update'))?.merged_pr_count).toBe(3);
+  });
+
+  // TC-I-Status-v3 (REQ-3): non-evaluated status preserved literally.
+  it.each([
+    ['cwd-missing' as const],
+    ['not-a-git-repo' as const],
+    ['no-user-email' as const],
+  ])(
+    'persists outcome_status=%j with metric columns NULL (cron WHERE clause skips these)',
+    async (status) => {
+      const payload = [
+        makeSession({
+          session_id: `sess-status-${status}`,
+          // Non-evaluated sessions: payload has the status but metrics
+          // are null (the local schema sets them to 0 by default but the
+          // sanitizer/runner pipe the columns as null in this scenario;
+          // here we mirror that contract directly).
+          commit_count: null,
+          loc_added: null,
+          loc_removed: null,
+          files_changed: null,
+          reverts_within_7d: null,
+          merged_pr_count: null,
+          outcome_status: status,
+        }),
+      ];
+      const res = await POST(makeRequest(payload) as never);
+      expect(res.status).toBe(200);
+
+      const row = await readOutcomeRow(`sess-status-${status}`);
+      expect(row?.outcome_status).toBe(status);
+      expect(row?.commit_count).toBeNull();
+    },
+  );
 });
