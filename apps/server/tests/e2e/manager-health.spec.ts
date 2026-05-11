@@ -60,14 +60,11 @@
  * class names — any of which would render in the browser's accessibility
  * tree even if invisible).
  */
-import { test, expect, type BrowserContext, type Locator } from '@playwright/test';
-import { encode } from 'next-auth/jwt';
+import { test, expect, type Locator } from '@playwright/test';
+import { signInAs } from './helpers/sign-in-as';
 import { e2eOrgId } from '../../lib/e2e/seed-ids';
 
 const BASE_URL = 'http://localhost:3232';
-
-const E2E_SECRET = process.env.NEXTAUTH_SECRET ?? 'tokenfx-e2e-secret';
-const SESSION_COOKIE = 'authjs.session-token';
 
 type Role = 'admin' | 'manager' | 'member';
 
@@ -90,43 +87,6 @@ const SEED_USERS = {
     orgId: ALPHA_ORG_ID,
   },
 } as const satisfies Record<string, SeedUser>;
-
-/**
- * Mirror of `signInAs` from `manager.spec.ts`. See that file for the full
- * rationale; the two copies must stay in sync. The `localhost` guard is
- * preserved verbatim — minting a non-Secure cookie against a remote URL
- * would land an unsafe cookie in the browser jar.
- */
-const signInAs = async (
-  context: BrowserContext,
-  user: SeedUser,
-): Promise<void> => {
-  if (!BASE_URL.startsWith('http://localhost')) {
-    throw new Error(
-      `signInAs is localhost-only. BASE_URL=${BASE_URL} — refusing to mint a non-Secure session cookie for a remote host.`,
-    );
-  }
-  const token = await encode({
-    token: {
-      email: user.email,
-      sub: user.ssoSubject,
-      ssoProvider: 'e2e-seed',
-      role: user.role,
-      orgId: user.orgId,
-    },
-    secret: E2E_SECRET,
-    salt: SESSION_COOKIE,
-  });
-  await context.addCookies([
-    {
-      name: SESSION_COOKIE,
-      value: token,
-      url: BASE_URL,
-      httpOnly: true,
-      sameSite: 'Lax',
-    },
-  ]);
-};
 
 /**
  * Tone-word vocabulary locked by REQ-11 / REQ-12. Case-insensitive match.
@@ -196,7 +156,7 @@ test.describe('manager health UI E2E (TASK-SMOKE-HEALTH)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.aliceAdmin);
+    await signInAs(context, { email: SEED_USERS.aliceAdmin.email });
     await page.goto(`${BASE_URL}/manager/health`);
 
     // Sanity: section landmark is on the page (independent of seed state).
@@ -246,7 +206,7 @@ test.describe('manager health UI E2E (TASK-SMOKE-HEALTH)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.aliceAdmin);
+    await signInAs(context, { email: SEED_USERS.aliceAdmin.email });
     await page.goto(`${BASE_URL}/manager/health`);
 
     await expect(page.locator('[data-testid="section-dropoffs"]')).toBeVisible();
@@ -292,7 +252,7 @@ test.describe('manager health UI E2E (TASK-SMOKE-HEALTH)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.aliceAdmin);
+    await signInAs(context, { email: SEED_USERS.aliceAdmin.email });
     await page.goto(`${BASE_URL}/manager/health`);
 
     await expect(

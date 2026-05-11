@@ -19,6 +19,10 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './tests/e2e',
+  // Only Playwright specs (*.spec.ts). Helper unit tests under
+  // tests/e2e/helpers/*.test.ts are Vitest's domain (they import `vitest`,
+  // which cannot load in Playwright's CommonJS runtime).
+  testMatch: '**/*.spec.ts',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

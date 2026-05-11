@@ -29,17 +29,11 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Pool } from 'pg';
-import { test, expect, type BrowserContext } from '@playwright/test';
-import { encode } from 'next-auth/jwt';
+import { test, expect } from '@playwright/test';
+import { signInAs } from './helpers/sign-in-as';
 import { e2eOrgId } from '../../lib/e2e/seed-ids';
 
 const BASE_URL = 'http://localhost:3232';
-
-/** Match `manager.spec.ts` — the dev server must boot with the same secret. */
-const E2E_SECRET = process.env.NEXTAUTH_SECRET ?? 'tokenfx-e2e-secret';
-
-/** NextAuth v5 cookie name for the session JWT in non-HTTPS dev. */
-const SESSION_COOKIE = 'authjs.session-token';
 
 /**
  * Repo root — needed so we can resolve the setup script + the local `tsx`
@@ -86,43 +80,6 @@ const SEED_USERS = {
 } as const satisfies Record<string, SeedUser>;
 
 /**
- * Build a NextAuth-compatible session JWT and inject it on `context`. Same
- * helper shape as `manager.spec.ts` — kept colocated rather than shared in a
- * helper file so each suite stays self-contained (the only cost is ~25 lines
- * of duplication; refactoring to a shared module is a follow-up).
- */
-const signInAs = async (
-  context: BrowserContext,
-  user: SeedUser,
-): Promise<void> => {
-  if (!BASE_URL.startsWith('http://localhost')) {
-    throw new Error(
-      `signInAs is localhost-only. BASE_URL=${BASE_URL} — refusing to mint a non-Secure session cookie for a remote host.`,
-    );
-  }
-  const token = await encode({
-    token: {
-      email: user.email,
-      sub: user.ssoSubject,
-      ssoProvider: 'e2e-seed',
-      role: user.role,
-      orgId: user.orgId,
-    },
-    secret: E2E_SECRET,
-    salt: SESSION_COOKIE,
-  });
-  await context.addCookies([
-    {
-      name: SESSION_COOKIE,
-      value: token,
-      url: BASE_URL,
-      httpOnly: true,
-      sameSite: 'Lax',
-    },
-  ]);
-};
-
-/**
  * Pull the 8-char token prefix from the show-once page's
  * `data-testid="flash-onboard-url-value"` element. The element renders the
  * full URL; we slice the fragment to get the token, then take the first 8
@@ -146,7 +103,7 @@ test.describe('central-server-onboarding E2E (TASK-SMOKE)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.aliceAdmin);
+    await signInAs(context, { email: SEED_USERS.aliceAdmin.email });
     await page.goto(`${BASE_URL}/manager/invites`);
 
     // Click "Criar convite" — navigates to /manager/invites/create.
@@ -188,7 +145,7 @@ test.describe('central-server-onboarding E2E (TASK-SMOKE)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.aliceAdmin);
+    await signInAs(context, { email: SEED_USERS.aliceAdmin.email });
 
     // Create one — same flow as TC-E2E-01.
     await page.goto(`${BASE_URL}/manager/invites/create`);
@@ -230,7 +187,7 @@ test.describe('central-server-onboarding E2E (TASK-SMOKE)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.aliceAdmin);
+    await signInAs(context, { email: SEED_USERS.aliceAdmin.email });
 
     // Create an invite to revoke.
     await page.goto(`${BASE_URL}/manager/invites/create`);
@@ -301,7 +258,7 @@ test.describe('central-server-onboarding E2E (TASK-SMOKE)', () => {
   }) => {
     test.setTimeout(120_000);
 
-    await signInAs(context, SEED_USERS.aliceAdmin);
+    await signInAs(context, { email: SEED_USERS.aliceAdmin.email });
 
     // 1) Create the invite via UI; capture the full onboard URL.
     await page.goto(`${BASE_URL}/manager/invites/create`);
@@ -487,7 +444,7 @@ test.describe('central-server-onboarding E2E (TASK-SMOKE)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.bobMember);
+    await signInAs(context, { email: SEED_USERS.bobMember.email });
     const response = await page.goto(`${BASE_URL}/manager/invites`);
 
     // Middleware short-circuits with 403 for member-role; the layout's

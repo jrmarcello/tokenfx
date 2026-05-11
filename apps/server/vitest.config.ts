@@ -6,9 +6,11 @@ export default defineConfig({
     environment: 'node',
     globalSetup: ['./tests/integration/setup-pg.ts'],
     testTimeout: 30_000, // Postgres startup can be slow
-    // tests/e2e/* are Playwright specs (manager.spec.ts) — Vitest picks up
-    // *.spec.ts by default; exclude the e2e dir so they don't crash here.
-    exclude: ['**/node_modules/**', '**/dist/**', 'tests/e2e/**'],
+    // tests/e2e/*.spec.ts are Playwright specs — Vitest picks up *.spec.ts
+    // by default; exclude those so they don't crash here. tests/e2e/helpers/
+    // *.test.ts are unit tests of the e2e helper layer (fix-e2e-auth-bypass)
+    // and DO run under Vitest, so we do NOT blanket-exclude `tests/e2e/**`.
+    exclude: ['**/node_modules/**', '**/dist/**', 'tests/e2e/*.spec.ts'],
     // Integration tests share ONE Testcontainers Postgres instance via
     // `globalSetup`. Running test files in parallel would race on TRUNCATE
     // CASCADE between sibling files (teams/overview/ingest all wipe + seed

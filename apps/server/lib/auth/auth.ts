@@ -4,6 +4,10 @@ import NextAuth from 'next-auth';
 import 'next-auth/jwt';
 import { eq } from 'drizzle-orm';
 import { authConfig } from './auth.config';
+import {
+  assertNotProductionWithBypass,
+  buildE2eBypassProvider,
+} from './e2e-bypass-provider';
 import { getDb } from '@/lib/db/client';
 import { orgs, users } from '@/lib/db/schema';
 import { emailDomain } from './email-hash';
@@ -24,6 +28,14 @@ if (
     'AUTH_SECRET (or NEXTAUTH_SECRET) is required in production. Refusing to boot to avoid signing JWTs with a transient secret.',
   );
 }
+
+// fix-e2e-auth-bypass (REQ-4): refuse to boot if the e2e-only Credentials
+// bypass is enabled in production. Mirrors the AUTH_SECRET guard above. The
+// `buildE2eBypassProvider` builder itself is pure-function-of-env (no
+// prod-check) — this module-scope call is the canonical fail-fast.
+assertNotProductionWithBypass(process.env);
+
+const e2eBypassProvider = buildE2eBypassProvider(process.env);
 
 /**
  * Role typing + narrowing has moved to `./roles.ts` so the Edge-safe
@@ -59,6 +71,10 @@ export {
  */
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
+  providers: [
+    ...authConfig.providers,
+    ...(e2eBypassProvider ? [e2eBypassProvider] : []),
+  ],
   callbacks: {
     ...authConfig.callbacks,
     /**
@@ -81,6 +97,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           hasEmail: !!user?.email,
         });
         return false;
+      }
+      // fix-e2e-auth-bypass: short-circuit for the e2e-only Credentials
+      // provider. `authorize` in `e2e-bypass-provider.ts` already validated
+      // the user against the seeded DB (and the boot-guard + env gate ensure
+      // this branch only runs in dev/test). The OAuth provider/subject
+      // mismatch logic below does not apply — credentials sign-in has no
+      // `providerAccountId` to validate beyond what `authorize` returned.
+      if (account.provider === 'credentials') {
+        return true;
       }
       if (!account.providerAccountId) {
         logger.warn('signIn rejected: missing providerAccountId', {

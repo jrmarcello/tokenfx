@@ -36,15 +36,12 @@
  * Wiring into `tests/e2e/global-setup.ts` lands as a 1-line addition
  * after the v2 seed call (mirrors how v2 was wired in commit 328806d).
  */
-import { test, expect, type BrowserContext } from '@playwright/test';
-import { encode } from 'next-auth/jwt';
+import { test, expect } from '@playwright/test';
+import { signInAs } from './helpers/sign-in-as';
 
 import { e2eOrgId } from '../../lib/e2e/seed-ids';
 
 const BASE_URL = 'http://localhost:3232';
-
-const E2E_SECRET = process.env.NEXTAUTH_SECRET ?? 'tokenfx-e2e-secret';
-const SESSION_COOKIE = 'authjs.session-token';
 
 type Role = 'admin' | 'manager' | 'member';
 
@@ -73,37 +70,6 @@ const SEED_USERS = {
   },
 } as const satisfies Record<string, SeedUser>;
 
-const signInAs = async (
-  context: BrowserContext,
-  user: SeedUser,
-): Promise<void> => {
-  if (!BASE_URL.startsWith('http://localhost')) {
-    throw new Error(
-      `signInAs is localhost-only. BASE_URL=${BASE_URL} — refusing to mint a non-Secure session cookie for a remote host.`,
-    );
-  }
-  const token = await encode({
-    token: {
-      email: user.email,
-      sub: user.ssoSubject,
-      ssoProvider: 'e2e-seed',
-      role: user.role,
-      orgId: user.orgId,
-    },
-    secret: E2E_SECRET,
-    salt: SESSION_COOKIE,
-  });
-  await context.addCookies([
-    {
-      name: SESSION_COOKIE,
-      value: token,
-      url: BASE_URL,
-      httpOnly: true,
-      sameSite: 'Lax',
-    },
-  ]);
-};
-
 test.describe('manager outcomes E2E (TASK-SMOKE-OUTCOMES)', () => {
   test.skip(
     process.env.SKIP_PG_TESTS === '1',
@@ -114,7 +80,7 @@ test.describe('manager outcomes E2E (TASK-SMOKE-OUTCOMES)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.aliceAdmin);
+    await signInAs(context, { email: SEED_USERS.aliceAdmin.email });
     await page.goto(`${BASE_URL}/manager/outcomes`);
 
     // 4 headline KPIs (REQ-13).
@@ -149,7 +115,7 @@ test.describe('manager outcomes E2E (TASK-SMOKE-OUTCOMES)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.gabrielaManager);
+    await signInAs(context, { email: SEED_USERS.gabrielaManager.email });
     await page.goto(`${BASE_URL}/manager/outcomes`);
 
     // Positive presence assertion first — guarantees the page actually
@@ -174,7 +140,7 @@ test.describe('manager outcomes E2E (TASK-SMOKE-OUTCOMES)', () => {
   }) => {
     // Alice (admin) doubles as the dev under test — the v3 seed populates
     // her personal session_outcomes_agg rows so the page has data.
-    await signInAs(context, SEED_USERS.aliceAdmin);
+    await signInAs(context, { email: SEED_USERS.aliceAdmin.email });
     await page.goto(`${BASE_URL}/me/visibility`);
 
     // The new outcome KPI section.

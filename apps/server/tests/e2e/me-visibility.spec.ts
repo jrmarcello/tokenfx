@@ -65,8 +65,8 @@
  * Docker, etc.). We do NOT attempt to start the dev server from inside the
  * test — `global-setup.ts` owns that lifecycle.
  */
-import { test, expect, type BrowserContext } from '@playwright/test';
-import { encode } from 'next-auth/jwt';
+import { test, expect } from '@playwright/test';
+import { signInAs } from './helpers/sign-in-as';
 import { eq, sql } from 'drizzle-orm';
 import { getDb } from '../../lib/db/client';
 import {
@@ -76,9 +76,6 @@ import {
 import { e2eOrgId, stableUuid } from '../../lib/e2e/seed-ids';
 
 const BASE_URL = 'http://localhost:3232';
-
-const E2E_SECRET = process.env.NEXTAUTH_SECRET ?? 'tokenfx-e2e-secret';
-const SESSION_COOKIE = 'authjs.session-token';
 
 type Role = 'admin' | 'manager' | 'member';
 
@@ -124,42 +121,6 @@ const DRILLDOWN_REASON = 'cost-investigation';
 const DRILLDOWN_REASON_LABEL = 'Cost investigation';
 const DRILLDOWN_REASON_TEXT =
   'TC-E2E-11 fixture — investigating recent spend spike';
-
-/**
- * Build a NextAuth-compatible session JWT for `user` and inject it on
- * `context`. Mirrors `manager.spec.ts:signInAs` — see that file for the
- * full rationale on why role/orgId are pre-populated on the cookie.
- */
-const signInAs = async (
-  context: BrowserContext,
-  user: SeedUser,
-): Promise<void> => {
-  if (!BASE_URL.startsWith('http://localhost')) {
-    throw new Error(
-      `signInAs is localhost-only. BASE_URL=${BASE_URL} — refusing to mint a non-Secure session cookie for a remote host.`,
-    );
-  }
-  const token = await encode({
-    token: {
-      email: user.email,
-      sub: user.ssoSubject,
-      ssoProvider: 'e2e-seed',
-      role: user.role,
-      orgId: user.orgId,
-    },
-    secret: E2E_SECRET,
-    salt: SESSION_COOKIE,
-  });
-  await context.addCookies([
-    {
-      name: SESSION_COOKIE,
-      value: token,
-      url: BASE_URL,
-      httpOnly: true,
-      sameSite: 'Lax',
-    },
-  ]);
-};
 
 /**
  * Insert a deterministic drilldown audit row + flip the org's
@@ -258,7 +219,7 @@ test.describe('/me/visibility E2E (TASK-SMOKE-VISIBILITY)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.bobMember);
+    await signInAs(context, { email: SEED_USERS.bobMember.email });
     await page.goto(`${BASE_URL}/me/visibility`);
 
     // Page header — confirms we landed on the right route (member role
@@ -352,7 +313,7 @@ test.describe('/me/visibility E2E (TASK-SMOKE-VISIBILITY)', () => {
     // by `team-detail-members.tsx`, alphabetical per
     // `getTeamDetail` query, TC-I-33 covers the SQL ORDER BY clause
     // directly). See file header for the full deferral rationale.
-    await signInAs(context, SEED_USERS.aliceAdmin);
+    await signInAs(context, { email: SEED_USERS.aliceAdmin.email });
 
     // Navigate via the org overview's team breakdown table to avoid
     // hardcoding a teamId UUID — the E2E seed uses deterministic IDs but

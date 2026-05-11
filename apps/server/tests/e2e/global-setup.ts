@@ -142,6 +142,17 @@ const setup = async (): Promise<void> => {
         process.env.OKTA_CLIENT_SECRET ?? 'e2e-okta-secret',
       OKTA_ISSUER:
         process.env.OKTA_ISSUER ?? 'https://e2e.okta.example/oauth2/default',
+      // fix-e2e-auth-bypass (REQ-13): test-only Credentials provider gate.
+      // The `auth.ts` boot-guard refuses prod + this flag set — see
+      // `lib/auth/e2e-bypass-provider.ts` spike-comment block for the
+      // full rationale.
+      E2E_AUTH_BYPASS: '1',
+      // Defense-in-depth (security review H2): bind Next dev to loopback
+      // only while the bypass is hot. Combined with the host-header check
+      // in `e2e-bypass-provider.ts:isLocalhostHost`, this rules out a LAN
+      // attacker reaching `http://<dev-host>:3232/` with `Host: localhost`
+      // and minting a session. Next reads HOSTNAME for `next dev`.
+      HOSTNAME: '127.0.0.1',
     },
   });
   devServer.on('exit', (code) => {

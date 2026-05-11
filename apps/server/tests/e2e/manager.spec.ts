@@ -44,25 +44,11 @@
  * with a clear reason so the suite passes once the auth flow is unblocked
  * upstream. Re-enable when seed-server.ts grows the empty-org variant.
  */
-import { test, expect, type BrowserContext } from '@playwright/test';
-import { encode } from 'next-auth/jwt';
+import { test, expect } from '@playwright/test';
+import { signInAs } from './helpers/sign-in-as';
 import { e2eOrgId } from '../../lib/e2e/seed-ids';
 
 const BASE_URL = 'http://localhost:3232';
-
-/**
- * Default secret for local E2E runs; must match the server's `NEXTAUTH_SECRET`
- * env var. We deliberately do NOT hardcode a production-looking secret —
- * `tokenfx-e2e-secret` makes it obvious this is test-only.
- */
-const E2E_SECRET = process.env.NEXTAUTH_SECRET ?? 'tokenfx-e2e-secret';
-
-/**
- * NextAuth v5 cookie name for the session JWT in non-HTTPS dev. The
- * `__Secure-` prefix only kicks in when the request is over HTTPS, which
- * Playwright's webServer is not.
- */
-const SESSION_COOKIE = 'authjs.session-token';
 
 type Role = 'admin' | 'manager' | 'member';
 
@@ -101,58 +87,6 @@ const SEED_USERS = {
   },
 } as const satisfies Record<string, SeedUser>;
 
-/**
- * Build a NextAuth-compatible session JWT for `user` and inject it on
- * `context` so subsequent requests are authenticated as that user.
- *
- * The JWT shape mirrors what NextAuth would write after a successful
- * sign-in PLUS what `auth.ts:jwt()` augments on every visit: `email`,
- * `sub` (the providerAccountId), `ssoProvider`, `role`, and `orgId`.
- *
- * Why pre-populate role/orgId instead of relying on the `jwt()` callback?
- * The Edge middleware (`auth.config.ts`) reads `auth.user.role` directly
- * from the JWT — it does NOT run the Node-only `jwt()` callback that
- * augments the token with a DB lookup. Without role/orgId on the cookie,
- * the very first request to `/manager` 403s before the Node-side callback
- * gets a chance to refresh them. We mirror what a freshly-signed-in user's
- * cookie would look like after the first jwt() pass.
- */
-const signInAs = async (
-  context: BrowserContext,
-  user: SeedUser,
-): Promise<void> => {
-  // Defense in depth: this helper mints a session cookie with NO `Secure`
-  // flag (HTTP-only over plain HTTP). That's appropriate for the localhost
-  // Playwright runner, NOT for any staging/prod URL — a copy-paste of this
-  // helper into a remote target would land an unsafe cookie in a browser.
-  // Refuse to fire if BASE_URL ever drifts off localhost.
-  if (!BASE_URL.startsWith('http://localhost')) {
-    throw new Error(
-      `signInAs is localhost-only. BASE_URL=${BASE_URL} — refusing to mint a non-Secure session cookie for a remote host.`,
-    );
-  }
-  const token = await encode({
-    token: {
-      email: user.email,
-      sub: user.ssoSubject,
-      ssoProvider: 'e2e-seed',
-      role: user.role,
-      orgId: user.orgId,
-    },
-    secret: E2E_SECRET,
-    salt: SESSION_COOKIE,
-  });
-  await context.addCookies([
-    {
-      name: SESSION_COOKIE,
-      value: token,
-      url: BASE_URL,
-      httpOnly: true,
-      sameSite: 'Lax',
-    },
-  ]);
-};
-
 test.describe('manager UI E2E (TASK-SMOKE)', () => {
   test.skip(
     process.env.SKIP_PG_TESTS === '1',
@@ -163,7 +97,7 @@ test.describe('manager UI E2E (TASK-SMOKE)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.aliceAdmin);
+    await signInAs(context, { email: SEED_USERS.aliceAdmin.email });
     await page.goto(`${BASE_URL}/manager`);
 
     // Spend KPI per spec (data-testid="kpi-spend-30d").
@@ -183,7 +117,7 @@ test.describe('manager UI E2E (TASK-SMOKE)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.aliceAdmin);
+    await signInAs(context, { email: SEED_USERS.aliceAdmin.email });
     await page.goto(`${BASE_URL}/manager`);
 
     await expect(page.locator('[data-testid="kpi-dau"]')).toBeVisible();
@@ -200,7 +134,7 @@ test.describe('manager UI E2E (TASK-SMOKE)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.aliceAdmin);
+    await signInAs(context, { email: SEED_USERS.aliceAdmin.email });
     await page.goto(`${BASE_URL}/manager`);
 
     // Click into Frontend team via the breakdown table link.
@@ -237,7 +171,7 @@ test.describe('manager UI E2E (TASK-SMOKE)', () => {
     page,
     context,
   }) => {
-    await signInAs(context, SEED_USERS.bobMember);
+    await signInAs(context, { email: SEED_USERS.bobMember.email });
     const response = await page.goto(`${BASE_URL}/manager`);
 
     // Middleware short-circuits with 403 for member-role; the layout's
@@ -277,7 +211,7 @@ test.describe('manager UI E2E (TASK-SMOKE)', () => {
       true,
       'empty-org seed not produced by TASK-22 (only 2 populated orgs); REQ-28 covered by overview integration tests. Re-enable when seed-server.ts grows an --e2e-empty-org flag.',
     );
-    await signInAs(context, SEED_USERS.frankAdmin);
+    await signInAs(context, { email: SEED_USERS.frankAdmin.email });
     await page.goto(`${BASE_URL}/manager`);
     await expect(page.locator('[data-testid="onboarding-card"]')).toBeVisible();
   });
