@@ -106,6 +106,16 @@ const setup = async (): Promise<void> => {
     stdio: 'inherit',
     cwd,
   });
+  // manager-dashboard-v3-outcomes fixture: outcome rollups for Alpha (3
+  // teams × 7d) + ~5 personal outcome rows for alice. Required for the
+  // manager-outcomes E2E spec (TC-E2E-01..03). Idempotent — re-runs safely
+  // via `onConflictDoUpdate` inside seedManagerV3Outcomes. Depends on
+  // seed-manager-v2.ts above (Alpha teams must exist; the seed throws
+  // a clear error if not). Mirrors v2 wiring style.
+  execFileSync('tsx', ['scripts/seed-manager-v3-outcomes.ts'], {
+    stdio: 'inherit',
+    cwd,
+  });
 
   // Spawn the dev server with the container URI + auth-bypass env vars. The
   // secret here MUST match `manager.spec.ts:E2E_SECRET` — the test mints
