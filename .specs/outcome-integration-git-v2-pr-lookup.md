@@ -1,6 +1,6 @@
 # Spec: outcome-integration-git-v2-pr-lookup
 
-## Status: IN_PROGRESS
+## Status: DONE
 
 ## Context
 
