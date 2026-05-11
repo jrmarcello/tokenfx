@@ -150,3 +150,27 @@ export function reconcileAllSessions(db: DB): void {
   });
   tx();
 }
+
+/**
+ * Reconcile a list of sessions by id. Reuses the cached single-session
+ * prepared statements (renumberOne, rollupOne). Empty list → no-op.
+ * Unknown ids → UPDATE WHERE id = ? affects 0 rows (silent skip).
+ *
+ * Used by `scripts/recompute-costs.ts` to reconcile only the sessions
+ * touched by a `--since DATE` or `--session ID` recompute, without
+ * paying for the global pass.
+ */
+export function reconcileSessionsByIds(
+  db: DB,
+  sessionIds: readonly string[],
+): void {
+  if (sessionIds.length === 0) return;
+  const p = getPrepared(db);
+  const tx = db.transaction(() => {
+    for (const id of sessionIds) {
+      p.renumberOne.run(id);
+      p.rollupOne.run(id);
+    }
+  });
+  tx();
+}

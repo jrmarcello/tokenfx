@@ -13,6 +13,7 @@
     "ingest": "tsx scripts/ingest.ts",
     "watch": "tsx scripts/watch.ts",
     "seed-dev": "tsx scripts/seed-dev.ts",
+    "recompute-cost": "tsx scripts/recompute-costs.ts",
     "setup": "pnpm install && pnpm seed-dev",
     "fresh": "rm -f data/dashboard.db data/dashboard.db-wal data/dashboard.db-shm && pnpm ingest",
     "validate": "pnpm typecheck && pnpm lint && pnpm test --run",
