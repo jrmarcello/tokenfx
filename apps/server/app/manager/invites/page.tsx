@@ -47,14 +47,14 @@ export default async function ManagerInvitesPage() {
               Manager
             </Link>
             <span className="mx-1.5">/</span>
-            <span>Convites</span>
+            <span>Invites</span>
           </nav>
           <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">
-            Convites
+            Invites
           </h1>
           <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
-            Convites de onboarding emitidos para esta org. O token completo nunca é
-            mostrado aqui — apenas o prefixo de 8 caracteres.
+            Onboarding invites issued to this org. The full token is never
+            shown here — only the 8-character prefix.
           </p>
         </div>
         <Link
@@ -62,7 +62,7 @@ export default async function ManagerInvitesPage() {
           className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-md bg-neutral-900 px-4 text-sm font-medium text-neutral-50 shadow transition-colors hover:bg-neutral-900/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-950 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-50/90 dark:focus-visible:ring-neutral-300"
           data-testid="invite-create-link"
         >
-          Criar convite
+          Create invite
         </Link>
       </div>
 
@@ -71,7 +71,7 @@ export default async function ManagerInvitesPage() {
           className="rounded-lg border border-dashed border-neutral-300 bg-white p-6 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400"
           data-testid="invites-empty"
         >
-          Nenhum convite ainda — crie um para onboardar um colega de time.
+          No invites yet — create one to onboard a teammate.
         </p>
       ) : (
         <div className="overflow-hidden rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
@@ -82,28 +82,28 @@ export default async function ManagerInvitesPage() {
             <thead className="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500 dark:bg-neutral-800/50 dark:text-neutral-400">
               <tr>
                 <th scope="col" className="px-4 py-2 font-medium">
-                  Prefixo
+                  Prefix
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium">
                   Status
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium">
-                  Time
+                  Team
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium">
                   Email pattern
                 </th>
                 <th scope="col" className="px-4 py-2 text-right font-medium">
-                  Usos
+                  Uses
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium">
-                  Expira
+                  Expires
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium">
-                  Criado por
+                  Created by
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium">
-                  <span className="sr-only">Ações</span>
+                  <span className="sr-only">Actions</span>
                 </th>
               </tr>
             </thead>

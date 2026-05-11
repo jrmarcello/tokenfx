@@ -99,7 +99,7 @@ export function DailyConsumptionTrend({ daily, acceptRateDaily }: Props) {
               color: c.tooltipText,
             }}
             formatter={(value, name) => {
-              if (name === 'Accept rate') {
+              if (name === 'Taxa de aceitação') {
                 const v = Number(value);
                 return Number.isFinite(v) ? [`${(v * 100).toFixed(1)}%`, name] : ['—', name];
               }

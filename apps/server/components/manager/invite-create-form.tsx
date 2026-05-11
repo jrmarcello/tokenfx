@@ -38,8 +38,8 @@ type Props = {
 };
 
 const ERROR_LABEL: Record<string, string> = {
-  unauthorized: 'Sessão expirou. Recarregue a página.',
-  invalid_input: 'Dados do formulário inválidos. Verifique os campos.',
+  unauthorized: 'Session expired. Reload the page.',
+  invalid_input: 'Invalid form data. Check the fields.',
 };
 
 export const InviteCreateForm = ({ teams }: Props) => {
@@ -57,7 +57,7 @@ export const InviteCreateForm = ({ teams }: Props) => {
     startTransition(async () => {
       const result = await createInviteAction(formData);
       if (!result.ok) {
-        setError(ERROR_LABEL[result.code] ?? 'Erro ao criar convite.');
+        setError(ERROR_LABEL[result.code] ?? 'Error creating invite.');
         return;
       }
       // Server Action set the flash cookie scoped to /manager/invites/created.
@@ -79,7 +79,7 @@ export const InviteCreateForm = ({ teams }: Props) => {
           htmlFor="invite-team"
           className="block text-sm font-medium text-neutral-900 dark:text-neutral-100"
         >
-          Time
+          Team
         </label>
         <select
           id="invite-team"
@@ -87,7 +87,7 @@ export const InviteCreateForm = ({ teams }: Props) => {
           defaultValue=""
           className="w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
         >
-          <option value="">(sem time — convite org-wide)</option>
+          <option value="">(no team — org-wide invite)</option>
           {teams.map((t) => (
             <option key={t.id} value={t.id}>
               {t.name}
@@ -95,7 +95,7 @@ export const InviteCreateForm = ({ teams }: Props) => {
           ))}
         </select>
         <p className="text-xs text-neutral-500 dark:text-neutral-400">
-          Vincula o usuário a um time ao redimir. Opcional.
+          Links the user to a team when redeemed. Optional.
         </p>
       </div>
 
@@ -111,11 +111,11 @@ export const InviteCreateForm = ({ teams }: Props) => {
           name="email_pattern"
           type="text"
           maxLength={254}
-          placeholder="*@empresa.com — vazio para qualquer"
+          placeholder="*@company.com — empty for any"
           className="w-full rounded border border-neutral-300 bg-white px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
         />
         <p className="text-xs text-neutral-500 dark:text-neutral-400">
-          Restringe a redenção. Vazio = qualquer email.
+          Restricts redemption. Empty = any email.
         </p>
       </div>
 
@@ -125,7 +125,7 @@ export const InviteCreateForm = ({ teams }: Props) => {
             htmlFor="invite-max-uses"
             className="block text-sm font-medium text-neutral-900 dark:text-neutral-100"
           >
-            Usos máximos
+            Max uses
           </label>
           <input
             id="invite-max-uses"
@@ -146,7 +146,7 @@ export const InviteCreateForm = ({ teams }: Props) => {
             htmlFor="invite-expires"
             className="block text-sm font-medium text-neutral-900 dark:text-neutral-100"
           >
-            Expira em (horas)
+            Expires in (hours)
           </label>
           <input
             id="invite-expires"
@@ -159,7 +159,7 @@ export const InviteCreateForm = ({ teams }: Props) => {
             className="w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
           />
           <p className="text-xs text-neutral-500 dark:text-neutral-400">
-            1–168 (7 dias). Default 8h.
+            1–168 (7 days). Default 8h.
           </p>
         </div>
       </div>
@@ -181,7 +181,7 @@ export const InviteCreateForm = ({ teams }: Props) => {
           className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-md bg-neutral-900 px-4 text-sm font-medium text-neutral-50 shadow transition-colors hover:bg-neutral-900/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-950 disabled:opacity-50 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-50/90 dark:focus-visible:ring-neutral-300"
           data-testid="invite-create-submit"
         >
-          {isPending ? 'Criando…' : 'Criar'}
+          {isPending ? 'Creating…' : 'Create'}
         </button>
       </div>
     </form>

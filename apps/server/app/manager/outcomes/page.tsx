@@ -110,8 +110,8 @@ export default async function ManagerOutcomesPage() {
           className="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center text-sm text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400"
           data-testid="outcomes-empty-state"
         >
-          Outcome data ainda não fluiu — devs precisam estar trabalhando
-          em git repos com user.email configurado.
+          No outcome data yet — devs need to be active in git repos with
+          user.email configured.
         </div>
       </div>
     );

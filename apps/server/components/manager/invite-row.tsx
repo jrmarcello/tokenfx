@@ -29,10 +29,10 @@ type Props = {
 };
 
 const STATUS_LABEL: Record<InviteStatus, string> = {
-  active: 'Ativo',
-  expired: 'Expirado',
-  exhausted: 'Esgotado',
-  revoked: 'Revogado',
+  active: 'Active',
+  expired: 'Expired',
+  exhausted: 'Exhausted',
+  revoked: 'Revoked',
 };
 
 const STATUS_CLASSES: Record<InviteStatus, string> = {
@@ -69,7 +69,7 @@ const formatRelativeExpiry = (expiresAt: Date, now: Date): string => {
     const days = Math.max(1, Math.round(absMs / DAY_MS));
     label = `${days}d`;
   }
-  return past ? `há ${label}` : `em ${label}`;
+  return past ? `${label} ago` : `in ${label}`;
 };
 
 export const InviteRow = ({ row }: Props) => {
@@ -95,7 +95,7 @@ export const InviteRow = ({ row }: Props) => {
         {row.teamName ?? <span className="text-neutral-400">—</span>}
       </td>
       <td className="px-4 py-3 font-mono text-xs text-neutral-700 dark:text-neutral-300">
-        {row.emailPattern ?? <span className="text-neutral-400">qualquer</span>}
+        {row.emailPattern ?? <span className="text-neutral-400">any</span>}
       </td>
       <td className="px-4 py-3 text-right tabular-nums text-neutral-900 dark:text-neutral-100">
         {row.usedCount}/{row.maxUses}

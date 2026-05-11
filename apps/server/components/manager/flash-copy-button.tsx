@@ -38,7 +38,7 @@ export const FlashCopyButton = ({ value }: Props) => {
       className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-md bg-neutral-900 px-4 text-sm font-medium text-neutral-50 shadow transition-colors hover:bg-neutral-900/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-950 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-50/90 dark:focus-visible:ring-neutral-300"
       data-testid="flash-copy-button"
     >
-      {copied ? 'Copiado' : 'Copiar'}
+      {copied ? 'Copied' : 'Copy'}
     </button>
   );
 };

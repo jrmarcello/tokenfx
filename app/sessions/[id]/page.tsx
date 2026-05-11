@@ -115,7 +115,7 @@ export default async function SessionPage({
           info="Número de ciclos usuário → assistente na sessão. Cada resposta do assistente conta como um turno."
         />
         <KpiCard
-          title="Cache hit"
+          title="Taxa de cache hit"
           value={fmtPct(session.cacheHitRatio)}
           info="Taxa de reaproveitamento de cache nesta sessão. Baixo significa prompts muito diferentes entre si ou TTL de cache expirado."
         />
@@ -129,7 +129,7 @@ export default async function SessionPage({
       {otel.hasData && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <KpiCard
-            title="Accept rate (OTEL)"
+            title="Taxa de aceitação (OTEL)"
             value={fmtPct(otel.acceptRate)}
             hint={`${fmtCompact(otel.accepts)} aceitas · ${fmtCompact(otel.rejects)} rejeitadas`}
             info="Proporção de Edit/Write/NotebookEdit aceitos nesta sessão. Só aparece quando o Claude Code está exportando Prometheus."
@@ -149,7 +149,7 @@ export default async function SessionPage({
               reaparecer. */}
           {otel.activeSeconds > 0 && (
             <KpiCard
-              title="Active time"
+              title="Tempo ativo"
               value={fmtDurationShort(otel.activeSeconds)}
               hint={otel.commits > 0 ? `${otel.commits} commits` : undefined}
               info="Tempo real de uso ativo nesta sessão (não calendar time). Útil pra ver se a sessão foi densa ou teve muitas pausas."

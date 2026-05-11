@@ -128,15 +128,16 @@ test.describe('central-server-onboarding E2E (TASK-SMOKE)', () => {
     const fullUrl = await urlValueLocator.innerText();
     expect(fullUrl).toMatch(/\/onboard#token=[0-9a-f]{64}$/);
 
-    // Warning copy ("mostrado apenas uma vez").
+    // Warning copy ("shown only once") — manager surface is EN per
+    // i18n-microcopy-consolidation spec.
     const flashCard = page.locator('[data-testid="flash-onboard-url"]');
-    await expect(flashCard).toContainText(/apenas uma vez/i);
+    await expect(flashCard).toContainText(/shown only once/i);
 
     // Copy button is focusable + clickable in headless. Browser's clipboard
     // API may refuse to actually write in headless without a user-gesture
     // permission, but the click handler must not crash and the button must
     // be reachable. Locator click confirms the button is interactive.
-    const copyBtn = flashCard.locator('button', { hasText: /copiar/i });
+    const copyBtn = flashCard.locator('button', { hasText: /copy/i });
     await expect(copyBtn).toBeVisible();
     await copyBtn.click(); // no-op clipboard write is fine; we only assert no crash
   });

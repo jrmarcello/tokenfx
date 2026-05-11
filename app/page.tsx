@@ -216,7 +216,7 @@ export default async function Home({
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
               <KpiCard
-                title="Accept rate"
+                title="Taxa de aceitação"
                 value={fmtPct(otel.acceptRate)}
                 hint={`${fmtCompact(otel.totalAccepts)} aceitas · ${fmtCompact(otel.totalRejects)} rejeitadas`}
                 info="Proporção de propostas de Edit/Write/NotebookEdit aceitas vs rejeitadas. Sinal direto de qualidade do código sugerido."
@@ -228,7 +228,7 @@ export default async function Home({
                 info="Linhas de código adicionadas/removidas pelo Claude Code. Inclui apenas mudanças aplicadas (accept) — rejects não contam."
               />
               <KpiCard
-                title="Cost per line"
+                title="Custo por linha"
                 value={
                   otel.costPerLineOfCode !== null
                     ? fmtUsdFine(otel.costPerLineOfCode)
@@ -244,7 +244,7 @@ export default async function Home({
               />
               {otel.totalActiveSeconds > 0 && (
                 <KpiCard
-                  title="Active time"
+                  title="Tempo ativo"
                   value={fmtDurationHours(otel.totalActiveSeconds)}
                   info="Tempo real de uso ativo (segundos de interação), não calendar time. Útil pra distinguir sessões de 30min reais vs 30min idle."
                 />

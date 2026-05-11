@@ -50,15 +50,15 @@ export const InviteRevokeButton = ({ tokenPrefix }: Props) => {
         // Map the Server-Action error codes to friendly Portuguese copy.
         // We never surface the raw code to the user, only a short label.
         if (result.code === 'not_found') {
-          setError('Convite não encontrado.');
+          setError('Invite not found.');
         } else if (result.code === 'collision') {
           setError(
-            'Conflito de prefixo. Recarregue a página e tente novamente.',
+            'Prefix collision. Reload the page and try again.',
           );
         } else if (result.code === 'invalid_input') {
-          setError('Prefixo inválido.');
+          setError('Invalid prefix.');
         } else {
-          setError('Não foi possível revogar.');
+          setError('Could not revoke.');
         }
         return;
       }
@@ -77,7 +77,7 @@ export const InviteRevokeButton = ({ tokenPrefix }: Props) => {
         className="inline-flex h-7 items-center justify-center whitespace-nowrap rounded border border-red-300 bg-white px-2.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:border-red-800 dark:bg-red-950 dark:text-red-200 dark:hover:bg-red-900"
         data-testid={`invite-revoke-${tokenPrefix}`}
       >
-        Revogar
+        Revoke
       </button>
 
       {/*
@@ -93,14 +93,14 @@ export const InviteRevokeButton = ({ tokenPrefix }: Props) => {
         onClose={() => setError(null)}
       >
         <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">
-          Revogar convite?
+          Revoke invite?
         </h2>
         <p className="mt-2 text-neutral-700 dark:text-neutral-300">
-          Esta ação é irreversível. O prefixo{' '}
+          This action is irreversible. The prefix{' '}
           <code className="rounded bg-neutral-100 px-1 py-0.5 font-mono text-xs dark:bg-neutral-800">
             {tokenPrefix}
           </code>{' '}
-          deixará de aceitar redenções imediatamente.
+          will stop accepting redemptions immediately.
         </p>
         {error ? (
           <p
@@ -117,7 +117,7 @@ export const InviteRevokeButton = ({ tokenPrefix }: Props) => {
             disabled={isPending}
             className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-md border border-neutral-300 bg-white px-4 text-sm font-medium text-neutral-900 transition-colors hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 dark:hover:bg-neutral-700"
           >
-            Cancelar
+            Cancel
           </button>
           <button
             type="button"
@@ -126,7 +126,7 @@ export const InviteRevokeButton = ({ tokenPrefix }: Props) => {
             className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-md bg-red-600 px-4 text-sm font-medium text-white shadow transition-colors hover:bg-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 disabled:opacity-50"
             data-testid={`invite-revoke-confirm-${tokenPrefix}`}
           >
-            {isPending ? 'Revogando…' : 'Revogar'}
+            {isPending ? 'Revoking…' : 'Revoke'}
           </button>
         </div>
       </dialog>

@@ -135,7 +135,7 @@ export default async function EffectivenessPage() {
             info="Razão entre tokens lidos do cache e total de tokens de prompt — quanto maior, mais contexto reaproveitado."
           />
           <KpiCard
-            title="Output/Input ratio"
+            title="Razão Output/Input"
             value={
               kpis.avgOutputInputRatio !== null
                 ? kpis.avgOutputInputRatio.toFixed(2)

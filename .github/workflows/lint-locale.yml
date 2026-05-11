@@ -1,0 +1,29 @@
+name: Lint locale (manager surface EN)
+
+on:
+  pull_request:
+    paths:
+      - 'apps/server/app/manager/**'
+      - 'apps/server/app/onboard/**'
+      - 'apps/server/app/me/**'
+      - 'apps/server/components/manager/**'
+      - 'scripts/lint-locale.ts'
+      - '.github/workflows/lint-locale.yml'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-locale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '25'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint:locale

@@ -1,6 +1,71 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import type { Result } from './result';
+
+export type FsPathError = {
+  readonly reason: 'path-outside-workspace';
+  readonly message: string;
+};
+
+/**
+ * Generalised path-traversal guard with a parametrisable workspace root and
+ * a `Result` return type (no throws).
+ *
+ * Differs from {@link resolveWithinClaudeProjects} (legacy, throws + fixed
+ * root). Mixed-model is a documented deviation; the legacy function is kept
+ * to avoid scope creep in the i18n-microcopy-consolidation spec.
+ *
+ * Algorithm:
+ *  1. Resolve `root` to a real path via `fs.realpathSync` (defence against
+ *     a cwd located behind a symlink — e.g. `/var` → `/private/var` on
+ *     macOS).
+ *  2. Resolve `candidate` to an absolute path via `path.resolve` (which
+ *     also normalises any `..` segments lexically).
+ *  3. If `candidate` exists on disk, resolve it via `realpath` so a
+ *     symlink inside `root` pointing outside cannot bypass the check.
+ *     If it does not exist (we may be asked about a not-yet-written
+ *     file), fall through to the lexical absolute path.
+ *  4. Assert `resolved === realRoot` OR
+ *     `resolved.startsWith(realRoot + path.sep)`.
+ */
+export const resolveWithinWorkspace = (
+  root: string,
+  candidate: string,
+): Result<string, FsPathError> => {
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(path.resolve(root));
+  } catch {
+    // Root doesn't exist on disk — fall back to lexical resolution.
+    realRoot = path.resolve(root);
+  }
+
+  // Resolve against realRoot so a symlinked root doesn't break the prefix check.
+  const resolvedCandidate = path.resolve(realRoot, candidate);
+  let realCandidate = resolvedCandidate;
+  try {
+    realCandidate = fs.realpathSync(resolvedCandidate);
+  } catch {
+    // Candidate may not exist yet — use the lexical resolution.
+  }
+
+  const inside =
+    realCandidate === realRoot ||
+    realCandidate.startsWith(realRoot + path.sep);
+
+  if (!inside) {
+    return {
+      ok: false,
+      error: {
+        reason: 'path-outside-workspace',
+        message: `path "${candidate}" escapes workspace root "${root}"`,
+      },
+    };
+  }
+
+  return { ok: true, value: realCandidate };
+};
 
 export function claudeProjectsRoot(): string {
   // Allow overriding the root via env (primary use case: Docker container

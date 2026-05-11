@@ -87,13 +87,13 @@ export default async function ManagerInvitesCreatedPage() {
             href="/manager/invites"
             className="hover:text-neutral-700 hover:underline dark:hover:text-neutral-200"
           >
-            Convites
+            Invites
           </Link>
           <span className="mx-1.5">/</span>
-          <span>Criado</span>
+          <span>Created</span>
         </nav>
         <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">
-          Convite criado
+          Invite created
         </h1>
       </div>
 
@@ -105,7 +105,7 @@ export default async function ManagerInvitesCreatedPage() {
           data-testid="flash-onboard-url"
         >
           <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
-            Este URL é mostrado apenas uma vez. Copie agora.
+            This URL is shown only once. Copy now.
           </p>
           <div className="flex items-center gap-2">
             <code
@@ -117,23 +117,24 @@ export default async function ManagerInvitesCreatedPage() {
             <FlashCopyButton value={url} />
           </div>
           <div className="space-y-2 text-sm text-amber-900 dark:text-amber-100">
-            <p className="font-medium">Próximos passos:</p>
+            <p className="font-medium">Next steps:</p>
             <ol className="ml-5 list-decimal space-y-1 text-amber-900/90 dark:text-amber-100/90">
               <li>
-                Envie este URL pelo canal seguro do time (DM 1:1, gerenciador
-                de senhas). NÃO use canais públicos.
+                Send this URL via your team&apos;s secure channel (1:1 DM,
+                password manager). Do NOT use public channels.
               </li>
               <li>
-                O destinatário abre o URL no navegador, copia o token e roda{' '}
+                The recipient opens the URL in the browser, copies the token,
+                and runs{' '}
                 <code className="rounded bg-amber-100 px-1 py-0.5 font-mono text-xs dark:bg-amber-900">
                   pnpm reporter:setup
                 </code>
                 .
               </li>
               <li>
-                Recarregar esta página descarta o URL. Se você perder, crie um
-                novo convite — o antigo continua válido até expirar ou ser
-                revogado.
+                Reloading this page discards the URL. If you lose it, create a
+                new invite — the old one stays valid until it expires or is
+                revoked.
               </li>
             </ol>
           </div>
@@ -142,7 +143,7 @@ export default async function ManagerInvitesCreatedPage() {
               href="/manager/invites"
               className="text-sm text-amber-900 underline hover:text-amber-700 dark:text-amber-100 dark:hover:text-amber-300"
             >
-              Voltar para a lista de convites
+              Back to invites list
             </Link>
           </div>
         </div>
@@ -152,18 +153,18 @@ export default async function ManagerInvitesCreatedPage() {
           data-testid="flash-empty-state"
         >
           <p className="font-medium text-neutral-900 dark:text-neutral-100">
-            URL não disponível.
+            URL not available.
           </p>
           <p className="mt-2">
-            O URL de onboarding é mostrado apenas uma vez logo após a criação.
-            Volte para{' '}
+            The onboarding URL is shown only once right after creation. Return
+            to{' '}
             <Link
               href="/manager/invites"
               className="text-blue-600 hover:underline dark:text-blue-400"
             >
               /manager/invites
             </Link>{' '}
-            e crie um novo convite.
+            and create a new invite.
           </p>
         </div>
       )}

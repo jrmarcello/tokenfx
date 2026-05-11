@@ -51,17 +51,17 @@ export default async function ManagerInvitesCreatePage() {
             href="/manager/invites"
             className="hover:text-neutral-700 hover:underline dark:hover:text-neutral-200"
           >
-            Convites
+            Invites
           </Link>
           <span className="mx-1.5">/</span>
-          <span>Criar</span>
+          <span>Create</span>
         </nav>
         <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">
-          Criar Convite
+          Create invite
         </h1>
         <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
-          O URL completo será mostrado uma única vez na próxima tela. Copie e
-          envie pelo canal seguro do seu time.
+          The full URL is shown only once on the next screen. Copy and send it
+          via your team&apos;s secure channel.
         </p>
       </div>
 
