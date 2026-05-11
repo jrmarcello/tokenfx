@@ -60,6 +60,7 @@ import {
   type EnqueueNotificationParams,
   type NotificationChannel,
 } from '@/lib/queries/notifications';
+import { truncateIpForAudit } from '@/lib/util/ip';
 import { displayLabelFor } from '@/lib/util/user-display';
 import { drilldownParamsSchema } from '@/lib/zod/manager-v2-schemas';
 
@@ -71,42 +72,6 @@ import { drilldownParamsSchema } from '@/lib/zod/manager-v2-schemas';
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (value: string): boolean => UUID_RE.test(value);
-
-/**
- * Truncate an IPv4 address to /24 ("a.b.c.0/24") or an IPv6 address to
- * /48 ("xxxx:xxxx:xxxx::/48") — same retention policy spec 3 REQ-27 uses
- * for redemption logs. Returns `null` for unparseable input.
- *
- * IPv6 truncation keeps the first three hextets and zeros the remaining
- * five, matching the canonical "/48" CIDR representation.
- */
-const truncateIp = (raw: string): string | null => {
-  const ip = raw.trim();
-  if (ip.length === 0) return null;
-
-  // IPv4: a.b.c.d → a.b.c.0/24
-  const ipv4Match = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4Match) {
-    const [, a, b, c, d] = ipv4Match;
-    const octets = [a, b, c, d].map(Number);
-    if (octets.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
-    return `${octets[0]}.${octets[1]}.${octets[2]}.0/24`;
-  }
-
-  // IPv6: keep the first three hextets, expand to /48 form.
-  // We do NOT do full RFC 5952 normalization — `::` shortcuts are kept
-  // as written when they appear AFTER the third hextet. If the address
-  // starts with `::` (e.g. `::1`) we cannot meaningfully truncate.
-  if (ip.includes(':')) {
-    if (ip.startsWith('::')) return null;
-    const head = ip.split(':').slice(0, 3);
-    if (head.length < 3 || head.some((h) => h.length === 0)) return null;
-    if (!head.every((h) => /^[0-9a-fA-F]{1,4}$/.test(h))) return null;
-    return `${head.join(':').toLowerCase()}::/48`;
-  }
-
-  return null;
-};
 
 /**
  * Best-effort extraction of the request IP. Reads `x-forwarded-for` (the
@@ -129,13 +94,13 @@ const extractTruncatedIp = async (): Promise<string | null> => {
   if (forwarded) {
     const first = forwarded.split(',')[0]?.trim();
     if (first) {
-      const truncated = truncateIp(first);
+      const truncated = truncateIpForAudit(first);
       if (truncated) return truncated;
     }
   }
   const realIp = h.get('x-real-ip');
   if (realIp) {
-    const truncated = truncateIp(realIp.trim());
+    const truncated = truncateIpForAudit(realIp.trim());
     if (truncated) return truncated;
   }
   return null;

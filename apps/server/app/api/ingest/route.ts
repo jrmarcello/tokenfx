@@ -47,6 +47,7 @@ import {
   userMachines,
 } from '@/lib/db/schema';
 import { recomputePerUserCalibration } from '@/lib/queries/calibration';
+import { truncateIpForAudit } from '@/lib/util/ip';
 import {
   parseBearerAuthorization,
   verifyKeySecret,
@@ -68,20 +69,6 @@ const checkRateLimit = (machineId: string): boolean => {
   if (bucket.count >= RATE_LIMIT) return false;
   bucket.count += 1;
   return true;
-};
-
-// --- IP truncation (REQ-27) ---------------------------------------------------
-const truncateIp = (ip: string | null): string | null => {
-  if (!ip) return null;
-  if (ip.includes(':')) {
-    // IPv6 — keep first 3 hextets (/48). Reject if not at least 3 segments.
-    const parts = ip.split(':');
-    if (parts.length < 3) return null;
-    return `${parts.slice(0, 3).join(':')}::/48`;
-  }
-  const parts = ip.split('.');
-  if (parts.length !== 4) return null;
-  return `${parts.slice(0, 3).join('.')}.0/24`;
 };
 
 // --- Per-session payload hash (idempotency key — REQ-15) ----------------------
@@ -409,7 +396,7 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
         acceptedCount,
         skippedCount,
         rejectedCount: rejected.length,
-        requestIp: truncateIp(ip),
+        requestIp: ip ? truncateIpForAudit(ip) : null,
         errorsJson: rejected.length > 0 ? rejected : null,
       });
 

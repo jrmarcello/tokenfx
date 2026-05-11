@@ -59,16 +59,46 @@ const b64urlEncode = (bytes: Uint8Array | Buffer): string =>
 
 const b64urlDecode = (s: string): Buffer => Buffer.from(s, 'base64url');
 
+/**
+ * Returns the HMAC pepper for flash-cookie signing. Reads `AUTH_SECRET`
+ * (primary) or `NEXTAUTH_SECRET` (alias).
+ *
+ * Hardened against load-order regressions: calls `assertFlashSecretAvailable`
+ * on every invocation so the empty-string fallback is unreachable in
+ * production regardless of whether the caller went through `auth.ts`
+ * module load first. In dev/test the guard is a no-op (returns silently
+ * when `NODE_ENV !== 'production'`), preserving the `''` fallback for
+ * unit tests that exercise the framework-agnostic core via the
+ * explicit-secret overload.
+ */
 const getSecret = (): string => {
+  assertFlashSecretAvailable(process.env);
   const s = process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET;
-  if (!s) {
-    // Tests/dev-server boot guard in `auth.ts` already throws in production
-    // when AUTH_SECRET is missing. For dev/test we accept an empty fallback
-    // so unit tests that don't touch `auth.ts` still execute — they pass
-    // their own pepper via the explicit-secret overload below.
-    return '';
-  }
+  if (!s) return '';
   return s;
+};
+
+/**
+ * Boot-time guard: fails fast in production if both `AUTH_SECRET` and
+ * `NEXTAUTH_SECRET` are missing/empty. Defense-in-depth alongside the
+ * `auth.ts` module-scope `AUTH_SECRET` guard — that guard fires first
+ * for the canonical entry path; this assertion is reachable when a
+ * different entry path imports `flash-cookie` directly.
+ *
+ * Non-`production` `NODE_ENV` values (including `'development'`, `'test'`,
+ * `'production-staging'`, unset, `''`) do NOT trigger — they delegate to
+ * the existing `AUTH_SECRET` guard in `auth.ts:18-26` which uses negation
+ * without checking `NODE_ENV`.
+ */
+export const assertFlashSecretAvailable = (
+  env: NodeJS.ProcessEnv = process.env,
+): void => {
+  if (env.NODE_ENV !== 'production') return;
+  if (!env.AUTH_SECRET && !env.NEXTAUTH_SECRET) {
+    throw new Error(
+      'AUTH_SECRET (or NEXTAUTH_SECRET) is required for flash cookies. Refusing to boot.',
+    );
+  }
 };
 
 /**

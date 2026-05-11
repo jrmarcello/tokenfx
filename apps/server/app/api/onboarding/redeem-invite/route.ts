@@ -50,6 +50,7 @@ import { z } from 'zod';
 import { log as logger } from '@root/logger';
 import { getDb } from '@/lib/db/client';
 import { redeemInvite, type RedeemError } from '@/lib/queries/redeem';
+import { truncateIpForAudit } from '@/lib/util/ip';
 import {
   checkRateLimits,
   __resetRateLimits,
@@ -98,38 +99,6 @@ const RL_WINDOW_MS = 60_000;
 // required by REQ-26's regex; non-hex bodies skip the token dimension.
 const RAW_TOKEN_REGEX = /"token"\s*:\s*"([0-9a-f]{64})"/;
 
-/**
- * Truncate an IP to /24 (IPv4) or /48 (IPv6). Mirrors the helper in
- * `apps/server/app/api/ingest/route.ts` — we copy here rather than extracting
- * to a shared module because (a) the two routes have slightly different
- * output keys (`'unknown-ip'` vs `null` fallback) and (b) introducing a new
- * shared module within the scope of TASK-8 would expand its file blast
- * radius beyond what the spec promises. A future refactor can pull both
- * helpers into `lib/util/ip.ts` if a third caller appears.
- */
-const truncateIp24 = (rawIp: string | null): string | null => {
-  if (!rawIp) return null;
-  const ip = rawIp.trim();
-  if (ip.length === 0) return null;
-  if (ip.includes(':')) {
-    // IPv6 — keep first 3 hextets (/48). Reject if not at least 3 segments.
-    const parts = ip.split(':');
-    if (parts.length < 3) return null;
-    return `${parts.slice(0, 3).join(':')}::/48`;
-  }
-  const parts = ip.split('.');
-  if (parts.length !== 4) return null;
-  // Reject non-numeric octets — defensive against header-injection attempts
-  // that might smuggle JS-truthy garbage past `.split`. Each octet must be
-  // 0..255.
-  for (const p of parts) {
-    if (!/^\d{1,3}$/.test(p)) return null;
-    const n = Number(p);
-    if (n < 0 || n > 255) return null;
-  }
-  return `${parts.slice(0, 3).join('.')}.0/24`;
-};
-
 const extractRequestIp = (req: NextRequest): string | null => {
   // X-Forwarded-For wins (set by Vercel / Cloudflare / reverse proxies).
   // Take the FIRST entry — that's the original client per RFC 7239 spirit.
@@ -165,7 +134,7 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
   // Step 0a: extract IP (truncated to /24 or /48 — REQ-27 + REQ-2).
   // ---------------------------------------------------------------------------
   const rawIp = extractRequestIp(req);
-  const requestIp = truncateIp24(rawIp);
+  const requestIp = rawIp ? truncateIpForAudit(rawIp) : null;
   // Rate-limit key for the IP dimension. If we couldn't derive a truncated
   // IP from headers, use a constant placeholder so the limiter still applies
   // (otherwise an attacker who can strip XFF would bypass per-IP throttling).

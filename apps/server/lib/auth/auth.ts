@@ -8,6 +8,7 @@ import {
   assertNotProductionWithBypass,
   buildE2eBypassProvider,
 } from './e2e-bypass-provider';
+import { assertFlashSecretAvailable } from './flash-cookie';
 import { getDb } from '@/lib/db/client';
 import { orgs, users } from '@/lib/db/schema';
 import { emailDomain } from './email-hash';
@@ -28,6 +29,13 @@ if (
     'AUTH_SECRET (or NEXTAUTH_SECRET) is required in production. Refusing to boot to avoid signing JWTs with a transient secret.',
   );
 }
+
+// onboarding-followups-lowsev (REQ-13): defense-in-depth boot guard for
+// the flash-cookie HMAC secret. The AUTH_SECRET guard above (lines 18-26)
+// catches the common case; this assertion is the locality-specific check
+// — if any future module imports `flash-cookie` directly (NOT via this
+// file), it can call `assertFlashSecretAvailable` itself.
+assertFlashSecretAvailable(process.env);
 
 // fix-e2e-auth-bypass (REQ-4): refuse to boot if the e2e-only Credentials
 // bypass is enabled in production. Mirrors the AUTH_SECRET guard above. The

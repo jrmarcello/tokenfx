@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  assertFlashSecretAvailable,
   FLASH_COOKIE_NAME,
   FLASH_COOKIE_PATH,
   FLASH_COOKIE_MAX_AGE_SECONDS,
@@ -188,5 +189,28 @@ describe('readAndDeleteFlashCookie', () => {
     const second = readAndDeleteFlashCookie(cookies, { secret: SECRET });
     expect(first).toBe('https://central/onboard#token=t');
     expect(second).toBeNull();
+  });
+});
+
+describe('assertFlashSecretAvailable — production boot guard', () => {
+  it.each([
+    ['both secrets missing entirely', { NODE_ENV: 'production' }],
+    ['empty AUTH_SECRET, NEXTAUTH_SECRET missing', { NODE_ENV: 'production', AUTH_SECRET: '' }],
+    ['both secrets empty strings', { NODE_ENV: 'production', AUTH_SECRET: '', NEXTAUTH_SECRET: '' }],
+  ])('throws in production when %s', (_label, env) => {
+    expect(() => assertFlashSecretAvailable(env as NodeJS.ProcessEnv)).toThrow(
+      /AUTH_SECRET.*required for flash cookies/,
+    );
+  });
+
+  it.each([
+    ['AUTH_SECRET set, NEXTAUTH_SECRET unset', { NODE_ENV: 'production', AUTH_SECRET: 'x' }],
+    ['NEXTAUTH_SECRET set, AUTH_SECRET unset', { NODE_ENV: 'production', NEXTAUTH_SECRET: 'x' }],
+    ['AUTH_SECRET empty, NEXTAUTH_SECRET set', { NODE_ENV: 'production', AUTH_SECRET: '', NEXTAUTH_SECRET: 'y' }],
+    ['development with no secret', { NODE_ENV: 'development' }],
+    ['test with no secret', { NODE_ENV: 'test' }],
+    ['production-staging variant (allow-listed via existing AUTH_SECRET guard)', { NODE_ENV: 'production-staging' }],
+  ])('does not throw when %s', (_label, env) => {
+    expect(() => assertFlashSecretAvailable(env as NodeJS.ProcessEnv)).not.toThrow();
   });
 });

@@ -35,37 +35,17 @@ import {
   parseBearerAuthorization,
   verifyKeySecret,
 } from '@/lib/auth/bearer-auth';
+import { checkRateLimits, __resetRateLimits } from '@/lib/queries/rate-limit';
+import { truncateIpForAudit } from '@/lib/util/ip';
 
 // --- Rate limiter ------------------------------------------------------------
-// Sliding-window-ish: simple per-window bucket per truncated IP. We only
-// limit credential-validation mode; liveness mode is unrestricted by design.
-const RATE_LIMIT = 10;
-const RATE_WINDOW_MS = 60_000;
-const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
-
-const truncateIpV4_24 = (ip: string | null): string | null => {
-  if (!ip) return null;
-  if (ip.includes(':')) {
-    const parts = ip.split(':');
-    if (parts.length < 3) return null;
-    return `${parts.slice(0, 3).join(':')}::/48`;
-  }
-  const parts = ip.split('.');
-  if (parts.length !== 4) return null;
-  return `${parts.slice(0, 3).join('.')}.0/24`;
-};
-
-const checkRateLimit = (key: string): boolean => {
-  const now = Date.now();
-  const bucket = rateLimitBuckets.get(key);
-  if (!bucket || bucket.resetAt < now) {
-    rateLimitBuckets.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    return true;
-  }
-  if (bucket.count >= RATE_LIMIT) return false;
-  bucket.count += 1;
-  return true;
-};
+// True sliding-window via the shared `checkRateLimits` helper from
+// `lib/queries/rate-limit.ts`. We only limit credential-validation mode
+// (single 'ip' dimension at 10/min); liveness mode is unrestricted by
+// design. The 'token' dimension is not used here — health endpoint has
+// no token analogue to throttle.
+const HEALTH_IP_LIMIT = 10;
+const HEALTH_IP_WINDOW_MS = 60_000;
 
 const errorBody = (
   message: string,
@@ -119,11 +99,19 @@ export const GET = async (req: NextRequest): Promise<NextResponse> => {
     req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
     req.headers.get('x-real-ip')?.trim() ??
     null;
-  const rlKey = truncateIpV4_24(ip) ?? 'unknown-ip';
-  if (!checkRateLimit(rlKey)) {
+  const rlKey = (ip ? truncateIpForAudit(ip) : null) ?? 'unknown-ip';
+  const rateLimitResult = checkRateLimits([
+    {
+      name: 'ip',
+      key: rlKey,
+      limit: HEALTH_IP_LIMIT,
+      windowMs: HEALTH_IP_WINDOW_MS,
+    },
+  ]);
+  if (!rateLimitResult.ok) {
     return NextResponse.json(errorBody('rate limit exceeded'), {
       status: 429,
-      headers: { 'Retry-After': '60' },
+      headers: { 'Retry-After': String(rateLimitResult.retryAfterSec) },
     });
   }
 
@@ -181,5 +169,5 @@ export const GET = async (req: NextRequest): Promise<NextResponse> => {
  * `__resetIngestAuthCache` from `lib/auth/bearer-auth`.
  */
 export const __resetHealthRateLimit = (): void => {
-  rateLimitBuckets.clear();
+  __resetRateLimits();
 };
