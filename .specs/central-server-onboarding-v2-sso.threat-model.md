@@ -60,6 +60,35 @@ These are not implementation choices; they are **blockers** without which the v2
 11. **Multi-IdP-per-pattern policy (LOCKED)**: managers specify allowed IdPs per pattern via the `allowed_sso_providers text[]` column (schema precondition #8). Empty array = legacy / "any provider allowed". Non-empty array = restrict. UI surface: invite-creation form has a multi-select "Allow sign-in via:" with `google`, `okta`. Default for new SSO-auto patterns: select the provider the manager themselves is signed into. Mitigates §Threat 12 cross-IdP confused deputy.
 12. **Pre-existing user binding policy (LOCKED)**: when an SSO callback's `(email, org_id)` matches a `users` row that has NULL `sso_provider/sso_subject` (i.e., legacy invite-token-provisioned), the auto-provision flow **refuses to bind silently**. Instead it logs `'rejected-pre-existing-binding'` and surfaces a UX prompt to the legitimate-account-holder via the existing manager dashboard ("a sign-in attempt via Google asked to bind to your account; click here to confirm or revoke"). Out-of-band confirmation required. Mitigates §Threat 11.
 
+13. **Public-domain blocklist governance (LOCKED — was Q1)**: infra team owns the file; **CI check enforces `LAST_REVIEWED: YYYY-MM-DD` header within the last 90 days** — fails build if stale. Automated cadence enforcement; review process is not a calendar reminder, it's a code gate.
+
+14. **First-auto-provision alert recipients (LOCKED — was Q2)**: email to **all admins** of the org. Dashboard dedup logic suppresses banner for admins who already opened the email (read-tracked via signed URL or DB flag). Defense-in-depth — one admin on vacation does not block detection.
+
+15. **Banner stacking semantics (LOCKED — was Q3)**: multiple unacknowledged first-auto-provision events stack with count badge (`3 unacknowledged`); **per-event acknowledge** (acking one does NOT dismiss others). Preserves forensic trail "when each admin saw which event".
+
+16. **Pattern renewal clock (LOCKED — was Q4)**: renewal **resets** `expires_at` to `renewal_date + 180d`. NOT continuation from original creation. Manager UX: fresh 180d window every cycle.
+
+17. **`allowed_sso_providers` UI enforcement (LOCKED — was Q5)**: UI **enforces ≥1 selected** for new SSO-auto patterns; manager who wants "any provider" must select all currently-supported (`['google', 'okta']`) explicitly. Legacy empty arrays continue to mean "any" for backwards compat (no migration needed). Closes cross-IdP ambiguity for new patterns.
+
+18. **`provisioned_via` UI surface (LOCKED — was Q6)**: filterable in the team-roster view + **CSV export with `provisioned_via` column** for offline audit. Marginal implementation cost; significant compliance value.
+
+19. **Pre-existing-binding email template (LOCKED — was Q7)**: includes `city + browser + time` of the attempted SSO sign-in to help the legitimate user assess legitimacy (geographic anomaly = strong signal). **Rate limit on resends**: 3 emails / 24h per `email_hash` to prevent email-spam attack via repeated rejection triggers.
+
+20. **Implementation spec scope split (LOCKED — was Q8)**: split into **3 sequential specs**:
+    - (a) `central-server-onboarding-v2-sso.schema-migrations.md` — schema preconditions #1-9 + `users.email` global UNIQUE refactor (Decisão #22 below).
+    - (b) `central-server-onboarding-v2-sso.backend.md` — SSO-auto-provision route, validation logic, threat mitigations encoded as REQs, session-anomaly logging baseline (Decisão #21).
+    - (c) `central-server-onboarding-v2-sso.manager-ui.md` — first-auto-provision banner, audit-log view, pattern-creation UX changes, `provisioned_via` roster filter.
+    Sequential dependency: (a) → (b) → (c). Each independently reviewed, tested, and committed.
+
+21. **Session-anomaly logging baseline (LOCKED — was JC1)**: v2 scope **expanded** to include baseline detection. New table `auth_event_log` records every SSO sign-in (success + failure) with `iss + email_hash + sso_subject_hash + IP + city (from IP) + user_agent + occurred_at`. **No ML scoring** — only raw collection + a hardcoded impossible-travel heuristic that fires a manager alert when two successful logins for the same `sso_subject_hash` occur within 1h from cities >500km apart. Defers full anomaly-detection (ML/scoring/risk thresholds) to a separate future spec. **Threat 4 residual reclassified from CRITICAL-deferred to HIGH-mitigated** based on this baseline.
+
+22. **`users.email` UNIQUE refactor scope (LOCKED — was JC2)**: schema-migration spec (a) is responsible for the **complete code-wide refactor** in the same ship — not just the migration. Tasks:
+    - Grep `findByEmail`, `WHERE email =`, every Zod schema with `email` lookup, every route handler that resolves a user by email.
+    - Refactor all call sites to use `(org_id, email)` composite — never bare email lookup post-migration.
+    - Single atomic spec; the migration without code refactor would break production. Spec MUST identify every call site as a discrete TASK with files: and tests:.
+
+23. **NextAuth state/nonce verification (LOCKED — was JC3)**: backend spec (b) MUST include an explicit integration TC `replay-detection: state token reuse rejected` that exercises the replay path end-to-end. Do not rely on the v1 e2e tests' unverified claim. The TC is non-negotiable.
+
 ### Anti-goals (out-of-scope desta threat model)
 
 - IdP-internal compromise mitigations (we trust the IdP).
@@ -167,7 +196,7 @@ These are not implementation choices; they are **blockers** without which the v2
 - M4.2 Defense-in-depth: **scope reduction**. `onboarding_redemption_log` records `sso_subject_hash`, `iss`, `user_agent`, `request_ip` for every SSO event (§Compliance §Decisão #9). On a known-compromise event, admin can run a forensic query: "show all auto-provisions that came from `iss=<compromised-tenant>` after T". Pair with `user_machines.revoked_at` flip to invalidate all sessions for affected users. Detection automation (anomaly scoring, impossible-travel alerts) is deferred to a separate session-anomaly-detection spec.
 - M4.3 Org admin can revoke `user_machines` rows individually at any time (existing v1 capability).
 
-**Residual risk**: **CRITICAL-deferred**. Leadership must accept this explicitly. The mitigation gap (no automated detection) is intentional scope; reclassification from "HIGH but accepted" to "CRITICAL-deferred" is the honest framing.
+**Residual risk**: **HIGH-mitigated** (reclassified from CRITICAL-deferred after §Decisão #21 expanded v2 scope to include baseline session-anomaly logging — `auth_event_log` table + impossible-travel heuristic alert). Full ML/scoring-based anomaly detection remains a future spec.
 
 ---
 
@@ -417,34 +446,29 @@ New manager-dashboard widget "Auto-provision activity" (out of scope here; speci
 - First-auto-provision alerts (M3.1) — with acknowledge button.
 - Pre-existing-binding rejection alerts (M11.2) — user-facing, not manager-facing.
 
-## Open Questions (to resolve before implementation spec is authored)
+## Resolved Questions (archive — all locked into Decisões #13-23 above)
 
-> The implementation spec cannot be approved until each of these resolves to a locked decision.
+The 8 Open Questions from initial DRAFT (Q1-Q8) plus 3 judgment calls (JC1-JC3) from Pause 1 review were resolved on 2026-05-11 via user sign-off. Locked decisions live in §Decisões #13-23. Summary:
 
-1. **Q1: Public-domain blocklist update cadence and ownership.** Hardcoded file is fine (§Decisão #3) — but who owns the quarterly review? Infra team? Manager-of-managers? **Recommendation**: infra team, calendar reminder.
+| Originally | Now |
+| --- | --- |
+| Q1 (blocklist governance) | §Decisão #13 — CI-enforced 90d review |
+| Q2 (alert recipients) | §Decisão #14 — all admins |
+| Q3 (banner stacking) | §Decisão #15 — stack + per-event ack |
+| Q4 (renewal clock) | §Decisão #16 — reset on renewal |
+| Q5 (allowed_sso_providers UI) | §Decisão #17 — enforce ≥1 |
+| Q6 (provisioned_via UI) | §Decisão #18 — roster filter + CSV |
+| Q7 (binding email template) | §Decisão #19 — city/browser/time + 3/24h rate-limit |
+| Q8 (spec split) | §Decisão #20 — 3 sequential specs |
+| JC1 (Threat 4 reclass) | §Decisão #21 — baseline session-anomaly logging in v2 |
+| JC2 (users.email refactor) | §Decisão #22 — code-wide refactor in same spec as migration |
+| JC3 (state/nonce verification) | §Decisão #23 — explicit TC in backend spec |
 
-2. **Q2: First-auto-provision alert delivery channel.** Email + dashboard banner (§Decisão #7) is locked. **Q2 remainder**: does the email go to all admins, or only the org owner / billing owner? **Recommendation**: all admins (broadest visibility wins; UX dedup on dashboard for "I already saw this in email").
+## Acceptance criteria for moving to implementation specs
 
-3. **Q3: Banner persistence semantics.** Banner persists until manager clicks "acknowledge" (§Decisão #7). What if there are multiple unacknowledged first-auto-provision events? Stack them, or only show the latest? **Recommendation**: stack; show count badge ("3 unacknowledged"), expand on click.
+All Open Questions resolved (above). Threats accepted with residual risk acknowledged (especially Threat 4 reclassified to HIGH-mitigated per §Decisão #21). Schema preconditions #1-9 reviewed. Spec split decision locked (§Decisão #20).
 
-4. **Q4: Manager re-confirmation interval for long-lived patterns.** 180d max `expires_at` (§schema precondition #9). Banner at 14d + 1d (§Decisão #7). **Q4 remainder**: should renewal extend by 180d from renewal date, or 180d from original creation? **Recommendation**: from renewal date — gives manager a fresh 180d window each cycle.
-
-5. **Q5: Multi-IdP-per-pattern UI default.** `allowed_sso_providers` defaults to "current manager's IdP" (§Decisão #11). **Q5 remainder**: should the manager be able to leave it empty (= any provider) via UI, or always pick at least one? **Recommendation**: enforce ≥1 in UI; if manager wants "any", they pick all currently-supported (`['google', 'okta']`). Closes the cross-IdP ambiguity for new patterns; legacy empty arrays still treated as "any" for backwards compat.
-
-6. **Q6: `provisioned_via` UI surface.** Manager dashboard shows "User created via: manual-token / sso-auto" (per `users` provisioning row). **Q6 remainder**: also filterable in the team-roster view? **Recommendation**: yes — adds zero implementation cost.
-
-7. **Q7: Pre-existing-binding email template (M11.2).** What does the email say? Should it include device/location info ("attempted sign-in from `<city>` via `<browser>`")? **Recommendation**: yes — geographic anomaly helps user judge legitimacy. Use existing reverse-IP lookup if already wired; otherwise just include IP + user-agent string.
-
-8. **Q8: Implementation spec scope split.** One spec covering schema migrations + backend route + manager UI, OR three specs in sequence? **Recommendation**: split into (a) schema-migrations spec (preconditions #1-9), (b) backend SSO-auto-provision spec (REQs derived from threat mitigations), (c) manager-UI spec (banner, audit-log view, pattern-creation UX changes). Sequential dependency: (a) → (b) → (c).
-
-## Acceptance criteria for moving to implementation spec
-
-Before any of the implementation specs are authored, the user must explicitly resolve:
-
-- Each of Open Questions Q1–Q8 above.
-- All threats accepted (residual risk acknowledged) — especially the **CRITICAL-deferred** classification of Threat 4 (§Decisão: leadership signs off explicitly).
-- Schema preconditions #1-9 reviewed for breaking-change implications (especially #1, the `users.email` global UNIQUE relaxation — has implications for any code path that assumes global uniqueness).
-- Implementation spec scope split decision (Q8).
+**Next step**: author `central-server-onboarding-v2-sso.schema-migrations.md` (spec (a) of the 3-spec split) via `/spec`. The implementation spec will translate schema preconditions #1-9 into REQs + Tasks + Test Plan, with §Decisão #22 (`users.email` code-wide refactor) as a discrete task set with grep'd call sites.
 
 ## Out-of-scope (deferred to future iterations)
 
