@@ -14,6 +14,7 @@ import { orgs, users } from '@/lib/db/schema';
 import { emailDomain } from './email-hash';
 import { evaluateSignIn, loadUserByEmail, loadUserBySsoIdentity } from './load-user';
 import { matchActiveInvitesByEmail } from './match-active-invites';
+import { getRequestContext } from '@/lib/auth/request-context';
 import { evaluateAutoProvision } from './sso-auto-provision';
 import { log as logger } from '@root/logger';
 
@@ -298,11 +299,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           // engine's clientId check will then surface as 'rejected-csrf' for
           // forged callbacks, which is the desired behavior.
           //
-          // TODO(spec b follow-up): IP / user-agent are NOT available in the
-          // NextAuth signIn callback (no request context). We pass empty
-          // strings; downstream audit rows have ip='', user_agent='', city=NULL.
-          // A future spec can thread request context via AsyncLocalStorage
-          // from the route handler so Threat-4 forensics are complete.
+          // IP / user-agent are threaded into this callback via
+          // `AsyncLocalStorage` (see `lib/auth/request-context.ts`). The
+          // NextAuth route handler wraps the request in `runInRequestContext`
+          // so deep callbacks like `signIn` — which receive no `Request`
+          // object — can still read upstream-populated forensics fields.
+          // When invoked outside that scope (tests, edge cases), the helper
+          // returns empty defaults, preserving the prior hard-coded behavior.
           const matches = await matchActiveInvitesByEmail(user.email);
           if (matches.length >= 1) {
             // NextAuth v5's Account type doesn't expose OIDC `audience` / `iss`
@@ -312,6 +315,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             const acctRecord = account as unknown as Record<string, unknown>;
             const audienceRaw = acctRecord.audience;
             const audience = typeof audienceRaw === 'string' ? audienceRaw : '';
+            const { ip, userAgent } = getRequestContext();
             const decision = await evaluateAutoProvision({
               email: user.email,
               ssoProvider: account.provider,
@@ -322,8 +326,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
                 acctRecord,
                 user as unknown as Record<string, unknown>,
               ),
-              ip: '',
-              userAgent: '',
+              ip,
+              userAgent,
               displayName: user.name ?? null,
             });
             if (decision.kind === 'accepted-sso-auto') {

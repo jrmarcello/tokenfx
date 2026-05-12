@@ -59,9 +59,22 @@ const MEMBER_SESSION: Session = {
   expires: '2099-01-01',
 };
 
-const buildFormData = (entries: Record<string, string>): FormData => {
+/**
+ * Build a FormData from the given scalar entries. ALL invite-create tests
+ * must provide at least one `allowed_sso_providers` value (REQ-7/8 write
+ * path). To keep pre-TASK-15 tests passing without rewriting them, this
+ * helper appends a default `['google']` selection — opt out by passing
+ * `{ withDefaultProviders: false }` in the optional second arg (used by the
+ * "field omitted" rejection test).
+ */
+const buildFormData = (
+  entries: Record<string, string>,
+  options?: { withDefaultProviders?: boolean },
+): FormData => {
   const fd = new FormData();
   for (const [k, v] of Object.entries(entries)) fd.set(k, v);
+  const withDefaults = options?.withDefaultProviders ?? true;
+  if (withDefaults) fd.append('allowed_sso_providers', 'google');
   return fd;
 };
 
@@ -132,6 +145,26 @@ const baseFormFields = {
   expires_in_hours: '8',
 };
 
+/**
+ * Build a FormData with checkbox-group multi-values for
+ * `allowed_sso_providers` plus the base scalar fields. The browser submits
+ * checkbox groups as repeated entries with the same name; mirror that here
+ * so the Server Action's `formData.entries()` reads see the same shape.
+ *
+ * If `providers` includes `'__bare_string__'` as the only element, set a
+ * single scalar string (not an array) — used to assert that the schema
+ * rejects a single-string submission.
+ */
+const buildFormDataWithProviders = (
+  scalars: Record<string, string>,
+  providers: ReadonlyArray<string>,
+): FormData => {
+  const fd = new FormData();
+  for (const [k, v] of Object.entries(scalars)) fd.set(k, v);
+  for (const p of providers) fd.append('allowed_sso_providers', p);
+  return fd;
+};
+
 describe('createInviteImpl', () => {
   it('TC-I-10: manager invokes the action → core called with parsed params; cookie set with full URL', async () => {
     const calls: CreateCoreCall[] = [];
@@ -167,6 +200,7 @@ describe('createInviteImpl', () => {
       emailPattern: '*@example.com',
       maxUses: 5,
       expiresInHours: 8,
+      allowedSsoProviders: ['google'],
     });
 
     // The cookie was set, and the payload contains the full token (the
@@ -381,6 +415,173 @@ describe('createInviteImpl', () => {
     );
     expect(calls[0].params.maxUses).toBe(1);
     expect(calls[0].params.expiresInHours).toBe(8);
+  });
+
+  // ---------------------------------------------------------------------
+  // allowed_sso_providers — TASK-15 (REQ-7, REQ-8).
+  //
+  // Write-path semantics: schema requires ≥1 provider (`.min(1)`) and
+  // dedups via `.transform`. Empty array / missing field / invalid enum
+  // value / wrong shape (single string) all surface as
+  // `{ok: false, code: 'invalid_input'}`. Legacy read-path semantics
+  // (`[]` = "any provider allowed") are preserved at the DB layer and
+  // exercised in `sso-auto-provision.test.ts` — not here.
+  // ---------------------------------------------------------------------
+
+  it('TC-I-20: accepts a single supported provider and passes it through to core', async () => {
+    const calls: CreateCoreCall[] = [];
+    const { store } = stubCookieStore();
+    const fd = buildFormDataWithProviders(baseFormFields, ['google']);
+    const res = await createInviteImpl(fd, {
+      authFn: stubAuth(MANAGER_SESSION),
+      cookieStore: store,
+      core: stubCreateCore(FAKE_RESULT, calls),
+      coreDeps: { db: {} as CreateInviteCoreDeps['db'] },
+      setCookie: () => {
+        /* noop */
+      },
+    });
+    expect(res.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].params.allowedSsoProviders).toEqual(['google']);
+  });
+
+  it('accepts a multi-provider selection (all four providers)', async () => {
+    const calls: CreateCoreCall[] = [];
+    const { store } = stubCookieStore();
+    const fd = buildFormDataWithProviders(baseFormFields, [
+      'google',
+      'okta',
+      'microsoft',
+      'auth0',
+    ]);
+    const res = await createInviteImpl(fd, {
+      authFn: stubAuth(MANAGER_SESSION),
+      cookieStore: store,
+      core: stubCreateCore(FAKE_RESULT, calls),
+      coreDeps: { db: {} as CreateInviteCoreDeps['db'] },
+      setCookie: () => {
+        /* noop */
+      },
+    });
+    expect(res.ok).toBe(true);
+    expect(calls[0].params.allowedSsoProviders).toEqual([
+      'google',
+      'okta',
+      'microsoft',
+      'auth0',
+    ]);
+  });
+
+  it('TC-I-22: rejects an empty array on the create path with invalid_input', async () => {
+    const calls: CreateCoreCall[] = [];
+    const { store, setCalls } = stubCookieStore();
+    // Empty checkbox group → no entries appended; absent from FormData.
+    const fd = buildFormDataWithProviders(baseFormFields, []);
+    const res = await createInviteImpl(fd, {
+      authFn: stubAuth(MANAGER_SESSION),
+      cookieStore: store,
+      core: stubCreateCore(FAKE_RESULT, calls),
+      coreDeps: { db: {} as CreateInviteCoreDeps['db'] },
+      setCookie: () => {
+        /* noop */
+      },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe('invalid_input');
+      expect(typeof res.detail).toBe('string');
+    }
+    expect(calls).toHaveLength(0);
+    expect(setCalls).toHaveLength(0);
+  });
+
+  it('TC-I-21: rejects an unsupported provider value with invalid_input', async () => {
+    const calls: CreateCoreCall[] = [];
+    const { store } = stubCookieStore();
+    const fd = buildFormDataWithProviders(baseFormFields, ['nonexistent']);
+    const res = await createInviteImpl(fd, {
+      authFn: stubAuth(MANAGER_SESSION),
+      cookieStore: store,
+      core: stubCreateCore(FAKE_RESULT, calls),
+      coreDeps: { db: {} as CreateInviteCoreDeps['db'] },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.code).toBe('invalid_input');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('rejects a mixed valid + invalid provider list', async () => {
+    const calls: CreateCoreCall[] = [];
+    const { store } = stubCookieStore();
+    const fd = buildFormDataWithProviders(baseFormFields, ['google', 'nope']);
+    const res = await createInviteImpl(fd, {
+      authFn: stubAuth(MANAGER_SESSION),
+      cookieStore: store,
+      core: stubCreateCore(FAKE_RESULT, calls),
+      coreDeps: { db: {} as CreateInviteCoreDeps['db'] },
+    });
+    expect(res.ok).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('dedups repeated providers (google,google → google)', async () => {
+    const calls: CreateCoreCall[] = [];
+    const { store } = stubCookieStore();
+    const fd = buildFormDataWithProviders(baseFormFields, ['google', 'google']);
+    const res = await createInviteImpl(fd, {
+      authFn: stubAuth(MANAGER_SESSION),
+      cookieStore: store,
+      core: stubCreateCore(FAKE_RESULT, calls),
+      coreDeps: { db: {} as CreateInviteCoreDeps['db'] },
+      setCookie: () => {
+        /* noop */
+      },
+    });
+    expect(res.ok).toBe(true);
+    expect(calls[0].params.allowedSsoProviders).toEqual(['google']);
+  });
+
+  it('dedups a longer repeated selection while preserving the first-seen order', async () => {
+    const calls: CreateCoreCall[] = [];
+    const { store } = stubCookieStore();
+    const fd = buildFormDataWithProviders(baseFormFields, [
+      'okta',
+      'google',
+      'okta',
+      'auth0',
+      'google',
+    ]);
+    const res = await createInviteImpl(fd, {
+      authFn: stubAuth(MANAGER_SESSION),
+      cookieStore: store,
+      core: stubCreateCore(FAKE_RESULT, calls),
+      coreDeps: { db: {} as CreateInviteCoreDeps['db'] },
+      setCookie: () => {
+        /* noop */
+      },
+    });
+    expect(res.ok).toBe(true);
+    expect(calls[0].params.allowedSsoProviders).toEqual([
+      'okta',
+      'google',
+      'auth0',
+    ]);
+  });
+
+  it('rejects when allowed_sso_providers is omitted entirely (write path requires ≥1)', async () => {
+    const calls: CreateCoreCall[] = [];
+    const { store } = stubCookieStore();
+    const fd = buildFormData(baseFormFields, { withDefaultProviders: false });
+    const res = await createInviteImpl(fd, {
+      authFn: stubAuth(MANAGER_SESSION),
+      cookieStore: store,
+      core: stubCreateCore(FAKE_RESULT, calls),
+      coreDeps: { db: {} as CreateInviteCoreDeps['db'] },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.code).toBe('invalid_input');
+    expect(calls).toHaveLength(0);
   });
 
   it('TC-I-21: cache-hit path still sets the flash cookie + returns cached:true', async () => {

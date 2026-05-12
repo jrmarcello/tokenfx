@@ -23,8 +23,9 @@
  *   - Hand-written stubs colocated below; no mocking framework (project rule).
  *   - Each test cleans up via afterEach so cases stay order-independent.
  *   - TC-IDs appear in `it` descriptions for spec traceability.
- *   - Race tests (TC-I-08/09/10) use the spec-mandated second-pg.Pool method
- *     (§Decisão #22) — NOT vi.useFakeTimers.
+ *   - Race test TC-I-35 uses TWO real pg connections (§Decisão #22) so the
+ *     pure `revalidateInvite` predicate is exercised inside the FOR UPDATE
+ *     transaction — fake timers cannot simulate cross-tx visibility.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
@@ -45,8 +46,6 @@ import {
   type AutoProvisionDeps,
   type AutoProvisionInput,
   type FindPreExistingV1User,
-  type ProvisionInTxInput,
-  type ProvisionInTxResult,
 } from '@/lib/auth/sso-auto-provision';
 import { matchActiveInvitesByEmail } from '@/lib/auth/match-active-invites';
 import { evaluateSignIn } from '@/lib/auth/load-user';
@@ -138,19 +137,16 @@ const seedInvite = async (input: SeedInviteInput): Promise<void> => {
 };
 
 /**
- * Build production-grade deps wired to the real DB, with a few injectable
- * seams. By default we use the production `evaluateAutoProvision` exports for
- * every collaborator (matchActiveInvitesByEmail, etc.); the consumer only
- * overrides what a given test needs (e.g. an email-helper spy, or an
- * `onAfterSelectForUpdate` race callback).
+ * Build production-grade deps wired to the real DB. By default we use the
+ * production `evaluateAutoProvision` exports for every collaborator
+ * (matchActiveInvitesByEmail, etc.); the consumer only overrides what a
+ * given test needs (e.g. an email-helper spy).
  */
 type DepsOverrides = {
   /** Spy on pre-existing-binding email sends. */
   preExistingEmailCalls?: Array<{ to: string; city: string | null; browser: string | null }>;
   /** Replace findPreExistingV1User for testing the pre-existing branch. */
   findPreExistingV1User?: FindPreExistingV1User;
-  /** Race seam — invoked AFTER SELECT FOR UPDATE, BEFORE re-validation. */
-  onAfterSelectForUpdate?: () => Promise<void>;
 };
 
 const buildIntegrationDeps = (
@@ -171,10 +167,6 @@ const buildIntegrationDeps = (
 
   if (overrides.findPreExistingV1User) {
     partial.findPreExistingV1User = overrides.findPreExistingV1User;
-  }
-
-  if (overrides.onAfterSelectForUpdate) {
-    partial.onAfterSelectForUpdate = overrides.onAfterSelectForUpdate;
   }
 
   return partial;
@@ -415,159 +407,101 @@ skipDescribe('SSO auto-provision flow (Postgres integration)', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // TC-I-08 — race: revoked between SELECT FOR UPDATE and re-validation
+  // TC-I-35 — end-to-end race using TWO real pg connections (REQ-15).
+  //
+  // Methodology (§Decisão #22):
+  //   1. Seed a live invite.
+  //   2. From a SECOND pg.Pool, revoke the invite + COMMIT — this happens
+  //      BEFORE the orchestrator opens its tx, so there's no lock contention.
+  //   3. Invoke `evaluateAutoProvision` on the primary connection. Internally
+  //      it runs `matchActiveInvitesByEmail` (the WHERE clause filters live
+  //      rows, but the row is now revoked — yet the candidate-selection still
+  //      returns it if the revoke landed AFTER its read snapshot). To
+  //      deterministically force the race window, we call the second-pool
+  //      revoke AFTER the candidate selection has already happened but BEFORE
+  //      the FOR UPDATE.
+  //
+  // The simplest deterministic path: pre-fetch the invite via
+  // `matchActiveInvitesByEmail` ourselves to mimic the orchestrator's first
+  // step, then revoke from a second pool, then drive the orchestrator (which
+  // will re-run match — but match filters on revoked_at IS NULL so the
+  // re-match would short-circuit to rejected-no-match, NOT rejected-race).
+  //
+  // To exercise the FOR UPDATE re-validation path specifically we call
+  // `defaultProvisionInTx`-equivalent path via `evaluateAutoProvision` with
+  // an injected `matchActiveInvitesByEmail` that returns a stale (still-live)
+  // copy of the invite. Then a second-pool UPDATE revokes the row BEFORE
+  // the orchestrator's FOR UPDATE re-reads it. Inside the tx, the SELECT
+  // FOR UPDATE sees the revoked row, `revalidateInvite` returns
+  // `{valid: false, reason: 'revoked'}`, and the decision is rejected-race.
+  //
+  // No fake timers — real pg races prove the predicate fires inside the
+  // FOR UPDATE tx.
   // ---------------------------------------------------------------------------
-  it('TC-I-08: invite revoked between SELECT FOR UPDATE and re-check returns rejected-race', async () => {
+  it('TC-I-35: rejects with rejected-race when invite is revoked between match query and FOR UPDATE', async () => {
     const { orgId } = await seedOrg();
-    const token = makeToken('tc-i-08-race-revoke');
+    const token = makeToken('tc-i-35-real-race');
     await seedInvite({ orgId, token });
 
-    // Open a SECOND pg.Pool — the spec mandates a real second connection
-    // (Decisão #22). The primary getDb() connection is holding the FOR
-    // UPDATE lock; the second connection will block on this UPDATE until
-    // the lock is released... BUT we are racing AFTER the lock, BEFORE the
-    // re-validation. We use NOWAIT semantics conceptually by setting a
-    // statement timeout: if the lock blocks us, we know the test setup is
-    // wrong; what we actually want is that we UPDATE on a different transaction
-    // path that won't deadlock with the primary.
-    //
-    // Implementation: the FOR UPDATE inside the primary tx grabs a row lock.
-    // A second-connection UPDATE will block until the primary tx commits or
-    // rolls back. To bypass the lock for the race we issue a separate
-    // statement OUTSIDE the primary tx — but the seam fires INSIDE the
-    // primary tx. We resolve by issuing the UPDATE via `pg_advisory_xact_lock`
-    // bypass... simplest path: issue UPDATE with statement_timeout=1 to fail
-    // fast, then verify it eventually applied after primary tx rolls back.
-    //
-    // Cleaner approach (used here): the orchestrator's `onAfterSelectForUpdate`
-    // fires WHILE the primary holds a row-level lock. A second-connection
-    // UPDATE on the SAME row would block. The lock is released ONLY when the
-    // primary tx ends — which happens AFTER re-validation. So the race-test
-    // methodology in Decisão #22 must be: invoke the UPDATE asynchronously
-    // (fire-and-forget) and verify that AFTER the primary tx ends, the
-    // re-validation observed the prior state correctly OR the UPDATE went
-    // through.
-    //
-    // For TC-I-08 the spec asserts 'rejected-race' is produced. The most
-    // direct way to deterministically force this is: directly mutate the
-    // invite via the SAME db handle (getDb) BEFORE the FOR UPDATE re-read,
-    // but the FOR UPDATE has not yet been issued at that point. Alternative:
-    // use a second pool, issue the UPDATE before SELECT FOR UPDATE.
-    //
-    // Pragmatic correct path: the seam runs AFTER SELECT FOR UPDATE. Since
-    // FOR UPDATE has already loaded the row's pre-update snapshot, a
-    // concurrent UPDATE would block. BUT — re-validation reads the LOCKED
-    // row's fields from the SELECT result; subsequent UPDATEs by other txs
-    // are invisible. So the test for "race" must mutate the row from WITHIN
-    // the same tx via a query path that bypasses FOR-UPDATE snapshot
-    // semantics... which is not possible in pure Postgres.
-    //
-    // CORRECT approach per Decisão #22: the seam ALWAYS runs inside the tx;
-    // the test uses the seam to fire a concurrent UPDATE that the FOR UPDATE
-    // re-select WILL observe IF the FOR UPDATE re-locks. Our orchestrator
-    // selects ONCE — the second connection's UPDATE blocks on the lock.
-    // Therefore we cannot observe a race without re-issuing the SELECT FOR
-    // UPDATE post-mutation. The orchestrator does NOT do that.
-    //
-    // Given this, TC-I-08/09/10 are exercised more robustly by overriding
-    // `provisionInTx` to return `rejected-race` directly — the actual race-
-    // detection logic (re-validation against the FOR UPDATE snapshot) is
-    // exhaustively unit-tested in sso-auto-provision.test.ts (TC-U-13..15).
-    // This integration test validates the orchestrator's PROPAGATION of the
-    // race outcome to audit logs + the decision return value.
-    //
-    // (The seam itself IS exercised by the production provisionInTx, since
-    // we await it after the FOR UPDATE select; calling it asynchronously
-    // forces serialization on the lock so we'd deadlock our own tx.)
+    // Capture the live invite via the production matcher so we can hand a
+    // pre-revoke snapshot to the orchestrator. matchActiveInvitesByEmail
+    // returns ActiveInvite shape sans `revokedAt` — at this point the row
+    // is live.
+    const liveMatches = await matchActiveInvitesByEmail('racer@example.com');
+    expect(liveMatches).toHaveLength(1);
+    const liveInvite = liveMatches[0];
 
-    // Override provisionInTx to simulate the race outcome — captures the
-    // orchestrator's audit-log behavior on race.
-    const racingProvisionInTx = async (
-      input: ProvisionInTxInput,
-    ): Promise<ProvisionInTxResult> => {
-      // Reference input.invite.token to mirror real provisionInTx contract.
-      void input.invite.token;
-      return { kind: 'rejected-race' };
-    };
+    // Open a SECOND pg connection and revoke the invite + COMMIT before the
+    // orchestrator opens its tx. By the time the orchestrator's SELECT FOR
+    // UPDATE fires, the row IS revoked — the FOR UPDATE returns it (PK lookup
+    // ignores revoked_at), and `revalidateInvite` reports it.
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) throw new Error('DATABASE_URL not set');
+    const secondPool = new Pool({ connectionString: databaseUrl });
+    try {
+      const client = await secondPool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          'UPDATE onboarding_invites SET revoked_at = NOW() WHERE token = $1',
+          [token],
+        );
+        await client.query('COMMIT');
+      } finally {
+        client.release();
+      }
+    } finally {
+      await secondPool.end();
+    }
 
+    // Inject a stale matcher that returns the pre-revoke snapshot — this
+    // bypasses the candidate-selection's `revoked_at IS NULL` filter so the
+    // orchestrator believes it has a live candidate and proceeds into the
+    // transactional core. The FOR UPDATE re-select is the one that observes
+    // the revoke; revalidateInvite (TASK-3) reports `revoked`, mapped to
+    // `rejected-race` per spec b §Decisão #22.
     const decision = await evaluateAutoProvision(
       makeInput({ email: 'racer@example.com' }),
       {
         issuerWhitelist: new Set([TEST_ISSUER]),
         clientId: TEST_CLIENT_ID,
-        provisionInTx: racingProvisionInTx,
+        matchActiveInvitesByEmail: async () => [liveInvite],
       },
     );
 
     expect(decision.kind).toBe('rejected-race');
     const db = getDb();
-    const authEvents = await db.select().from(authEventLog);
-    expect(authEvents).toHaveLength(1);
-    expect(authEvents[0].outcome).toBe('rejected-race');
+    // No user row was created.
     expect(await db.select().from(users)).toHaveLength(0);
-    // Sanity: invite untouched (used_count remained 0).
+    // used_count was NOT bumped.
     const inviteRows = await db
       .select({ usedCount: onboardingInvites.usedCount })
       .from(onboardingInvites)
       .where(eq(onboardingInvites.token, token));
     expect(inviteRows[0].usedCount).toBe(0);
-  });
-
-  // ---------------------------------------------------------------------------
-  // TC-I-09 — race: expired
-  // ---------------------------------------------------------------------------
-  it('TC-I-09: invite expired between SELECT FOR UPDATE and re-check returns rejected-race', async () => {
-    const { orgId } = await seedOrg();
-    await seedInvite({ orgId, token: makeToken('tc-i-09-race-expired') });
-
-    const racingProvisionInTx = async (
-      input: ProvisionInTxInput,
-    ): Promise<ProvisionInTxResult> => {
-      void input.invite.token;
-      return { kind: 'rejected-race' };
-    };
-
-    const decision = await evaluateAutoProvision(
-      makeInput({ email: 'expirer@example.com' }),
-      {
-        issuerWhitelist: new Set([TEST_ISSUER]),
-        clientId: TEST_CLIENT_ID,
-        provisionInTx: racingProvisionInTx,
-      },
-    );
-
-    expect(decision.kind).toBe('rejected-race');
-    const db = getDb();
+    // Audit row was written OUTSIDE the rolled-back tx.
     const authEvents = await db.select().from(authEventLog);
-    expect(authEvents[0].outcome).toBe('rejected-race');
-  });
-
-  // ---------------------------------------------------------------------------
-  // TC-I-10 — race: exhausted
-  // ---------------------------------------------------------------------------
-  it('TC-I-10: invite used_count=max_uses between SELECT FOR UPDATE and re-check returns rejected-race', async () => {
-    const { orgId } = await seedOrg();
-    await seedInvite({ orgId, token: makeToken('tc-i-10-race-exhausted') });
-
-    const racingProvisionInTx = async (
-      input: ProvisionInTxInput,
-    ): Promise<ProvisionInTxResult> => {
-      void input.invite.token;
-      return { kind: 'rejected-race' };
-    };
-
-    const decision = await evaluateAutoProvision(
-      makeInput({ email: 'exhauster@example.com' }),
-      {
-        issuerWhitelist: new Set([TEST_ISSUER]),
-        clientId: TEST_CLIENT_ID,
-        provisionInTx: racingProvisionInTx,
-      },
-    );
-
-    expect(decision.kind).toBe('rejected-race');
-    const db = getDb();
-    const authEvents = await db.select().from(authEventLog);
+    expect(authEvents).toHaveLength(1);
     expect(authEvents[0].outcome).toBe('rejected-race');
   });
 

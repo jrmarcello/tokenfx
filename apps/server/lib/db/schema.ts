@@ -688,3 +688,42 @@ export const authEventLog = pgTable(
     ),
   }),
 );
+
+// central-server-onboarding-v2-sso.manager-ui (REQ-1, REQ-2) — Decisão #15.
+// Per-event acknowledge state for manager dashboard banners. A manager-event
+// pair is "acknowledged" iff a row exists; the application UPSERTs via
+// `.onConflictDoNothing()` so the FIRST `ackedAt` is preserved (forensic
+// invariant: "when did each admin first see this event"). Composite PK on
+// (managerUserId, alertKind, eventId) is the natural lookup key — no
+// surrogate `id`. The supporting index on (managerUserId, alertKind) drives
+// the NOT-IN anti-join used by the banner query.
+export const managerAlertAcks = pgTable(
+  'manager_alert_acks',
+  {
+    managerUserId: uuid('manager_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // `alertKind` is constrained by CHECK to the single value
+    // 'first-auto-provision' for now. Extending to new kinds is a single
+    // constraint swap; the tighter check today catches typos in app code.
+    alertKind: text('alert_kind').notNull(),
+    // `eventId` references `onboarding_redemption_log.id` (bigserial).
+    // ON DELETE CASCADE: if the audit row is pruned by retention policy,
+    // the acknowledgement loses meaning and is also pruned.
+    eventId: bigint('event_id', { mode: 'number' })
+      .notNull()
+      .references(() => onboardingRedemptionLog.id, { onDelete: 'cascade' }),
+    ackedAt: timestamp('acked_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({
+      name: 'manager_alert_acks_pk',
+      columns: [t.managerUserId, t.alertKind, t.eventId],
+    }),
+    kindCheck: check(
+      'manager_alert_acks_kind_check',
+      sql`${t.alertKind} IN ('first-auto-provision')`,
+    ),
+    userKindIdx: index('idx_manager_alert_acks_user_kind').on(t.managerUserId, t.alertKind),
+  }),
+);

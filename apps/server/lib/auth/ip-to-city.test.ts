@@ -1,13 +1,20 @@
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect } from 'vitest';
 import { ipToCity } from './ip-to-city';
 
+// Ensure no sibling test or shell env enables MaxMind for this file —
+// every assertion below depends on the disabled-mode contract.
+beforeEach(() => {
+  delete process.env.MAXMIND_DB_PATH;
+});
+
 /**
- * v2 baseline stub: every input resolves to null (REQ-21 / TC-U-32). The
- * interface is deliberately Promise<string | null> so a future spec can swap
- * in MaxMind GeoLite2 (or equivalent) without touching call sites in
- * `auth-event-log-writer.ts` and `impossible-travel.ts`.
+ * Disabled-mode behaviour: with `MAXMIND_DB_PATH` unset every input
+ * resolves to null. This file pins the signature + the
+ * "no-config = no work" contract. The MaxMind-enabled behaviour
+ * (happy path, warn-once failure modes, private-IP guards) is
+ * covered by `tests/integration/ip-to-city-maxmind.test.ts`.
  */
-describe('ipToCity (v2 stub)', () => {
+describe('ipToCity (disabled mode — MAXMIND_DB_PATH unset)', () => {
   it.each([
     { name: 'IPv4 loopback', ip: '127.0.0.1' },
     { name: 'IPv4 public', ip: '8.8.8.8' },

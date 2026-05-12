@@ -22,6 +22,12 @@
  *               when spaced 31 min apart).
  *   - TC-I-20 / TC-I-21 — null ssoSubjectHash skips the per-subject
  *               dimension.
+ *   - TC-I-34 — per-IP rate-limit dimension fires after 10 attempts even
+ *               when `ip` is the empty string (empty-IP guard removed in
+ *               TASK-13; empty IP no longer bypasses the per-IP cap).
+ *   - TC-I-34b — per-IP buckets keyed by distinct IP strings are isolated:
+ *               exhausting the empty-IP bucket does NOT consume slots in
+ *               any other IP's bucket.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetSsoRateLimit, checkSsoRateLimit } from './rate-limit-sso';
@@ -169,6 +175,67 @@ describe('checkSsoRateLimit (TASK-8)', () => {
       // value so they're irrelevant.
       vi.advanceTimersByTime(31 * 60 * 1000);
     }
+  });
+
+  it('enforces per-IP dimension even when ip is empty', () => {
+    // TC-I-34: After dropping the `if (input.ip.length > 0)` guard,
+    // empty-string IP keys into bucket '' (the per-IP bucket for
+    // legitimate empty-IP paths where reverse-proxy headers are absent).
+    // The per-IP 10/5min cap MUST still bind — so the 11th attempt with
+    // ip='' trips dimension: 'ip', not falling through to email_hash.
+    for (let i = 0; i < 10; i += 1) {
+      const r = checkSsoRateLimit({
+        ip: '',
+        // Distinct email_hash + sso_subject so only the per-IP dimension
+        // can be the one that trips on attempt #11.
+        emailHash: `eh-empty-ip-${i}`,
+        ssoSubjectHash: `sub-empty-ip-${i}`,
+      });
+      expect(r.ok).toBe(true);
+    }
+    const eleventh = checkSsoRateLimit({
+      ip: '',
+      emailHash: 'eh-empty-ip-11',
+      ssoSubjectHash: 'sub-empty-ip-11',
+    });
+    expect(eleventh.ok).toBe(false);
+    if (!eleventh.ok) {
+      expect(eleventh.dimension).toBe('ip');
+      expect(eleventh.retryAfterSec).toBeGreaterThan(0);
+    }
+  });
+
+  it('isolates per-IP buckets across distinct IP keys', () => {
+    // TC-I-34b: Per-IP dimension keys into a separate bucket per IP
+    // string. Exhausting the empty-IP bucket (key='') does NOT consume
+    // slots in any other IP's bucket (e.g. key='1.2.3.4'). This proves
+    // per-IP dimension isolation across distinct IP keys.
+    for (let i = 0; i < 10; i += 1) {
+      const r = checkSsoRateLimit({
+        ip: '',
+        emailHash: `eh-iso-empty-${i}`,
+        ssoSubjectHash: `sub-iso-empty-${i}`,
+      });
+      expect(r.ok).toBe(true);
+    }
+    // 11th attempt on empty-IP bucket: exhausted.
+    const empty11 = checkSsoRateLimit({
+      ip: '',
+      emailHash: 'eh-iso-empty-11',
+      ssoSubjectHash: 'sub-iso-empty-11',
+    });
+    expect(empty11.ok).toBe(false);
+    if (!empty11.ok) {
+      expect(empty11.dimension).toBe('ip');
+    }
+    // Same instant, fresh non-empty IP + fresh email + fresh subject:
+    // per-IP bucket for '1.2.3.4' is untouched, so this MUST be allowed.
+    const distinctIp = checkSsoRateLimit({
+      ip: '1.2.3.4',
+      emailHash: 'eh-iso-distinct',
+      ssoSubjectHash: 'sub-iso-distinct',
+    });
+    expect(distinctIp.ok).toBe(true);
   });
 
   it('null ssoSubjectHash skips the per-subject dimension', () => {

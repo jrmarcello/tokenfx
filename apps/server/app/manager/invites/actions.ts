@@ -43,6 +43,12 @@ import {
 // a tampered form payload with extra keys can't smuggle data through.
 // ---------------------------------------------------------------------------
 
+/**
+ * Supported SSO provider keys. Matches the v2-sso spec REQ-7 enumeration
+ * (Google, Okta, Microsoft, Auth0). Mirrored in the form UI checkbox group.
+ */
+const SSO_PROVIDER_VALUES = ['google', 'okta', 'microsoft', 'auth0'] as const;
+
 const createInviteFormSchema = z
   .object({
     idempotency_key: z.string().uuid(),
@@ -50,6 +56,18 @@ const createInviteFormSchema = z
     email_pattern: z.string().min(1).max(254).optional(),
     max_uses: z.coerce.number().int().min(1).max(100).default(1),
     expires_in_hours: z.coerce.number().int().min(1).max(168).default(8),
+    /**
+     * REQ-7/8: write-path requires at least one provider. Empty array on
+     * the read-side (legacy DB rows) means "any provider allowed", but a
+     * manager creating a NEW invite must pick ≥1 explicitly. `.transform`
+     * dedupes — same provider clicked twice shouldn't bloat the row.
+     * Order is preserved via Set first-seen semantics so the UI's
+     * checkbox order survives into the DB column.
+     */
+    allowed_sso_providers: z
+      .array(z.enum(SSO_PROVIDER_VALUES))
+      .min(1, 'allowed_sso_providers requires at least one provider')
+      .transform((arr) => Array.from(new Set(arr))),
   })
   .strict();
 
@@ -148,10 +166,29 @@ export const createInviteImpl = async (
   // to `undefined` — that way `.optional()` and `.default()` apply cleanly
   // without an empty-string slipping past Zod and crashing min-length
   // checks downstream.
+  //
+  // `allowed_sso_providers` is special-cased: a checkbox group submits
+  // multiple entries with the same name, so we use `getAll(...)` and
+  // coerce to an array (filtering empty strings) before handing to Zod.
+  // All other fields keep the single-value semantics — `entries()` would
+  // only emit the LAST occurrence which is fine for scalars.
   const stripped: Record<string, unknown> = {};
   for (const [k, v] of formData.entries()) {
+    if (k === 'allowed_sso_providers') continue; // handled below
     const norm = optString(v);
     if (norm !== undefined) stripped[k] = norm;
+  }
+  const providerValues = formData
+    .getAll('allowed_sso_providers')
+    .map((v) => (typeof v === 'string' ? v : ''))
+    .filter((v) => v !== '');
+  if (providerValues.length > 0) {
+    stripped.allowed_sso_providers = providerValues;
+  } else if (formData.has('allowed_sso_providers')) {
+    // Field present but every value was empty — surface as empty array so
+    // Zod's `.min(1)` produces a clear invalid_input. Without this branch
+    // the field would be absent and Zod would report "Required" instead.
+    stripped.allowed_sso_providers = [];
   }
 
   const parsed = createInviteFormSchema.safeParse(stripped);
@@ -173,6 +210,7 @@ export const createInviteImpl = async (
     emailPattern: parsed.data.email_pattern ?? null,
     maxUses: parsed.data.max_uses,
     expiresInHours: parsed.data.expires_in_hours,
+    allowedSsoProviders: parsed.data.allowed_sso_providers,
   });
 
   // Set the flash cookie with the full onboard URL — token is in the URL

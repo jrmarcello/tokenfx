@@ -1,16 +1,20 @@
 /**
- * Team detail members table — REQ-21 (b) + REQ-26 anti-leaderboard.
+ * Team detail members table — REQ-21 (b) + REQ-26 anti-leaderboard +
+ * REQ-9 (provisioned_via column).
  *
  * Renders the per-user spend table for a team. Rows arrive ALPHABETICAL by
  * email (the query enforces it via `ORDER BY users.email ASC`); this
  * component preserves that order and intentionally does NOT expose a sort
  * control, click-to-rank header, or spend-descending toggle. The column
  * headers are plain `<th>` text elements — never `<button>`s — so the
- * anti-leaderboard rule is also visibly enforced at the UI layer.
+ * anti-leaderboard rule is also visibly enforced at the UI layer. The new
+ * "Provisioned via" + "Last login" columns are static text too: no sort
+ * affordance on them either (locked decision — REQ-9 filter is applied via
+ * query-string upstream, not by clicking a column header).
  *
  * Server-rendered.
  */
-import type { TeamMember } from '@/lib/queries/teams';
+import type { ProvisionedVia, TeamMember } from '@/lib/queries/teams';
 
 type Props = {
   members: ReadonlyArray<TeamMember>;
@@ -23,6 +27,23 @@ const formatUsd = (n: number): string =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+
+const formatProvisionedVia = (v: ProvisionedVia): string => {
+  switch (v) {
+    case 'sso-auto':
+      return 'SSO auto';
+    case 'manual-token':
+      return 'Token';
+    case 'pre-v2-unknown':
+      return 'Legacy';
+    default: {
+      // Exhaustiveness guard — surfaces compile-time error if the
+      // ProvisionedVia union ever gains a new variant without a label.
+      const _exhaustive: never = v;
+      return _exhaustive;
+    }
+  }
+};
 
 export const TeamDetailMembers = ({ members }: Props) => {
   if (members.length === 0) {
@@ -43,6 +64,8 @@ export const TeamDetailMembers = ({ members }: Props) => {
           {/* Static text headers — REQ-26: no sortable controls, no spend ranking. */}
           <tr>
             <th className="px-4 py-2 font-medium">Email (A → Z)</th>
+            <th className="px-4 py-2 font-medium">Provisioned via</th>
+            <th className="px-4 py-2 font-medium">Last login</th>
             <th className="px-4 py-2 text-right font-medium">Sessions (30d)</th>
             <th className="px-4 py-2 text-right font-medium">Spend (30d)</th>
           </tr>
@@ -51,6 +74,12 @@ export const TeamDetailMembers = ({ members }: Props) => {
           {members.map((m) => (
             <tr key={m.userId}>
               <td className="px-4 py-2">{m.email}</td>
+              <td className="px-4 py-2" data-provisioned-via={m.provisionedVia}>
+                {formatProvisionedVia(m.provisionedVia)}
+              </td>
+              <td className="px-4 py-2 tabular-nums">
+                {m.lastLoginAt ? m.lastLoginAt.toISOString() : ''}
+              </td>
               <td className="px-4 py-2 text-right tabular-nums">
                 {m.sessions30d}
               </td>

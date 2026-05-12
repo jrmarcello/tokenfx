@@ -146,9 +146,6 @@ const makeDeps = (
     input: ProvisionInTxInput,
   ): Promise<ProvisionInTxResult> => {
     recorder.provisionInTxCalls.push(input);
-    // Optionally invoke the seam to give tests a hook into the locked-state
-    // moment without going through real Drizzle.
-    await input.onAfterSelectForUpdate();
     return (
       cfg.provisionInTxReturns ?? {
         kind: 'accepted',

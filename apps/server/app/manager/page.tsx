@@ -16,6 +16,8 @@ import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth/auth';
 import { getDb } from '@/lib/db/client';
 import { getOrgOverview } from '@/lib/queries/overview';
+import { loadFirstAutoProvisionAlert } from '@/lib/queries/manager-alerts';
+import { FirstAutoProvisionBanner } from '@/components/manager/first-auto-provision-banner';
 import { KpiCard } from '@/components/manager/kpi-card';
 import { OnboardingCard } from '@/components/manager/onboarding-card';
 import { TeamBreakdownTable } from '@/components/manager/team-breakdown-table';
@@ -51,9 +53,21 @@ export default async function ManagerOverviewPage() {
     redirect('/api/auth/signin');
   }
   const orgId = session.user.orgId;
+  const userId = session.user.id;
+  const role = session.user.role;
 
   const db = getDb();
   const overview = await getOrgOverview(db, orgId);
+
+  // REQ-1 (TASK-17): load the first-auto-provision banner state for
+  // managers/admins only. Members never see the banner (defense-in-depth
+  // on top of the `/manager/*` middleware gate). The query returns `null`
+  // when there are zero unacknowledged events, in which case we skip the
+  // render entirely — no empty banner shell.
+  const firstAutoProvisionAlert =
+    userId && (role === 'manager' || role === 'admin')
+      ? await loadFirstAutoProvisionAlert(db, orgId, userId)
+      : null;
 
   // REQ-28 trigger: no seats AND no recorded sessions anywhere in the 90d
   // window. Using sourceMix totals keeps this independent of the spend
@@ -64,6 +78,9 @@ export default async function ManagerOverviewPage() {
   if (isEmptyOrg) {
     return (
       <div className="space-y-6">
+        {firstAutoProvisionAlert ? (
+          <FirstAutoProvisionBanner alert={firstAutoProvisionAlert} />
+        ) : null}
         <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">
           Overview
         </h1>
@@ -79,6 +96,9 @@ export default async function ManagerOverviewPage() {
 
   return (
     <div className="space-y-8">
+      {firstAutoProvisionAlert ? (
+        <FirstAutoProvisionBanner alert={firstAutoProvisionAlert} />
+      ) : null}
       <div>
         <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">
           Overview

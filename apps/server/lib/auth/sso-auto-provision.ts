@@ -45,12 +45,14 @@
  *   framework). Production uses `buildDefaultDeps()` which wires the real
  *   modules. The pattern mirrors `redeem.ts:redeemInvite(db, input, opts?)`.
  *
- *   `onAfterSelectForUpdate` is the test seam for race tests (§Decisão #22):
- *   the orchestrator awaits it AFTER the SELECT FOR UPDATE on the invite
- *   row and BEFORE the re-validation re-check. Integration tests use this
- *   to UPDATE the invite via a SECOND `pg.Pool` connection to simulate a
- *   race; unit tests use the same callback but the simpler path is to
- *   inject `provisionInTx` directly returning the `rejected-race` outcome.
+ *   Race detection (§Decisão #22 + REQ-15): after the FOR UPDATE select
+ *   the locked row is fed into the pure `revalidateInvite` predicate
+ *   (see `./revalidate-invite.ts`). Any failure reason (revoked / expired
+ *   / exhausted) maps to `rejected-race` because all three are observable
+ *   only AFTER the candidate-selection query already saw the row as live.
+ *   The predicate is unit-tested in isolation; an end-to-end race scenario
+ *   (concurrent UPDATE on a second connection) is covered by the flow
+ *   integration suite.
  */
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { log as logger } from '@root/logger';
@@ -71,6 +73,7 @@ import {
 import { sendPreExistingBindingEmail } from './pre-existing-binding-email';
 import { isPublicDomain } from './public-domains';
 import { checkSsoRateLimit } from './rate-limit-sso';
+import { revalidateInvite } from './revalidate-invite';
 import {
   type WriteRedemptionLogParams,
   writeRedemptionLog as rawWriteRedemptionLog,
@@ -174,12 +177,6 @@ export type ProvisionInTxInput = {
   emailHash: string;
   emailDomain: string;
   ssoSubjectHash: string;
-  /**
-   * Awaited AFTER the FOR UPDATE select but BEFORE the re-validation
-   * check. Integration tests use this to mutate the invite via a second
-   * connection (Decisão #22).
-   */
-  onAfterSelectForUpdate: () => Promise<void>;
 };
 
 /**
@@ -219,12 +216,6 @@ export type AutoProvisionDeps = {
   issuerWhitelist: ReadonlySet<string>;
   /** OAuth client id — checked against `id_token.aud` (REQ-2a). */
   clientId: string;
-  /**
-   * Test seam (§Decisão #22): awaited inside `provisionInTx` after the
-   * FOR UPDATE select. Default is a no-op. Integration tests inject a
-   * second-connection UPDATE here to simulate a race.
-   */
-  onAfterSelectForUpdate?: () => Promise<void>;
 };
 
 // =============================================================================
@@ -274,12 +265,9 @@ const defaultFindPreExistingV1User: FindPreExistingV1User = async (
 /**
  * Production implementation of `provisionInTx` — opens a Drizzle
  * transaction, re-locks the invite via SELECT FOR UPDATE, re-validates the
- * three race-sensitive columns, INSERTs `users` + `user_machines`, bumps
- * `used_count`, and writes BOTH audit-log rows inside the tx (Decisão #23).
- *
- * The `onAfterSelectForUpdate` test seam fires AFTER the lock acquires and
- * BEFORE the re-validation — this is the window where integration tests can
- * race the invite via a second connection.
+ * three race-sensitive columns via the pure `revalidateInvite` predicate
+ * (REQ-15), INSERTs `users` + `user_machines`, bumps `used_count`, and
+ * writes BOTH audit-log rows inside the tx (Decisão #23).
  *
  * NOTE: machine-credential issuance (`key_id`/`secret_hash`) is deferred
  * per the spec §"Auth.ts integration" — `auth.ts` handles credential
@@ -317,15 +305,24 @@ const defaultProvisionInTx = async (
       .for('update')
       .limit(1);
 
-    // 2. Test seam — fires after lock, before re-validation.
-    await input.onAfterSelectForUpdate();
-
-    // 3. Re-validate race-sensitive columns.
+    // 2. Re-validate race-sensitive columns via the pure predicate (REQ-15).
+    //    `revoked`, `expired`, and `exhausted` all collapse to
+    //    `rejected-race` here — they're observable only AFTER the
+    //    candidate-selection query already saw the row as live (which is
+    //    the definition of a race per §Decisão #22).
     if (locked.length === 0) return { kind: 'rejected-race' };
     const fresh = locked[0];
-    if (fresh.revokedAt !== null) return { kind: 'rejected-race' };
-    if (fresh.expiresAt.getTime() <= Date.now()) return { kind: 'rejected-race' };
-    if (fresh.usedCount >= fresh.maxUses) return { kind: 'rejected-race' };
+    const revalidation = revalidateInvite(
+      {
+        token: fresh.token,
+        revokedAt: fresh.revokedAt,
+        expiresAt: fresh.expiresAt,
+        usedCount: fresh.usedCount,
+        maxUses: fresh.maxUses,
+      },
+      Date.now(),
+    );
+    if (revalidation.valid === false) return { kind: 'rejected-race' };
 
     // 4. INSERT user with provisioned_via context. role='member' per Decisão #15.
     const [created] = await tx
@@ -469,10 +466,6 @@ export const evaluateAutoProvision = async (
   depsPatch?: Partial<AutoProvisionDeps>,
 ): Promise<AutoProvisionDecision> => {
   const deps: AutoProvisionDeps = { ...buildDefaultDeps(), ...depsPatch };
-  const onAfterSelectForUpdate =
-    deps.onAfterSelectForUpdate ?? (async () => {
-      /* no-op default */
-    });
 
   // -----------------------------------------------------------------------
   // Pre-compute privacy-safe identifiers up front so every audit write —
@@ -723,7 +716,6 @@ export const evaluateAutoProvision = async (
     emailHash: emailHashValue,
     emailDomain: domain,
     ssoSubjectHash: ssoSubjectHashValue,
-    onAfterSelectForUpdate,
   });
 
   if (txResult.kind === 'rejected-race') {

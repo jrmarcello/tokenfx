@@ -26,23 +26,27 @@ export type SsoRateLimitInput = {
  * callback completes in some flows (e.g., during signin initiation, the
  * subject claim is not yet known). When null, only ip + emailHash
  * dimensions are checked.
+ *
+ * SECURITY (empty-IP bucket invariant): the per-IP dimension is ALWAYS
+ * registered, including when `ip === ''`. Empty IPs key into the single
+ * bucket `''`, which is independent from every non-empty IP bucket AND
+ * from the per-email_hash / per-sso_subject_hash dimensions — those are
+ * separate buckets keyed by their own values. Exhausting the empty-IP
+ * bucket therefore does NOT consume slots for any other IP, email, or
+ * subject. Spec (c) closes the empty-IP collapse vector by populating
+ * real client IPs via AsyncLocalStorage in the NextAuth signIn callback,
+ * so `ip === ''` now only occurs in legitimate paths where
+ * reverse-proxy headers are absent (and the per-IP 10/5min cap still
+ * binds those calls).
  */
 export const checkSsoRateLimit = (input: SsoRateLimitInput): RateLimitResult => {
   const dimensions: RateLimitDimensionInput[] = [];
-  // SECURITY: when `ip` is empty (TASK-11 known gap — NextAuth signIn
-  // callback doesn't surface request context), the per-IP dimension would
-  // collapse every attempt into a single bucket, creating a DoS-amplification
-  // vector against the (per-email_hash + per-sso_subject_hash) dimensions for
-  // a victim. Skip the per-IP dimension when ip is empty — the per-email_hash
-  // (3/24h) and per-sso_subject_hash (5/24h) caps still bound attacker reach.
-  if (input.ip.length > 0) {
-    dimensions.push({
-      name: 'ip',
-      key: input.ip,
-      limit: 10,
-      windowMs: 5 * 60 * 1000,
-    });
-  }
+  dimensions.push({
+    name: 'ip',
+    key: input.ip,
+    limit: 10,
+    windowMs: 5 * 60 * 1000,
+  });
   dimensions.push({
     name: 'email_hash',
     key: input.emailHash,

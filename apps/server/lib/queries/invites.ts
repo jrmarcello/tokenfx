@@ -67,6 +67,15 @@ export type CreateInviteRowParams = {
   expiresAt: Date;
   /** NULLABLE — `ON DELETE SET NULL` preserves the audit row when the actor is deleted. */
   createdBy: string | null;
+  /**
+   * Whitelist of SSO providers accepted by this invite (v2-sso REQ-7/8).
+   * Optional at this layer: legacy callers and integration tests that
+   * pre-date the v2-sso migration omit it and rely on the DB column
+   * default (`'{}'::text[]`). The Server Action's Zod schema enforces
+   * ≥1 on the write path before reaching this point, so the production
+   * create flow always supplies a non-empty array.
+   */
+  allowedSsoProviders?: ReadonlyArray<string>;
 };
 
 export type CreateInviteRowResult = {
@@ -104,6 +113,12 @@ export const createInviteRow = async (
         maxUses: params.maxUses,
         expiresAt: params.expiresAt,
         createdBy: params.createdBy,
+        // text[] column — Drizzle serializes the JS array directly. When
+        // the caller omits the field (legacy / pre-v2 integration paths),
+        // we pass `[]` so the row matches the column's default semantics.
+        allowedSsoProviders: params.allowedSsoProviders
+          ? Array.from(params.allowedSsoProviders)
+          : [],
       });
       return { token, tokenPrefix: tokenPrefix(token), expiresAt: params.expiresAt };
     } catch (err) {
@@ -358,6 +373,12 @@ export type CreateInviteCoreParams = {
   emailPattern: string | null;
   maxUses: number;
   expiresInHours: number;
+  /**
+   * SSO provider whitelist (v2-sso REQ-7/8). The action's Zod schema
+   * enforces ≥1 + dedups before this point, so this array is non-empty
+   * and unique on the create path. Persisted verbatim to `text[]`.
+   */
+  allowedSsoProviders: ReadonlyArray<string>;
   /** Test seam — defaults to `new Date()`. */
   now?: Date;
 };
@@ -424,6 +445,7 @@ export const createInviteCore = async (
     maxUses: params.maxUses,
     expiresAt,
     createdBy: params.actorUserId,
+    allowedSsoProviders: params.allowedSsoProviders,
   });
 
   // 4. Audit. Metadata `expires_at` is ISO8601 for stable JSONB shape.

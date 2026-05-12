@@ -554,6 +554,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: '*@example.com',
           maxUses: 5,
           expiresInHours: 8,
+          allowedSsoProviders: [],
         },
       );
       expect(result.cached).toBe(false);
@@ -588,6 +589,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
           now: fixedNow,
         },
       );
@@ -601,6 +603,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
           now: new Date(fixedNow.getTime() + 60_000), // 1 min later, still in TTL
         },
       );
@@ -631,6 +634,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
         },
       );
       // Admin in same org submits using the same client-generated UUID.
@@ -644,6 +648,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
         },
       );
       expect(r1.cached).toBe(false);
@@ -667,6 +672,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
           now: fixedNow,
         },
       );
@@ -681,6 +687,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
           now: new Date(fixedNow.getTime() + 6 * 60 * 1000),
         },
       );
@@ -703,6 +710,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
         },
       );
       const r2 = await createInviteCore(
@@ -715,6 +723,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
         },
       );
       expect(r1.token).not.toBe(r2.token);
@@ -734,6 +743,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
         },
       );
       const admInvite = await createInviteCore(
@@ -746,6 +756,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
         },
       );
 
@@ -774,6 +785,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
         },
       );
       const aRows = await db
@@ -801,6 +813,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
         },
       );
       expect(result.token).toMatch(/^[0-9a-f]{64}$/);
@@ -825,6 +838,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
         },
       );
       const result = await revokeInviteCore(
@@ -859,6 +873,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
           emailPattern: null,
           maxUses: 1,
           expiresInHours: 8,
+          allowedSsoProviders: [],
         },
       );
       await revokeInviteCore(

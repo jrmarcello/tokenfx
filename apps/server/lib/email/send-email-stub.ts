@@ -13,7 +13,7 @@ export type EmailResult = {
 };
 
 export type EmailError = {
-  reason: 'transient' | 'permanent' | 'invalid-recipient';
+  reason: 'transient' | 'permanent' | 'invalid-recipient' | 'config-error';
   message: string;
 };
 

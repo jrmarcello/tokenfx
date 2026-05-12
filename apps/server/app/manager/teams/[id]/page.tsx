@@ -16,10 +16,34 @@
 import { notFound, redirect } from 'next/navigation';
 import { auth } from '@/lib/auth/auth';
 import { getDb } from '@/lib/db/client';
-import { getTeamDetail } from '@/lib/queries/teams';
+import {
+  getTeamDetail,
+  type TeamMemberProvisionedViaFilter,
+} from '@/lib/queries/teams';
 import { KpiCard } from '@/components/manager/kpi-card';
 import { TeamDetailMembers } from '@/components/manager/team-detail-members';
 import { TrendChart, type TrendPoint } from '@/components/manager/trend-chart';
+
+/**
+ * Coerce the `?provisioned_via` query-string value to the typed enum
+ * accepted by `getTeamDetail`. Invalid / missing values fall back to
+ * `'all'` — REQ-9 + Decisão #18 (page-level guard before the query
+ * layer, which trusts its typed input).
+ */
+const ALLOWED_FILTERS: ReadonlyArray<TeamMemberProvisionedViaFilter> = [
+  'all',
+  'token',
+  'sso-auto',
+];
+
+const coerceProvisionedVia = (
+  raw: string | string[] | undefined,
+): TeamMemberProvisionedViaFilter => {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return ALLOWED_FILTERS.includes(value as TeamMemberProvisionedViaFilter)
+    ? (value as TeamMemberProvisionedViaFilter)
+    : 'all';
+};
 
 const formatUsd = (n: number): string =>
   n.toLocaleString('en-US', {
@@ -34,13 +58,18 @@ const sumSpend = (
 ): number => points.reduce((acc, p) => acc + p.spend, 0);
 
 type Params = { id: string };
+type SearchParams = Record<string, string | string[] | undefined>;
 
 export default async function TeamDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<Params>;
+  searchParams: Promise<SearchParams>;
 }) {
   const { id } = await params;
+  const sp = await searchParams;
+  const provisionedVia = coerceProvisionedVia(sp.provisioned_via);
 
   const session = await auth();
   if (!session?.user?.orgId) {
@@ -49,10 +78,12 @@ export default async function TeamDetailPage({
   const orgId = session.user.orgId;
 
   const db = getDb();
-  const detail = await getTeamDetail(db, id, orgId);
+  const detail = await getTeamDetail(db, id, orgId, { provisionedVia });
   if (!detail) {
     notFound();
   }
+
+  const exportHref = `/manager/teams/${id}/export?provisioned_via=${provisionedVia}`;
 
   const spendPoints: TrendPoint[] = detail.spendTrend30d.map((p) => ({
     date: p.date,
@@ -67,17 +98,26 @@ export default async function TeamDetailPage({
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1
-          className="text-2xl font-bold text-neutral-900 dark:text-neutral-100"
-          data-testid="team-detail-name"
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1
+            className="text-2xl font-bold text-neutral-900 dark:text-neutral-100"
+            data-testid="team-detail-name"
+          >
+            {detail.teamName}
+          </h1>
+          <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+            Per-team spend, adoption, and members. Members are listed
+            alphabetically — there is no ranking by spend.
+          </p>
+        </div>
+        <a
+          href={exportHref}
+          className="inline-flex items-center self-start rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-700 shadow-sm hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800"
+          data-testid="team-export-csv-link"
         >
-          {detail.teamName}
-        </h1>
-        <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
-          Per-team spend, adoption, and members. Members are listed
-          alphabetically — there is no ranking by spend.
-        </p>
+          Export CSV
+        </a>
       </div>
 
       <section aria-labelledby="team-kpis-heading" className="space-y-3">
@@ -143,6 +183,52 @@ export default async function TeamDetailPage({
         >
           Members (alphabetical)
         </h2>
+        <form
+          action=""
+          method="get"
+          className="flex flex-wrap items-center gap-4 rounded-md border border-neutral-200 bg-neutral-50 p-3 text-sm dark:border-neutral-800 dark:bg-neutral-900"
+          data-testid="team-members-filter-form"
+        >
+          <fieldset className="flex flex-wrap items-center gap-4">
+            <legend className="sr-only">Filter members by provisioning method</legend>
+            <span className="font-medium text-neutral-700 dark:text-neutral-300">
+              Provisioned via:
+            </span>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="radio"
+                name="provisioned_via"
+                value="all"
+                defaultChecked={provisionedVia === 'all'}
+              />
+              <span>All</span>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="radio"
+                name="provisioned_via"
+                value="token"
+                defaultChecked={provisionedVia === 'token'}
+              />
+              <span>Token</span>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="radio"
+                name="provisioned_via"
+                value="sso-auto"
+                defaultChecked={provisionedVia === 'sso-auto'}
+              />
+              <span>SSO auto</span>
+            </label>
+          </fieldset>
+          <button
+            type="submit"
+            className="inline-flex items-center rounded-md border border-neutral-300 bg-white px-3 py-1 text-sm font-medium text-neutral-700 shadow-sm hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
+          >
+            Apply
+          </button>
+        </form>
         <TeamDetailMembers members={detail.members} />
       </section>
 

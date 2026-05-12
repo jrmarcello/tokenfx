@@ -20,7 +20,16 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { closeDb, getDb } from '@/lib/db/client';
-import { modelBreakdownAgg, orgs, sessionsAgg, teams, users } from '@/lib/db/schema';
+import {
+  authEventLog,
+  modelBreakdownAgg,
+  orgs,
+  sessionsAgg,
+  teams,
+  userMachines,
+  users,
+} from '@/lib/db/schema';
+import { hashEmail } from '@/lib/auth/email-hash';
 import * as teamsQueries from './teams';
 import { getTeamDetail } from './teams';
 
@@ -33,6 +42,12 @@ type SeededUser = {
   spend30d: number; // sum across sessions used to assert correctness
   sessions30d: number;
 };
+
+// Pin a deterministic pepper for the tests so `hashEmail()` returns the same
+// digest the production code path will compute against `users.email`. The
+// `EMAIL_HASH_PEPPER` env var is consulted lazily; NODE_ENV is 'test' so the
+// boot-time assert is bypassed.
+process.env.EMAIL_HASH_PEPPER ??= 'teams-test-pepper-v1';
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -120,12 +135,40 @@ skipDescribe('getTeamDetail (Postgres integration)', () => {
 
     // Five users seeded in non-alphabetical order to expose any incidental
     // ordering bug. Spends vary so that "alphabetical != spend ranking".
-    const fixtures = [
-      { email: 'eve@example.com', spends: [10, 5] }, // total 15
-      { email: 'alice@example.com', spends: [100] }, // total 100 (top spender)
-      { email: 'charlie@example.com', spends: [3, 2, 1] }, // total 6
-      { email: 'bob@example.com', spends: [50, 25] }, // total 75
-      { email: 'david@example.com', spends: [] }, // 0 sessions
+    //
+    // `provisionedVia` mixes the three values so REQ-9 filter tests
+    // (TC-I-23 / TC-I-23b / TC-I-23c) can assert each branch in a single
+    // shared fixture. `eve` deliberately has NO `user_machines` row to
+    // exercise the COALESCE-to-'pre-v2-unknown' fallback. `hasLogin` toggles
+    // the `auth_event_log` row so the LATERAL `MAX(occurred_at)` resolves
+    // to a concrete timestamp for some users and `null` for others.
+    type Fixture = {
+      email: string;
+      spends: number[];
+      provisionedVia: 'manual-token' | 'sso-auto' | null; // null = no user_machines row
+      hasLogin: boolean;
+    };
+    const fixtures: Fixture[] = [
+      { email: 'eve@example.com', spends: [10, 5], provisionedVia: null, hasLogin: false },
+      {
+        email: 'alice@example.com',
+        spends: [100],
+        provisionedVia: 'manual-token',
+        hasLogin: true,
+      },
+      {
+        email: 'charlie@example.com',
+        spends: [3, 2, 1],
+        provisionedVia: 'sso-auto',
+        hasLogin: true,
+      },
+      {
+        email: 'bob@example.com',
+        spends: [50, 25],
+        provisionedVia: 'manual-token',
+        hasLogin: false,
+      },
+      { email: 'david@example.com', spends: [], provisionedVia: 'sso-auto', hasLogin: true },
     ];
 
     const now = Date.now();
@@ -153,6 +196,27 @@ skipDescribe('getTeamDetail (Postgres integration)', () => {
           `slug:${fix.email.split('@')[0]}-proj-${i % 2}`,
         );
         i += 1;
+      }
+      if (fix.provisionedVia !== null) {
+        await db.insert(userMachines).values({
+          userId: u.id,
+          machineId: '00000000-0000-4000-8000-000000000001',
+          keyId: `key-${fix.email}`,
+          secretHash: 'bcrypt-stub',
+          provisionedVia: fix.provisionedVia,
+        });
+      }
+      if (fix.hasLogin) {
+        await db.insert(authEventLog).values({
+          ssoProvider: 'google',
+          iss: 'https://accounts.google.com',
+          emailHash: hashEmail(fix.email),
+          ssoSubjectHash: `hash-sub-${fix.email}`,
+          ip: '203.0.113.1',
+          city: 'nowhere',
+          userAgent: 'test/1.0',
+          outcome: 'accepted-sso-auto',
+        });
       }
       seeded.push({
         id: u.id,
@@ -281,6 +345,103 @@ skipDescribe('getTeamDetail (Postgres integration)', () => {
       expect(point.activeUsers).toBeGreaterThanOrEqual(0);
       expect(point.activeUsers).toBeLessThanOrEqual(seeded.length);
     }
+  });
+
+  // TC-I-23 / TC-I-23b / TC-I-23c (REQ-9): provisioned_via filter on the
+  // member list. Fixtures seed two `manual-token`, two `sso-auto`, and one
+  // `pre-v2-unknown` (via the COALESCE fallback for `eve` who has no
+  // user_machines row). Anti-leaderboard ordering (REQ-26) is preserved in
+  // every branch — emails come back alphabetical regardless of filter.
+  it('returns only sso-auto-provisioned members when filter is sso-auto', async () => {
+    const db = getDb();
+    const detail = await getTeamDetail(db, teamId, orgId, { provisionedVia: 'sso-auto' });
+    expect(detail).not.toBeNull();
+    if (detail === null) return;
+
+    const emails = detail.members.map((m) => m.email);
+    expect(emails).toEqual(['charlie@example.com', 'david@example.com']);
+    for (const m of detail.members) {
+      expect(m.provisionedVia).toBe('sso-auto');
+    }
+  });
+
+  it('returns only manual-token-provisioned members when filter is token', async () => {
+    const db = getDb();
+    const detail = await getTeamDetail(db, teamId, orgId, { provisionedVia: 'token' });
+    expect(detail).not.toBeNull();
+    if (detail === null) return;
+
+    const emails = detail.members.map((m) => m.email);
+    expect(emails).toEqual(['alice@example.com', 'bob@example.com']);
+    for (const m of detail.members) {
+      expect(m.provisionedVia).toBe('manual-token');
+    }
+  });
+
+  it('all filter surfaces pre-v2-unknown members alongside the other two kinds', async () => {
+    const db = getDb();
+    const detail = await getTeamDetail(db, teamId, orgId, { provisionedVia: 'all' });
+    expect(detail).not.toBeNull();
+    if (detail === null) return;
+
+    const emails = detail.members.map((m) => m.email);
+    expect(emails).toEqual([
+      'alice@example.com',
+      'bob@example.com',
+      'charlie@example.com',
+      'david@example.com',
+      'eve@example.com',
+    ]);
+    // Eve has NO user_machines row — COALESCE surfaces her as pre-v2-unknown.
+    const eve = detail.members.find((m) => m.email === 'eve@example.com');
+    expect(eve?.provisionedVia).toBe('pre-v2-unknown');
+  });
+
+  it('omitted filter behaves like all (default)', async () => {
+    const db = getDb();
+    const defaulted = await getTeamDetail(db, teamId, orgId);
+    const explicit = await getTeamDetail(db, teamId, orgId, { provisionedVia: 'all' });
+    const undef = await getTeamDetail(db, teamId, orgId, { provisionedVia: undefined });
+    const emptyOpts = await getTeamDetail(db, teamId, orgId, {});
+
+    expect(defaulted).not.toBeNull();
+    expect(explicit).not.toBeNull();
+    expect(undef).not.toBeNull();
+    expect(emptyOpts).not.toBeNull();
+    if (
+      defaulted === null ||
+      explicit === null ||
+      undef === null ||
+      emptyOpts === null
+    ) {
+      return;
+    }
+
+    const emailsOf = (d: typeof defaulted): string[] => d.members.map((m) => m.email);
+    expect(emailsOf(defaulted)).toEqual(emailsOf(explicit));
+    expect(emailsOf(defaulted)).toEqual(emailsOf(undef));
+    expect(emailsOf(defaulted)).toEqual(emailsOf(emptyOpts));
+  });
+
+  it('populates lastLoginAt from auth_event_log for accepted-sso-auto events', async () => {
+    const db = getDb();
+    const detail = await getTeamDetail(db, teamId, orgId, { provisionedVia: 'all' });
+    expect(detail).not.toBeNull();
+    if (detail === null) return;
+
+    // alice / charlie / david each have one accepted-sso-auto event seeded.
+    const alice = detail.members.find((m) => m.email === 'alice@example.com');
+    const charlie = detail.members.find((m) => m.email === 'charlie@example.com');
+    const david = detail.members.find((m) => m.email === 'david@example.com');
+    // bob / eve have NO matching auth_event_log row.
+    const bob = detail.members.find((m) => m.email === 'bob@example.com');
+    const eve = detail.members.find((m) => m.email === 'eve@example.com');
+
+    expect(alice?.lastLoginAt).toBeInstanceOf(Date);
+    expect(charlie?.lastLoginAt).toBeInstanceOf(Date);
+    expect(david?.lastLoginAt).toBeInstanceOf(Date);
+    expect(bob?.lastLoginAt).toBeNull();
+    expect(eve?.lastLoginAt).toBeNull();
   });
 });
 

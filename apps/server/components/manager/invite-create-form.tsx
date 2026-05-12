@@ -42,6 +42,22 @@ const ERROR_LABEL: Record<string, string> = {
   invalid_input: 'Invalid form data. Check the fields.',
 };
 
+/**
+ * SSO provider options for the checkbox group (TASK-15 / REQ-7).
+ * `value` matches the Zod enum on the Server Action; `label` is the
+ * human-facing string. Order is deliberate (alphabetical-ish) and is also
+ * the order persisted to the DB column when all four are checked. The
+ * manager picks ≥1; an empty submission is rejected by the Server Action
+ * (HTML5 `required` on a checkbox group is ambiguous across browsers, so
+ * we rely on server-side validation for the empty case).
+ */
+const SSO_PROVIDER_OPTIONS = [
+  { value: 'google', label: 'Google' },
+  { value: 'okta', label: 'Okta' },
+  { value: 'microsoft', label: 'Microsoft' },
+  { value: 'auth0', label: 'Auth0' },
+] as const;
+
 export const InviteCreateForm = ({ teams }: Props) => {
   // Lazy initializer — runs ONCE per mount. A re-render with new props
   // doesn't regenerate the key, so a fast double-click (which would
@@ -118,6 +134,36 @@ export const InviteCreateForm = ({ teams }: Props) => {
           Restricts redemption. Empty = any email.
         </p>
       </div>
+
+      <fieldset className="space-y-2">
+        <legend className="block text-sm font-medium text-neutral-900 dark:text-neutral-100">
+          Allowed SSO providers
+        </legend>
+        <p className="text-xs text-neutral-500 dark:text-neutral-400">
+          Select at least one identity provider this invite will accept when
+          a user signs in via SSO.
+        </p>
+        <div
+          className="grid grid-cols-2 gap-2"
+          data-testid="invite-create-allowed-sso-providers"
+        >
+          {SSO_PROVIDER_OPTIONS.map((opt) => (
+            <label
+              key={opt.value}
+              className="flex items-center gap-2 rounded border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+            >
+              <input
+                type="checkbox"
+                name="allowed_sso_providers"
+                value={opt.value}
+                defaultChecked={opt.value === 'google'}
+                className="h-4 w-4 rounded border-neutral-400 text-neutral-900 focus:ring-neutral-500 dark:border-neutral-600"
+              />
+              <span>{opt.label}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
 
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-1.5">
