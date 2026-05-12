@@ -33,7 +33,12 @@
 import type { NextRequest } from 'next/server';
 import type { Session } from 'next-auth';
 import { z } from 'zod';
+import { log as logger } from '@root/logger';
 import { toCsvRow } from '@/lib/csv/format';
+import {
+  checkSameOriginGet,
+  type SameOriginGetReason,
+} from '@/lib/auth/same-origin-get-guard';
 import { hashEmail } from '@/lib/auth/email-hash';
 import {
   getTeamDetail,
@@ -79,6 +84,17 @@ const notFound = (): Response =>
     status: 404,
     headers: { 'content-type': 'text/plain; charset=utf-8' },
   });
+
+/**
+ * CSRF-on-GET block response. Mirrors the JSON shape used by the audit-log
+ * export route so external clients see a consistent error envelope across
+ * both manager-UI CSV endpoints.
+ */
+const crossOriginBlocked = (reason: SameOriginGetReason): Response =>
+  new Response(
+    JSON.stringify({ error: { message: 'cross-origin request blocked', code: reason } }),
+    { status: 403, headers: { 'content-type': 'application/json' } },
+  );
 
 const coerceProvisionedVia = (
   raw: string | null,
@@ -138,6 +154,24 @@ export const exportTeamRosterImpl = async (
   context: { params: { id: string } },
   deps: ExportTeamRosterDeps,
 ): Promise<Response> => {
+  // 0. CSRF-on-GET guard (security HIGH from spec b → spec c → fix-sso-csv-export-csrf).
+  //    Browsers do NOT pre-flight GETs; `<a href>` from a malicious site would
+  //    let an authenticated manager auto-download the team roster. Reject
+  //    non-same-origin requests BEFORE invoking auth() (REQ-6 — no auth-flow
+  //    leakage on cross-site probes).
+  const baseUrl = new URL(request.url).origin;
+  const guard = checkSameOriginGet(request, baseUrl);
+  if (!guard.ok) {
+    // Privacy: ONLY structured payload keys are logged. Origin/Referer
+    // VALUES are deliberately omitted — they may contain sensitive URLs.
+    logger.warn('csv-export csrf blocked', {
+      route: '/manager/teams/[id]/export',
+      reason: guard.reason,
+      sec_fetch_site: request.headers.get('sec-fetch-site') ?? '<missing>',
+    });
+    return crossOriginBlocked(guard.reason);
+  }
+
   // 1. AuthN/Z: require manager or admin role with a non-null orgId.
   const session = await deps.authFn();
   const role = session?.user?.role;

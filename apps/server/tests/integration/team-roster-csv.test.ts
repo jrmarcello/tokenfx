@@ -72,7 +72,11 @@ const makeSession = (
 
 const makeReq = (teamId: string, query = ''): NextRequest => {
   const url = `http://localhost/manager/teams/${teamId}/export${query}`;
-  return new NextRequest(url);
+  // CSRF-on-GET guard requires sec-fetch-site=same-origin (or `none`) for
+  // a legitimate request. See `.specs/fix-sso-csv-export-csrf.md`.
+  return new NextRequest(url, {
+    headers: new Headers({ 'sec-fetch-site': 'same-origin' }),
+  });
 };
 
 type SeedFixture = {

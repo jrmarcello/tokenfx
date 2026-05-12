@@ -18,7 +18,8 @@
  *   - TC-I-19   (security): cell starting with `=` → prefixed with `'`
  *   - Auth:     member-role → 403; unauthenticated → 401
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { log as logger } from '@root/logger';
 import type { Session } from 'next-auth';
 
 import { exportAuditLogImpl, type AuthFn, type LoadAuditLogPageFn } from './route';
@@ -37,8 +38,33 @@ const makeSession = (
   expires: '2099-01-01',
 });
 
-const makeRequest = (url = 'http://localhost/manager/audit-log/export'): Request =>
-  new Request(url, { method: 'GET' });
+/**
+ * Default-injects `sec-fetch-site: 'same-origin'` so the CSRF-on-GET guard
+ * (added by `.specs/fix-sso-csv-export-csrf.md`) is satisfied for every
+ * existing TC without rewriting them. CSRF-specific tests pass explicit
+ * `headerOverrides` to exercise the reject paths.
+ */
+const makeRequest = (
+  url = 'http://localhost/manager/audit-log/export',
+  headerOverrides: Record<string, string> = {},
+): Request =>
+  new Request(url, {
+    method: 'GET',
+    headers: new Headers({ 'sec-fetch-site': 'same-origin', ...headerOverrides }),
+  });
+
+/**
+ * Builds a Request with NO Sec-Fetch-Site header (and only the headers the
+ * caller specifies). Used by CSRF tests that exercise the Origin/Referer
+ * fallback path or the missing-origin path.
+ */
+const makeRequestNoFetchSite = (
+  headers: Record<string, string> = {},
+): Request =>
+  new Request('http://localhost/manager/audit-log/export', {
+    method: 'GET',
+    headers: new Headers(headers),
+  });
 
 const makeRow = (overrides: Partial<AuditLogRow> = {}): AuditLogRow => ({
   occurredAt: new Date('2025-04-01T12:34:56Z'),
@@ -248,7 +274,7 @@ describe('GET /manager/audit-log/export', () => {
       '&iss=https%3A%2F%2Faccounts.google.com' +
       '&city=Sao%20Paulo' +
       '&browser=Mozilla';
-    await exportAuditLogImpl(new Request(url, { method: 'GET' }), {
+    await exportAuditLogImpl(makeRequest(url), {
       authFn: stubAuth(makeSession('manager', 'u-1', 'org-1')),
       loadAuditLogPageFn: loader,
     });
@@ -272,7 +298,7 @@ describe('GET /manager/audit-log/export', () => {
       'http://localhost/manager/audit-log/export' +
       '?from=2025-01-01T00%3A00%3A00.000Z' +
       '&to=2025-02-01T00%3A00%3A00.000Z';
-    await exportAuditLogImpl(new Request(url, { method: 'GET' }), {
+    await exportAuditLogImpl(makeRequest(url), {
       authFn: stubAuth(makeSession('manager', 'u-1', 'org-1')),
       loadAuditLogPageFn: loader,
     });
@@ -292,7 +318,7 @@ describe('GET /manager/audit-log/export', () => {
       'http://localhost/manager/audit-log/export' +
       '?outcome=not-a-real-outcome' +
       '&from=not-a-date';
-    await exportAuditLogImpl(new Request(url, { method: 'GET' }), {
+    await exportAuditLogImpl(makeRequest(url), {
       authFn: stubAuth(makeSession('manager', 'u-1', 'org-1')),
       loadAuditLogPageFn: loader,
     });
@@ -329,5 +355,152 @@ describe('GET /manager/audit-log/export', () => {
     });
     expect(capturedPage).toBe(0);
     expect(capturedPageSize).toBe(10_000);
+  });
+
+  // ---------------------------------------------------------------------------
+  // CSRF-on-GET guard (fix-sso-csv-export-csrf — TC-I-01..04, TC-I-07a, TC-I-08, TC-I-10, TC-I-11)
+  //
+  // The guard fires BEFORE authFn. To prove auth was never invoked, the tests
+  // pass an authFn stub that throws — if the guard regresses and auth runs,
+  // the test fails loudly.
+  // ---------------------------------------------------------------------------
+  describe('CSRF-on-GET guard', () => {
+    const failingAuth: AuthFn = async () => {
+      throw new Error('auth() must not be called when guard rejects');
+    };
+
+    it('returns 200 for same-origin requests with valid session (TC-I-01)', async () => {
+      // The default makeRequest() injects sec-fetch-site: same-origin.
+      const res = await exportAuditLogImpl(makeRequest(), {
+        authFn: stubAuth(makeSession('manager', 'u-1', 'org-1')),
+        loadAuditLogPageFn: stubLoader({ rows: [], totalCount: 0, page: 0, pageSize: 10_000 }),
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('text/csv; charset=utf-8');
+    });
+
+    it('rejects sec-fetch-site=cross-site with 403 before invoking auth (TC-I-02, REQ-6)', async () => {
+      const res = await exportAuditLogImpl(
+        makeRequest(undefined, { 'sec-fetch-site': 'cross-site' }),
+        {
+          authFn: failingAuth,
+          loadAuditLogPageFn: stubLoader({ rows: [], totalCount: 0, page: 0, pageSize: 10_000 }),
+        },
+      );
+      expect(res.status).toBe(403);
+      expect(res.headers.get('content-type')).toBe('application/json');
+      const body = (await res.json()) as { error: { message: string; code: string } };
+      expect(body.error.code).toBe('cross-site');
+      expect(body.error.message).toBe('cross-origin request blocked');
+    });
+
+    it('rejects sec-fetch-site=same-site with 403 and code same-site-rejected (TC-I-03)', async () => {
+      const res = await exportAuditLogImpl(
+        makeRequest(undefined, { 'sec-fetch-site': 'same-site' }),
+        {
+          authFn: failingAuth,
+          loadAuditLogPageFn: stubLoader({ rows: [], totalCount: 0, page: 0, pageSize: 10_000 }),
+        },
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('same-site-rejected');
+    });
+
+    it('rejects when no Sec-Fetch-Site, no Origin, no Referer (TC-I-04)', async () => {
+      // Also verifies the log payload uses the `<missing>` sentinel — not
+      // `null` — when the Sec-Fetch-Site header is absent.
+      const spy = vi.spyOn(logger, 'warn').mockImplementation(() => {
+        /* swallow */
+      });
+      try {
+        const res = await exportAuditLogImpl(makeRequestNoFetchSite({}), {
+          authFn: failingAuth,
+          loadAuditLogPageFn: stubLoader({ rows: [], totalCount: 0, page: 0, pageSize: 10_000 }),
+        });
+        expect(res.status).toBe(403);
+        const body = (await res.json()) as { error: { code: string } };
+        expect(body.error.code).toBe('missing-origin');
+        // Sentinel assertion: `sec_fetch_site` is the literal '<missing>',
+        // never the JS `null` value.
+        const [, payload] = spy.mock.calls[0];
+        expect((payload as { sec_fetch_site: unknown }).sec_fetch_site).toBe('<missing>');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('accepts sec-fetch-site=none (typed URL or bookmark) (TC-I-08)', async () => {
+      const res = await exportAuditLogImpl(
+        makeRequest(undefined, { 'sec-fetch-site': 'none' }),
+        {
+          authFn: stubAuth(makeSession('manager', 'u-1', 'org-1')),
+          loadAuditLogPageFn: stubLoader({ rows: [], totalCount: 0, page: 0, pageSize: 10_000 }),
+        },
+      );
+      expect(res.status).toBe(200);
+    });
+
+    it('rejects when Sec-Fetch-Site is absent and Origin is a different origin (TC-I-10)', async () => {
+      const res = await exportAuditLogImpl(
+        makeRequestNoFetchSite({ origin: 'https://evil.example.com' }),
+        {
+          authFn: failingAuth,
+          loadAuditLogPageFn: stubLoader({ rows: [], totalCount: 0, page: 0, pageSize: 10_000 }),
+        },
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('cross-origin');
+    });
+
+    it('rejects when Sec-Fetch-Site is absent and Origin is the literal string "null" (TC-I-11)', async () => {
+      const res = await exportAuditLogImpl(
+        makeRequestNoFetchSite({ origin: 'null' }),
+        {
+          authFn: failingAuth,
+          loadAuditLogPageFn: stubLoader({ rows: [], totalCount: 0, page: 0, pageSize: 10_000 }),
+        },
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('null-origin');
+    });
+
+    it('never leaks Origin or Referer header values in the warn log (TC-I-07a privacy)', async () => {
+      // Privacy invariant: the structured payload contains ONLY
+      // {route, reason, sec_fetch_site}. `vi.spyOn` on the logger module
+      // patches the live binding — restored in `finally` to avoid cross-test
+      // contamination.
+      const spy = vi.spyOn(logger, 'warn').mockImplementation(() => {
+        /* swallow */
+      });
+      try {
+        const sensitiveOrigin = 'https://leak.example.com';
+        const sensitiveReferer = 'https://leak.example.com/secret-path';
+        await exportAuditLogImpl(
+          makeRequestNoFetchSite({ origin: sensitiveOrigin, referer: sensitiveReferer }),
+          {
+            authFn: failingAuth,
+            loadAuditLogPageFn: stubLoader({ rows: [], totalCount: 0, page: 0, pageSize: 10_000 }),
+          },
+        );
+        expect(spy).toHaveBeenCalledOnce();
+        const [, payload] = spy.mock.calls[0];
+        // Structural shape: only the 3 documented keys.
+        expect(payload).toEqual({
+          route: '/manager/audit-log/export',
+          reason: 'cross-origin',
+          sec_fetch_site: '<missing>',
+        });
+        // Belt-and-suspenders: the serialized call args do not contain the
+        // sensitive values anywhere (catches accidental spread/spillage).
+        const serialized = JSON.stringify(spy.mock.calls);
+        expect(serialized).not.toContain(sensitiveOrigin);
+        expect(serialized).not.toContain(sensitiveReferer);
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 });

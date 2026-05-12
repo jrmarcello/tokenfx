@@ -122,7 +122,12 @@ const seedManyAuthEvents = async (
 };
 
 const makeRequest = (): Request =>
-  new Request('http://localhost/manager/audit-log/export', { method: 'GET' });
+  new Request('http://localhost/manager/audit-log/export', {
+    method: 'GET',
+    // CSRF-on-GET guard requires sec-fetch-site=same-origin (or `none`) for
+    // a legitimate request. See `.specs/fix-sso-csv-export-csrf.md`.
+    headers: new Headers({ 'sec-fetch-site': 'same-origin' }),
+  });
 
 skipDescribe('GET /manager/audit-log/export (Postgres integration)', () => {
   beforeAll(async () => {

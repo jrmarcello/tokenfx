@@ -14,7 +14,8 @@
  * keeps NextAuth + Drizzle out of vitest's module graph for the unit
  * suite.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { log as logger } from '@root/logger';
 import type { Session } from 'next-auth';
 import { NextRequest } from 'next/server';
 import {
@@ -38,9 +39,32 @@ const makeSession = (role: 'manager' | 'admin' | 'member'): Session => ({
   expires: '2099-01-01',
 });
 
-const makeReq = (search = ''): NextRequest => {
+/**
+ * Default-injects `sec-fetch-site: 'same-origin'` so the CSRF-on-GET guard
+ * (added by `.specs/fix-sso-csv-export-csrf.md`) is satisfied for every
+ * existing TC without rewriting them. CSRF-specific tests pass explicit
+ * `headerOverrides` to exercise the reject paths.
+ */
+const makeReq = (
+  search = '',
+  headerOverrides: Record<string, string> = {},
+): NextRequest => {
   const url = `http://localhost/manager/teams/${TEAM_ID}/export${search}`;
-  return new NextRequest(url);
+  return new NextRequest(url, {
+    headers: new Headers({ 'sec-fetch-site': 'same-origin', ...headerOverrides }),
+  });
+};
+
+/**
+ * Builds a NextRequest with NO Sec-Fetch-Site header (and only the headers
+ * the caller specifies). Used by CSRF tests that exercise the
+ * Origin/Referer fallback or the missing-origin path.
+ */
+const makeReqNoFetchSite = (
+  headers: Record<string, string> = {},
+): NextRequest => {
+  const url = `http://localhost/manager/teams/${TEAM_ID}/export`;
+  return new NextRequest(url, { headers: new Headers(headers) });
 };
 
 const makeMember = (overrides: Partial<TeamMember> = {}): TeamMember => ({
@@ -291,5 +315,125 @@ describe('GET /manager/teams/[id]/export — route handler', () => {
     });
     expect(capture.calls[0].orgId).toBe(ORG_ID);
     expect(capture.calls[0].orgId).not.toBe(OTHER_ORG_ID);
+  });
+
+  // ---------------------------------------------------------------------------
+  // CSRF-on-GET guard (fix-sso-csv-export-csrf — TC-I-05, TC-I-06, TC-I-07b,
+  // TC-I-09, TC-I-12, TC-I-13, TC-I-14)
+  //
+  // Pattern: mirrors TASK-2 audit-log tests; only the `route:` log label
+  // differs between the two routes.
+  // ---------------------------------------------------------------------------
+  describe('CSRF-on-GET guard', () => {
+    const failingAuth: AuthFn = async () => {
+      throw new Error('auth() must not be called when guard rejects');
+    };
+
+    it('returns 200 for same-origin requests with valid session (TC-I-05)', async () => {
+      const res = await callRoute(makeReq(), {
+        authFn: stubAuth(makeSession('manager')),
+        getTeamDetailFn: stubGetTeamDetail(detailWithMembers([])),
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('text/csv; charset=utf-8');
+    });
+
+    it('rejects sec-fetch-site=cross-site with 403 before invoking auth (TC-I-06, REQ-6)', async () => {
+      const res = await callRoute(makeReq('', { 'sec-fetch-site': 'cross-site' }), {
+        authFn: failingAuth,
+        getTeamDetailFn: stubGetTeamDetail(detailWithMembers([])),
+      });
+      expect(res.status).toBe(403);
+      expect(res.headers.get('content-type')).toBe('application/json');
+      const body = (await res.json()) as { error: { message: string; code: string } };
+      expect(body.error.code).toBe('cross-site');
+      expect(body.error.message).toBe('cross-origin request blocked');
+    });
+
+    it('accepts sec-fetch-site=none (typed URL or bookmark) (TC-I-09)', async () => {
+      const res = await callRoute(makeReq('', { 'sec-fetch-site': 'none' }), {
+        authFn: stubAuth(makeSession('manager')),
+        getTeamDetailFn: stubGetTeamDetail(detailWithMembers([])),
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('rejects sec-fetch-site=same-site with 403 and code same-site-rejected (TC-I-12)', async () => {
+      const res = await callRoute(makeReq('', { 'sec-fetch-site': 'same-site' }), {
+        authFn: failingAuth,
+        getTeamDetailFn: stubGetTeamDetail(detailWithMembers([])),
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('same-site-rejected');
+    });
+
+    it('rejects when no Sec-Fetch-Site, no Origin, no Referer (TC-I-13)', async () => {
+      // Also verifies the log payload uses the `<missing>` sentinel — not
+      // `null` — when the Sec-Fetch-Site header is absent.
+      const spy = vi.spyOn(logger, 'warn').mockImplementation(() => {
+        /* swallow */
+      });
+      try {
+        const res = await callRoute(makeReqNoFetchSite({}), {
+          authFn: failingAuth,
+          getTeamDetailFn: stubGetTeamDetail(detailWithMembers([])),
+        });
+        expect(res.status).toBe(403);
+        const body = (await res.json()) as { error: { code: string } };
+        expect(body.error.code).toBe('missing-origin');
+        const [, payload] = spy.mock.calls[0];
+        expect((payload as { sec_fetch_site: unknown }).sec_fetch_site).toBe('<missing>');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('rejects when Sec-Fetch-Site is absent and Origin is a different origin (TC-I-14)', async () => {
+      const res = await callRoute(
+        makeReqNoFetchSite({ origin: 'https://evil.example.com' }),
+        {
+          authFn: failingAuth,
+          getTeamDetailFn: stubGetTeamDetail(detailWithMembers([])),
+        },
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('cross-origin');
+    });
+
+    it('never leaks Origin or Referer header values in the warn log (TC-I-07b privacy)', async () => {
+      // Privacy invariant: structured payload contains ONLY
+      // {route, reason, sec_fetch_site}. `vi.spyOn` patches the live binding;
+      // restored in `finally` to avoid cross-test contamination.
+      const spy = vi.spyOn(logger, 'warn').mockImplementation(() => {
+        /* swallow */
+      });
+      try {
+        const sensitiveOrigin = 'https://leak.example.com';
+        const sensitiveReferer = 'https://leak.example.com/secret-path';
+        await callRoute(
+          makeReqNoFetchSite({ origin: sensitiveOrigin, referer: sensitiveReferer }),
+          {
+            authFn: failingAuth,
+            getTeamDetailFn: stubGetTeamDetail(detailWithMembers([])),
+          },
+        );
+        expect(spy).toHaveBeenCalledOnce();
+        const [, payload] = spy.mock.calls[0];
+        // Structural shape: only the 3 documented keys; the route label
+        // distinguishes this from the audit-log route's payload.
+        expect(payload).toEqual({
+          route: '/manager/teams/[id]/export',
+          reason: 'cross-origin',
+          sec_fetch_site: '<missing>',
+        });
+        const serialized = JSON.stringify(spy.mock.calls);
+        expect(serialized).not.toContain(sensitiveOrigin);
+        expect(serialized).not.toContain(sensitiveReferer);
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 });

@@ -39,6 +39,8 @@ import type { NextRequest } from 'next/server';
 import type { Session } from 'next-auth';
 import { z } from 'zod';
 
+import { log as logger } from '@root/logger';
+import { checkSameOriginGet } from '@/lib/auth/same-origin-get-guard';
 import { toCsvRow } from '@/lib/csv/format';
 import { getDb } from '@/lib/db/client';
 import {
@@ -177,6 +179,35 @@ export const exportAuditLogImpl = async (
   req: NextRequest | Request,
   deps: ExportAuditLogDeps,
 ): Promise<Response> => {
+  // 0. CSRF-on-GET guard (security HIGH from spec b → spec c → fix-sso-csv-export-csrf).
+  //    Browsers do NOT pre-flight GETs; `<a href>` from a malicious site would
+  //    let an authenticated manager auto-download the org's audit-log CSV.
+  //    Reject non-same-origin requests BEFORE invoking auth() (REQ-6 — no
+  //    auth-flow leakage on cross-site probes).
+  //
+  //    `new URL(req.url).origin` works for both NextRequest (production) and
+  //    global Request (test path). URL.origin normalizes default ports. Behind
+  //    a reverse proxy, this returns the Next.js-resolved origin — same source
+  //    the route already uses for `buildFilename`.
+  const baseUrl = new URL(req.url).origin;
+  const guard = checkSameOriginGet(req, baseUrl);
+  if (!guard.ok) {
+    // Privacy: ONLY structured payload keys are logged. Origin/Referer header
+    // VALUES are deliberately omitted — they may contain sensitive customer
+    // URLs / referring paths. Do not spread `req` or accept ad-hoc fields here.
+    logger.warn('csv-export csrf blocked', {
+      route: '/manager/audit-log/export',
+      reason: guard.reason,
+      sec_fetch_site: req.headers.get('sec-fetch-site') ?? '<missing>',
+    });
+    return new Response(
+      JSON.stringify({
+        error: { message: 'cross-origin request blocked', code: guard.reason },
+      }),
+      { status: 403, headers: JSON_HEADERS },
+    );
+  }
+
   // 1. AuthN: explicit 401 for no session so audit logs can distinguish
   //    anonymous probes from real-user role denials.
   const session = await deps.authFn();
