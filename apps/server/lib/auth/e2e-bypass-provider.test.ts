@@ -15,12 +15,16 @@ const ALICE: LoadedUser = {
   ssoProvider: null,
 };
 
+// REQ-15 transitional: `LoadUserFn` now returns `LoadedUser[]` (matches
+// the production `loadUserByEmail` signature). Stubs wrap the original
+// single-user fixture in an array; the empty-array case represents the
+// previous `null` return.
 const stubLoadUserOk =
   (user: LoadedUser): LoadUserFn =>
   async () =>
-    user;
+    [user];
 
-const stubLoadUserNull: LoadUserFn = async () => null;
+const stubLoadUserNull: LoadUserFn = async () => [];
 
 const stubLoadUserThrow: LoadUserFn = async () => {
   throw new Error('db connection lost');
@@ -225,6 +229,23 @@ describe('buildE2eBypassProvider', () => {
         expect(cause).toBeInstanceOf(Error);
         expect((cause as Error).message).toBe('db connection lost');
       }
+    });
+
+    // TC-I-41 — REQ-15: e2e bypass adapter handles the post-REQ-11 array
+    // return shape from `loadUserByEmail`. Two scenarios: (1) single-row
+    // array → session resolves with that user; (2) empty array → bypass
+    // returns null. These lock the transitional "pick first" pragma.
+    it('TC-I-41: with a single-row loadUser array, the bypass session resolves with that user', async () => {
+      const single: LoadUserFn = async () => [ALICE];
+      const result = await callAuthorize(single, { email: 'alice@alpha.test' }, validReq);
+      expect(result).not.toBeNull();
+      expect(result?.id).toBe(ALICE.userId);
+    });
+
+    it('TC-I-41: with an empty loadUser array, the bypass returns null', async () => {
+      const empty: LoadUserFn = async () => [];
+      const result = await callAuthorize(empty, { email: 'ghost@alpha.test' }, validReq);
+      expect(result).toBeNull();
     });
   });
 });

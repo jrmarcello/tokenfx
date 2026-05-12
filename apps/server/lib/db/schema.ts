@@ -41,7 +41,7 @@ export const users = pgTable(
       .notNull()
       .references(() => orgs.id, { onDelete: 'cascade' }),
     teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
-    email: text('email').unique().notNull(),
+    email: text('email').notNull(),
     // NULLABLE since central-server-onboarding (REQ-4): invite-provisioned
     // users have no SSO yet. First SSO login fills these via auth.ts:signIn.
     ssoProvider: text('sso_provider'),
@@ -56,21 +56,44 @@ export const users = pgTable(
   },
   (t) => ({
     roleCheck: check('users_role_check', sql`${t.role} IN ('member','manager','admin')`),
+    // central-server-onboarding-v2-sso (REQ-18): the global email UNIQUE
+    // was replaced by (org_id, email) — the same email may exist in
+    // different orgs (multi-tenant), but only once per org. SSO matching
+    // is scoped per org.
+    orgEmailUnique: unique('users_org_email_unique').on(t.orgId, t.email),
+    // central-server-onboarding-v2-sso (REQ-18): single SSO identity
+    // per org. Prevents multiple users in the same org binding to the
+    // same (provider, subject) pair after first-login auto-provision.
+    orgSsoUnique: unique('users_org_sso_unique').on(t.orgId, t.ssoProvider, t.ssoSubject),
   }),
 );
 
-export const userMachines = pgTable('user_machines', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  machineId: uuid('machine_id').notNull(),
-  keyId: text('key_id').unique().notNull(),
-  secretHash: text('secret_hash').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
-  revokedAt: timestamp('revoked_at', { withTimezone: true }),
-});
+export const userMachines = pgTable(
+  'user_machines',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    machineId: uuid('machine_id').notNull(),
+    keyId: text('key_id').unique().notNull(),
+    secretHash: text('secret_hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    // central-server-onboarding-v2-sso (REQ-18): how this machine credential
+    // was provisioned. 'pre-v2-unknown' default backfills historic rows
+    // created before this column existed; new rows are written explicitly
+    // as 'manual-token' (invite redemption) or 'sso-auto' (auto-provision).
+    provisionedVia: text('provisioned_via').notNull().default('pre-v2-unknown'),
+  },
+  (t) => ({
+    provisionedViaCheck: check(
+      'user_machines_provisioned_via_check',
+      sql`${t.provisionedVia} IN ('manual-token', 'sso-auto', 'pre-v2-unknown')`,
+    ),
+  }),
+);
 
 export const sessionsAgg = pgTable(
   'sessions_agg',
@@ -219,6 +242,14 @@ export const onboardingInvites = pgTable(
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    // central-server-onboarding-v2-sso (REQ-18): whitelist of SSO providers
+    // accepted by this invite (e.g. ['google','microsoft']). Empty array
+    // means "no SSO restriction — manual-token redeem only". Stored as
+    // text[] (Postgres native array) to keep queries indexable.
+    allowedSsoProviders: text('allowed_sso_providers')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
   },
   (t) => ({
     maxUsesCheck: check('max_uses_positive', sql`${t.maxUses} >= 1`),
@@ -227,6 +258,15 @@ export const onboardingInvites = pgTable(
     // revoke flow (REQ-19). Drizzle's `index().on(sql\`...\`)` emits the raw
     // SQL `CREATE INDEX ... ON onboarding_invites (left(token, 8))`.
     prefixIdx: index('idx_onboarding_invites_prefix').on(sql`left(${t.token}, 8)`),
+    // central-server-onboarding-v2-sso (REQ-18): invites with an
+    // email_pattern (SSO-eligible) MUST expire within 180 days — caps
+    // the blast radius of a leaked invite that auto-provisions on first
+    // SSO login. Manual-token invites (email_pattern IS NULL) are
+    // exempted from the cap.
+    ssoExpiresCheck: check(
+      'onboarding_invites_sso_expires_check',
+      sql`${t.emailPattern} IS NULL OR ${t.expiresAt} <= ${t.createdAt} + INTERVAL '180 days'`,
+    ),
   }),
 );
 
@@ -244,10 +284,29 @@ export const onboardingRedemptionLog = pgTable(
     requestIp: text('request_ip'),
     outcome: onboardingOutcomeEnum('outcome').notNull(),
     receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+    // central-server-onboarding-v2-sso (REQ-18): distinguishes manual-token
+    // redeems (the historic path) from sso-auto provisioning. Default
+    // 'manual-token' preserves the pre-v2 invariant for historic rows.
+    method: text('method').notNull().default('manual-token'),
+    // SSO context — populated when method = 'sso-auto'. NULL for manual-token.
+    // ssoSubjectHash is peppered (same pepper as auth_event_log.ssoSubjectHash)
+    // to keep the raw subject out of audit storage.
+    ssoProvider: text('sso_provider'),
+    ssoSubjectHash: text('sso_subject_hash'),
+    iss: text('iss'),
+    userAgent: text('user_agent'),
   },
   (t) => ({
     receivedIdx: index('idx_redemption_log_received').on(t.receivedAt),
     outcomeIdx: index('idx_redemption_log_outcome').on(t.outcome, t.receivedAt),
+    // central-server-onboarding-v2-sso (REQ-18): the redemption method
+    // is exhaustive — only the two valid paths. 'pre-v2-unknown' is NOT
+    // a valid method here (historic rows pre-date the column; default
+    // 'manual-token' is correct for them).
+    methodCheck: check(
+      'onboarding_redemption_log_method_check',
+      sql`${t.method} IN ('manual-token', 'sso-auto')`,
+    ),
   }),
 );
 
@@ -569,5 +628,46 @@ export const teamOutcomesDaily = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.orgId, t.teamId, t.day] }),
+  }),
+);
+
+// ============================================================================
+// central-server-onboarding-v2-sso (REQ-18): auth_event_log — append-only
+// privacy-safe audit of every SSO login attempt (accepted + rejected).
+// Stores only peppered hashes of email + subject (NEVER the raw values),
+// plus coarse network context (ip, city, user_agent). Drives the rate-limit
+// + replay defenses (idx by subject + by email + by iss). Outcome enum is
+// stored as text + CHECK to avoid coupling enum migrations to schema drift.
+// ============================================================================
+export const authEventLog = pgTable(
+  'auth_event_log',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    ssoProvider: text('sso_provider').notNull(),
+    iss: text('iss').notNull(),
+    emailHash: text('email_hash').notNull(),
+    ssoSubjectHash: text('sso_subject_hash'),
+    ip: text('ip'),
+    city: text('city'),
+    userAgent: text('user_agent'),
+    outcome: text('outcome').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // Indexes drive the rate-limit + replay-defense lookups: bound on
+    // (subject, time), (email, time), (iss, time) respectively. `occurred_at`
+    // is the trailing column on each so range scans are O(log n).
+    subjectOccurredIdx: index('idx_auth_event_log_subject_occurred').on(
+      t.ssoSubjectHash,
+      t.occurredAt,
+    ),
+    emailOccurredIdx: index('idx_auth_event_log_email_occurred').on(t.emailHash, t.occurredAt),
+    issOccurredIdx: index('idx_auth_event_log_iss_occurred').on(t.iss, t.occurredAt),
+    // Exhaustive outcome enum — every rejection reason has a dedicated
+    // string so dashboards can pivot by failure cause without parsing.
+    outcomeCheck: check(
+      'auth_event_log_outcome_check',
+      sql`${t.outcome} IN ('accepted-sso-auto', 'rejected-public-domain', 'rejected-multiple-matches', 'rejected-no-match', 'rejected-race', 'rejected-csrf', 'rejected-replay', 'rejected-cross-idp', 'rejected-pre-existing-binding', 'email-not-verified')`,
+    ),
   }),
 );

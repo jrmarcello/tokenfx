@@ -56,7 +56,12 @@ import {
   type LoadedUser,
 } from './load-user';
 
-export type LoadUserFn = (email: string) => Promise<LoadedUser | null>;
+// TASK-3 transitional (REQ-15): `loadUserByEmail` now returns
+// `LoadedUser[]`. The bypass adapter picks the oldest row (already
+// ordered by created_at ASC at the query layer) until TASK-5 wires the
+// org-picker UX surface. Keep `LoadUserFn` aligned with the production
+// helper signature so the dependency-injected test stubs typecheck.
+export type LoadUserFn = (email: string) => Promise<LoadedUser[]>;
 
 export type AuthorizedUser = {
   id: string;
@@ -123,15 +128,19 @@ export const createAuthorize =
     const parsed = emailSchema.safeParse(rawEmail);
     if (!parsed.success) return null;
 
-    let user;
+    let users;
     try {
-      user = await loadUser(parsed.data);
+      users = await loadUser(parsed.data);
     } catch (e) {
       // Wrap the DB error so callers (NextAuth's signIn handler) get a
       // stable error type with the raw cause attached. Avoids leaking raw
       // driver messages through the credentials callback response.
       throw new Error('e2e-bypass authorize: loadUser failed', { cause: e });
     }
+    // TASK-3 transitional (REQ-15): `loadUserByEmail` now returns
+    // `LoadedUser[]` ordered by created_at ASC. The bypass adapter picks
+    // the oldest row. Empty array → unauthenticated.
+    const user = users[0];
     if (!user) return null;
 
     return {

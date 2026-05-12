@@ -67,7 +67,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcrypt';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   onboardingInvites,
   userMachines,
@@ -241,11 +241,18 @@ const classifyInvite = (
 };
 
 /**
- * Upsert the user keyed on lowercase email.
+ * Upsert the user keyed on lowercase email **scoped to the invite's org**.
  *
- * - Found + `team_id IS NULL` + invite has `team_id` → UPDATE team_id.
- * - Found + non-NULL `team_id` → preserve.
- * - Not found → INSERT with sso_provider/subject NULL, role='member'.
+ * Cross-org isolation (REQ-16, central-server-onboarding-v2-sso): the WHERE
+ * clause matches on `(email, org_id)` so a user with the same email in a
+ * DIFFERENT org is never returned. This pairs with the
+ * `unique('users_org_email_unique').on(t.orgId, t.email)` constraint added
+ * in migration 0004 — without the org filter, the global-email lookup would
+ * silently attach the new `user_machines` row to the wrong tenant.
+ *
+ * - Found (same org) + `team_id IS NULL` + invite has `team_id` → UPDATE team_id.
+ * - Found (same org) + non-NULL `team_id` → preserve.
+ * - Not found in invite's org → INSERT with sso_provider/subject NULL, role='member'.
  *
  * Returns the user's row id and canonical email.
  */
@@ -264,7 +271,7 @@ const upsertUserForInvite = async (
       teamId: users.teamId,
     })
     .from(users)
-    .where(eq(users.email, args.canonicalEmail))
+    .where(and(eq(users.email, args.canonicalEmail), eq(users.orgId, args.inviteOrgId)))
     .limit(1);
 
   if (existing.length > 0) {

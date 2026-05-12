@@ -84,8 +84,9 @@ skipDescribe('auth session — invite-aware loadUserByEmail + evaluateSignIn (Po
       .returning({ id: users.id });
 
     const loaded = await loadUserByEmail('fully-onboarded@example.com');
-    expect(loaded).not.toBeNull();
-    expect(loaded).toEqual({
+    // REQ-11: array shape post-schema-migration.
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]).toEqual({
       userId: inserted.id,
       role: 'manager',
       orgId: testOrgId,
@@ -111,8 +112,9 @@ skipDescribe('auth session — invite-aware loadUserByEmail + evaluateSignIn (Po
     // CRITICAL: the old `(email, sso_provider)` predicate filtered this out
     // and returned null, breaking the JWT callback for invitees on first
     // login. The new email-only predicate must surface the row.
-    expect(loaded).not.toBeNull();
-    expect(loaded).toEqual({
+    // REQ-11: array shape (single-element).
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]).toEqual({
       userId: inserted.id,
       role: 'member',
       orgId: testOrgId,
@@ -120,9 +122,9 @@ skipDescribe('auth session — invite-aware loadUserByEmail + evaluateSignIn (Po
     });
   });
 
-  it('loadUserByEmail returns null when no row matches the email', async () => {
+  it('loadUserByEmail returns [] when no row matches the email', async () => {
     const loaded = await loadUserByEmail('does-not-exist@example.com');
-    expect(loaded).toBeNull();
+    expect(loaded).toEqual([]);
   });
 
   it('TC-I-76: invited user (sso_provider=NULL) first SSO login → fill-sso decision + UPDATE → loadUserByEmail surfaces populated SSO', async () => {
@@ -138,17 +140,16 @@ skipDescribe('auth session — invite-aware loadUserByEmail + evaluateSignIn (Po
       })
       .returning({ id: users.id });
 
-    // 1. signIn callback's lookup row.
-    const [row] = await db
+    // 1. signIn callback's lookup row (REQ-13: array shape).
+    const existingRows = await db
       .select({ ssoProvider: users.ssoProvider, ssoSubject: users.ssoSubject })
       .from(users)
-      .where(eq(users.email, 'newinvite@example.com'))
-      .limit(1);
+      .where(eq(users.email, 'newinvite@example.com'));
 
     // 2. Pure decision helper.
     const decision: SignInDecision = evaluateSignIn(
       { provider: 'google', providerAccountId: 'google-sub-76' },
-      row,
+      existingRows,
     );
     expect(decision).toEqual({
       kind: 'fill-sso',
@@ -165,9 +166,11 @@ skipDescribe('auth session — invite-aware loadUserByEmail + evaluateSignIn (Po
     }
 
     // 4. The subsequent `jwt()` callback's read — must see the freshly-
-    //    updated row in the same connection (READ COMMITTED).
+    //    updated row in the same connection (READ COMMITTED). REQ-11
+    //    array shape.
     const loaded = await loadUserByEmail('newinvite@example.com');
-    expect(loaded).toEqual({
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]).toEqual({
       userId: inserted.id,
       role: 'member',
       orgId: testOrgId,
@@ -196,15 +199,14 @@ skipDescribe('auth session — invite-aware loadUserByEmail + evaluateSignIn (Po
       })
       .returning({ id: users.id });
 
-    const [row] = await db
+    const existingRows = await db
       .select({ ssoProvider: users.ssoProvider, ssoSubject: users.ssoSubject })
       .from(users)
-      .where(eq(users.email, 'existing@example.com'))
-      .limit(1);
+      .where(eq(users.email, 'existing@example.com'));
 
     const decision = evaluateSignIn(
       { provider: 'google', providerAccountId: 'google-sub-77' },
-      row,
+      existingRows,
     );
     expect(decision).toEqual({ kind: 'allow' });
 
@@ -224,7 +226,8 @@ skipDescribe('auth session — invite-aware loadUserByEmail + evaluateSignIn (Po
     expect(after.role).toBe('admin');
 
     const loaded = await loadUserByEmail('existing@example.com');
-    expect(loaded).toEqual({
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]).toEqual({
       userId: inserted.id,
       role: 'admin',
       orgId: testOrgId,
@@ -237,7 +240,7 @@ describe('evaluateSignIn (pure decision helper)', () => {
   it('TC-I-78: existing row with sso_provider=google + OAuth provider=okta → reject-mismatch', () => {
     const decision = evaluateSignIn(
       { provider: 'okta', providerAccountId: 'okta-sub-78' },
-      { ssoProvider: 'google', ssoSubject: 'google-sub-78' },
+      [{ ssoProvider: 'google', ssoSubject: 'google-sub-78' }],
     );
     expect(decision).toEqual({ kind: 'reject-mismatch' });
   });
@@ -247,7 +250,7 @@ describe('evaluateSignIn (pure decision helper)', () => {
     // identity provider claiming this email. Must reject.
     const decision = evaluateSignIn(
       { provider: 'google', providerAccountId: 'google-sub-OTHER' },
-      { ssoProvider: 'google', ssoSubject: 'google-sub-78' },
+      [{ ssoProvider: 'google', ssoSubject: 'google-sub-78' }],
     );
     expect(decision).toEqual({ kind: 'reject-mismatch' });
   });
@@ -255,7 +258,7 @@ describe('evaluateSignIn (pure decision helper)', () => {
   it('returns bootstrap when no existing row is found', () => {
     const decision = evaluateSignIn(
       { provider: 'google', providerAccountId: 'sub-x' },
-      null,
+      [],
     );
     expect(decision).toEqual({ kind: 'bootstrap' });
   });
@@ -263,7 +266,7 @@ describe('evaluateSignIn (pure decision helper)', () => {
   it('returns fill-sso when the existing row has sso_provider=null (invite-provisioned)', () => {
     const decision = evaluateSignIn(
       { provider: 'okta', providerAccountId: 'okta-sub-z' },
-      { ssoProvider: null, ssoSubject: null },
+      [{ ssoProvider: null, ssoSubject: null }],
     );
     expect(decision).toEqual({
       kind: 'fill-sso',

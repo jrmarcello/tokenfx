@@ -1250,3 +1250,156 @@ skipDescribe('redeemInvite (concurrency + atomicity — TASK-6c)', () => {
     expect(invite.usedCount).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK-6 (REQ-16, central-server-onboarding-v2-sso) — org-scoped user lookup.
+// ---------------------------------------------------------------------------
+//
+// `redeemInvite()` upserts the user keyed on the email. Previously this used
+// a global `WHERE email = ?` lookup, which silently violated cross-org
+// isolation once two orgs are allowed to share an email (sso-v2 drops the
+// table-level UNIQUE on `users.email` in favour of `UNIQUE (org_id, email)`).
+//
+// The fix: include `eq(users.orgId, invite.orgId)` in the WHERE clause so
+// the same email belonging to a DIFFERENT org is never returned. TC-I-43 is
+// the regression — if the WHERE clause drops the org guard, the redeem would
+// pick up the foreign-org user and mutate it (or, worse, attach the new
+// machine to the wrong tenant).
+// ---------------------------------------------------------------------------
+
+skipDescribe('redeemInvite (org-scoped lookup — REQ-16)', () => {
+  let seeded: SeedOrgs;
+  let foreignOrgId: string;
+
+  beforeAll(async () => {
+    const db = getDb();
+    await db.execute(sql`TRUNCATE TABLE
+      onboarding_redemption_log, onboarding_audit_log, onboarding_invites,
+      ingestion_log, model_breakdown_agg, tool_count_agg, sessions_agg,
+      cost_calibration_per_user, user_machines, users, teams, orgs
+      RESTART IDENTITY CASCADE`);
+  });
+
+  afterAll(async () => {
+    await closeDb();
+  });
+
+  beforeEach(async () => {
+    seeded = await seedOrgs();
+    // Second, unrelated org — used to seed a same-email-but-different-org
+    // user that the redeem must NOT match.
+    const db = getDb();
+    const [foreign] = await db
+      .insert(orgs)
+      .values({ name: 'RedeemForeignOrg' })
+      .returning({ id: orgs.id });
+    foreignOrgId = foreign.id;
+  });
+
+  afterEach(async () => {
+    const db = getDb();
+    await db.delete(onboardingRedemptionLog);
+    await db.delete(userMachines);
+    await db.delete(onboardingInvites);
+    await db.delete(users);
+    await db.delete(teams);
+    await db.delete(orgs);
+  });
+
+  // -------------------------------------------------------------------------
+  // TC-I-42: happy path — invite's org has a user with the claimed email,
+  // redeem reuses that user (does NOT create a duplicate).
+  // -------------------------------------------------------------------------
+  it('TC-I-42: pre-existing user in invite.org with matching email → reused (single row, ids match)', async () => {
+    const db = getDb();
+    const [pre] = await db
+      .insert(users)
+      .values({
+        orgId: seeded.orgId,
+        teamId: seeded.teamAId,
+        email: 'shared@example.com',
+        ssoProvider: null,
+        ssoSubject: null,
+        role: 'member',
+      })
+      .returning({ id: users.id });
+
+    const token = make64HexToken('tc42-same-org-reuse');
+    await seedInvite({ orgId: seeded.orgId, teamId: seeded.teamAId, token });
+
+    const r = await redeemInvite(db, {
+      token,
+      machineId: MACHINE_A,
+      hostname: 'h-tc42',
+      claimedEmail: 'shared@example.com',
+      requestIp: null,
+    });
+    expect(r.ok).toBe(true);
+
+    const rows = await db
+      .select({ id: users.id, orgId: users.orgId, email: users.email })
+      .from(users)
+      .where(eq(users.email, 'shared@example.com'));
+    // Exactly one user row for this email — the existing one was reused.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(pre.id);
+    expect(rows[0].orgId).toBe(seeded.orgId);
+  });
+
+  // -------------------------------------------------------------------------
+  // TC-I-43: regression — a user with the same email exists in a DIFFERENT
+  // org. Redeem must ignore that user (cross-org isolation) and create a
+  // brand-new user in the invite's org.
+  // -------------------------------------------------------------------------
+  it("TC-I-43: same email exists in a foreign org → redeem creates a new user in invite's org (no cross-org match)", async () => {
+    const db = getDb();
+    // Foreign-org user with the SAME email the redeemer will claim.
+    const [foreignUser] = await db
+      .insert(users)
+      .values({
+        orgId: foreignOrgId,
+        teamId: null,
+        email: 'cross-org@example.com',
+        ssoProvider: null,
+        ssoSubject: null,
+        role: 'member',
+      })
+      .returning({ id: users.id });
+
+    const token = make64HexToken('tc43-cross-org-isolation');
+    await seedInvite({ orgId: seeded.orgId, teamId: seeded.teamAId, token });
+
+    const r = await redeemInvite(db, {
+      token,
+      machineId: MACHINE_A,
+      hostname: 'h-tc43',
+      claimedEmail: 'cross-org@example.com',
+      requestIp: null,
+    });
+    expect(r.ok).toBe(true);
+
+    // There should now be TWO user rows with the same email — one per org.
+    const rows = await db
+      .select({ id: users.id, orgId: users.orgId })
+      .from(users)
+      .where(eq(users.email, 'cross-org@example.com'));
+    expect(rows).toHaveLength(2);
+
+    const byOrg = new Map(rows.map((u) => [u.orgId, u.id] as const));
+    // Foreign-org user untouched: same id as before.
+    expect(byOrg.get(foreignOrgId)).toBe(foreignUser.id);
+    // Invite-org user is brand-new (distinct id from the foreign one).
+    const newUserId = byOrg.get(seeded.orgId);
+    expect(newUserId).toBeDefined();
+    expect(newUserId).not.toBe(foreignUser.id);
+
+    // The new user_machines row points at the invite-org user, NOT the
+    // foreign-org one — this is the actual security invariant. A pre-fix
+    // run would attach the machine to `foreignUser.id`.
+    const [machine] = await db
+      .select({ userId: userMachines.userId })
+      .from(userMachines);
+    expect(machine.userId).toBe(newUserId);
+    expect(machine.userId).not.toBe(foreignUser.id);
+  });
+});

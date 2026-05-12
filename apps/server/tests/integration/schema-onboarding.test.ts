@@ -60,7 +60,11 @@ skipDescribe('schema onboarding migration (Postgres integration)', () => {
     expect(names).toEqual(['onboarding_audit_action', 'onboarding_outcome']);
   });
 
-  it('TC-I-01: enum onboarding_outcome includes the 9 expected values', async () => {
+  it('TC-I-01: enum onboarding_outcome includes the 9 v1 expected values', async () => {
+    // Post-migration 0004 (SSO auto-provision schema), the enum also has 10
+    // additional SSO-specific values (assertion lives in migrate-0004.test.ts).
+    // This test locks the v1 baseline via `toContain` so it survives future
+    // additive enum extensions.
     const db = getDb();
     const rows = await db.execute<{ enumlabel: string }>(sql`
       SELECT e.enumlabel
@@ -69,7 +73,8 @@ skipDescribe('schema onboarding migration (Postgres integration)', () => {
       WHERE t.typname = 'onboarding_outcome'
       ORDER BY e.enumsortorder
     `);
-    expect(rows.rows.map((r) => r.enumlabel)).toEqual([
+    const labels = rows.rows.map((r) => r.enumlabel);
+    for (const expected of [
       'accepted',
       'token-invalid',
       'token-expired',
@@ -79,7 +84,9 @@ skipDescribe('schema onboarding migration (Postgres integration)', () => {
       'rate-limited',
       'validation-error',
       'infra-error',
-    ]);
+    ]) {
+      expect(labels).toContain(expected);
+    }
   });
 
   it('TC-I-01: enum onboarding_audit_action includes invite-created and invite-revoked', async () => {

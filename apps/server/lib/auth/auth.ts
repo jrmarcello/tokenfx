@@ -2,7 +2,7 @@ import NextAuth from 'next-auth';
 // Side-effect import anchors the `next-auth/jwt` module in the resolution
 // graph so the `declare module 'next-auth/jwt'` augmentation below resolves.
 import 'next-auth/jwt';
-import { eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import { authConfig } from './auth.config';
 import {
   assertNotProductionWithBypass,
@@ -12,7 +12,7 @@ import { assertFlashSecretAvailable } from './flash-cookie';
 import { getDb } from '@/lib/db/client';
 import { orgs, users } from '@/lib/db/schema';
 import { emailDomain } from './email-hash';
-import { evaluateSignIn, loadUserByEmail } from './load-user';
+import { evaluateSignIn, loadUserByEmail, loadUserBySsoIdentity } from './load-user';
 import { log as logger } from '@root/logger';
 
 // Fail-fast on missing auth secret in production. Auth.js v5 falls back to a
@@ -123,15 +123,39 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
 
       const db = getDb();
-      const [row] = await db
+      // TASK-4 final (REQ-14): lookup by SSO identity FIRST. The
+      // `(org_id, sso_provider, sso_subject)` UNIQUE constraint
+      // (schema-migrations REQ-2) guarantees ≤1 row globally, so this is
+      // unambiguous when the user is already SSO-bound. Skipping
+      // `loadUserByEmail` here also avoids the multi-org-collision path
+      // entirely for the common case (user already signed in once).
+      const ssoMatched = await loadUserBySsoIdentity(
+        account.provider,
+        account.providerAccountId,
+      );
+      if (ssoMatched) {
+        return true;
+      }
+
+      // No SSO-bound row matches. Fall back to email lookup (REQ-11 array
+      // return) to handle:
+      //   - bootstrap (0 rows for this email)
+      //   - fill-sso  (1 row with ssoProvider IS NULL — legacy invite-
+      //                provisioned user's first SSO login)
+      //   - reject-mismatch (1 row with mismatched ssoProvider/subject —
+      //                Threat 11 partial mitigation; full refusal flow is
+      //                spec (b))
+      //   - ambiguous-multi-org (≥2 rows — same email across orgs, post
+      //                schema-migrations REQ-1; org-picker UX in spec (b))
+      const existingRows = await db
         .select({ ssoProvider: users.ssoProvider, ssoSubject: users.ssoSubject })
         .from(users)
         .where(eq(users.email, user.email))
-        .limit(1);
+        .orderBy(asc(users.createdAt));
 
       const decision = evaluateSignIn(
         { provider: account.provider, providerAccountId: account.providerAccountId },
-        row ?? null,
+        existingRows,
       );
 
       switch (decision.kind) {
@@ -157,6 +181,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           // to `emailDomain` (TASK-3) so the audit signal is consistent
           // with the redemption-log conventions.
           logger.warn('signIn rejected: SSO provider/subject mismatch on existing email', {
+            provider: account.provider,
+            emailDomain: emailDomain(user.email),
+          });
+          return false;
+        case 'ambiguous-multi-org':
+          // TASK-3 transitional: the email maps to ≥2 orgs (now legal
+          // post-REQ-1). The full UX (org picker) lands in a follow-up
+          // backend spec; until then we reject + warn so operators can
+          // see the surface in logs. Domain only — never the full email.
+          logger.warn('signIn rejected: email maps to multiple orgs (org-picker UX not yet wired)', {
             provider: account.provider,
             emailDomain: emailDomain(user.email),
           });
@@ -202,11 +236,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
       const email = typeof token.email === 'string' ? token.email : null;
       if (email) {
+        // TASK-3 transitional (REQ-11): `loadUserByEmail` now returns
+        // `LoadedUser[]` ordered by created_at ASC. For the single-org
+        // case the array is length 1 (or 0). The multi-org case (≥2) is
+        // surfaced as a warn here and the oldest row is picked — the
+        // full org-picker UX lands in a follow-up backend spec.
         const loaded = await loadUserByEmail(email);
-        if (loaded) {
-          token.userId = loaded.userId;
-          token.role = loaded.role;
-          token.orgId = loaded.orgId;
+        if (loaded.length >= 2) {
+          logger.warn('jwt: email maps to multiple orgs; picking oldest (org-picker UX not yet wired)', {
+            emailDomain: emailDomain(email),
+            orgCount: loaded.length,
+          });
+        }
+        const picked = loaded[0];
+        if (picked) {
+          token.userId = picked.userId;
+          token.role = picked.role;
+          token.orgId = picked.orgId;
         } else {
           // Hardening (security review C2): when DB lookup returns null,
           // do NOT preserve any pre-existing userId/role/orgId on the
