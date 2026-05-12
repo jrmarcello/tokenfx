@@ -14,11 +14,25 @@
  *     onboarding_invites.org_id`) AND that this specific manager has not
  *     yet acknowledged. Returns `null` when there are zero unacked events.
  *
- *   - `acknowledgeAlert(db, managerId, kind, eventId)` — idempotent
- *     INSERT into `manager_alert_acks` with ON CONFLICT DO NOTHING. The
- *     ON-CONFLICT branch preserves the FIRST `acked_at` timestamp — that
- *     is the forensic invariant ("when did each admin FIRST see this
+ *   - `acknowledgeAlert(db, managerId, kind, eventId, orgId)` — idempotent
+ *     INSERT into `manager_alert_acks` with ON CONFLICT DO NOTHING + an
+ *     org-scope predicate (`WHERE EXISTS (... AND i.org_id = $orgId)`).
+ *     The ON-CONFLICT branch preserves the FIRST `acked_at` timestamp —
+ *     that is the forensic invariant ("when did each admin FIRST see this
  *     event"), so subsequent re-acks are silent no-ops by design.
+ *     The org predicate atomically encodes the invariant "ack only if
+ *     the event belongs to this org" — a tampered form payload pointing
+ *     at a cross-org event_id is silently rejected (0 rows inserted)
+ *     WITHOUT leaking the fact that the event exists in another org.
+ *     Security context: `.specs/fix-manager-alert-ack-org-scoping.md`
+ *     (closes M2 from PAUSE 2 of the manager-ui spec).
+ *
+ *     **Predicate scope**: the current `WHERE EXISTS` is valid ONLY for
+ *     `alert_kind = 'first-auto-provision'` (it joins via the redemption-
+ *     log → invite → org chain). If a future alert kind is added whose
+ *     events do NOT originate from `onboarding_redemption_log`, DO NOT
+ *     extend this function — introduce a new function OR add a
+ *     `switch (alertKind)` choosing the correct predicate.
  *
  *   - `formatBannerCount(count)` — pure helper for unit tests + the UI
  *     copy. Maps `0 → null`, `1 → singular`, `N > 1 → plural`.
@@ -150,39 +164,73 @@ export const loadFirstAutoProvisionAlert = async (
 };
 
 /**
- * Idempotent INSERT into `manager_alert_acks`. The composite primary key
- * `(manager_user_id, alert_kind, event_id)` combined with
- * `ON CONFLICT DO NOTHING` guarantees:
+ * Idempotent INSERT into `manager_alert_acks` with org-scope predicate.
+ *
+ * Composite primary key `(manager_user_id, alert_kind, event_id)` combined
+ * with `ON CONFLICT DO NOTHING` guarantees:
  *
  *   - First call writes a row with `acked_at = now()`.
  *   - Subsequent calls with the same triple are no-ops; `acked_at` of the
  *     existing row is preserved (forensic invariant).
  *
+ * The `WHERE EXISTS` predicate enforces "event belongs to `orgId`":
+ *
+ *   INSERT ... SELECT ... WHERE EXISTS (
+ *     SELECT 1 FROM onboarding_redemption_log r
+ *     JOIN onboarding_invites i ON r.token_prefix = LEFT(i.token, 8)
+ *     WHERE r.id = $eventId AND i.org_id = $orgId
+ *   ) ON CONFLICT DO NOTHING
+ *
+ * - Predicate false (cross-org event_id) → INSERT inserts 0 rows; caller
+ *   receives no error.
+ * - ON CONFLICT (re-ack of legitimate event) → also 0 rows; identical
+ *   shape from the caller's perspective (idempotent contract preserved).
+ * - The two rejection paths look identical to the caller — silent ignore
+ *   is deliberate (info-leak primitive avoidance — see security context
+ *   in module docstring).
+ *
+ * SQL is parameterized via Drizzle's `sql` tag (no string interpolation
+ * of values). Pattern precedent: `lib/queries/overview.ts`,
+ * `lib/cron/cleanup-audit-ips.ts` both use `db.execute(sql\`...\`)`.
+ *
  * Role gating is the Server Action's job (see module docstring).
  *
- * `inArray` is intentionally not used — this is a single-row upsert. The
- * `eq`-based path benefits from the composite PK without scanning.
+ * @param orgId — the manager's org. The caller (Server Action) reads
+ *   this from `session.user.orgId`. Pass an empty string to deliberately
+ *   reject (fail-safe), but the action's auth-narrow MUST reject missing
+ *   orgId before this function is called.
  */
 export const acknowledgeAlert = async (
   db: Db,
   managerId: string,
   alertKind: AlertKind,
   eventId: number,
+  orgId: string,
 ): Promise<void> => {
-  await db
-    .insert(managerAlertAcks)
-    .values({
-      managerUserId: managerId,
-      alertKind,
-      eventId,
-    })
-    .onConflictDoNothing({
-      target: [
-        managerAlertAcks.managerUserId,
-        managerAlertAcks.alertKind,
-        managerAlertAcks.eventId,
-      ],
-    });
+  // Fail-safe: empty orgId would crash Postgres on `''::uuid`. The
+  // Server Action's auth-narrow guarantees orgId is non-empty before
+  // this point, but defensive early-return preserves silent-ignore
+  // semantics for any future caller that drops the guard.
+  if (orgId.length === 0) {
+    return;
+  }
+  // The `::uuid` / `::bigint` casts after each `${...}` binding are
+  // required because the SELECT has no FROM clause — Postgres cannot
+  // infer the target column types from a placeholder alone. The casts
+  // make the bound parameter types explicit. Drizzle's `sql` tag still
+  // parameterizes the value; the cast is appended to the placeholder.
+  await db.execute(sql`
+    INSERT INTO manager_alert_acks (manager_user_id, alert_kind, event_id)
+    SELECT ${managerId}::uuid, ${alertKind}, ${eventId}::bigint
+    WHERE EXISTS (
+      SELECT 1
+      FROM onboarding_redemption_log r
+      JOIN onboarding_invites i ON r.token_prefix = LEFT(i.token, 8)
+      WHERE r.id = ${eventId}::bigint
+        AND i.org_id = ${orgId}::uuid
+    )
+    ON CONFLICT (manager_user_id, alert_kind, event_id) DO NOTHING
+  `);
 };
 
 /**

@@ -41,6 +41,7 @@ type AckCall = {
   managerId: string;
   kind: 'first-auto-provision';
   eventId: number;
+  orgId: string;
 };
 
 const makeAckSpy = () => {
@@ -50,8 +51,9 @@ const makeAckSpy = () => {
     managerId: string,
     kind: 'first-auto-provision',
     eventId: number,
+    orgId: string,
   ): Promise<void> => {
-    calls.push({ managerId, kind, eventId });
+    calls.push({ managerId, kind, eventId, orgId });
   };
   return { calls, fn };
 };
@@ -88,8 +90,38 @@ describe('acknowledgeFirstAutoProvisionImpl', () => {
       managerId: ACTOR_ID,
       kind: 'first-auto-provision',
       eventId: 42,
+      orgId: ORG_ID,
     });
     expect(revalidate.calls).toEqual(['/manager']);
+  });
+
+  // TC-U-02 (fix-manager-alert-ack-org-scoping) — defensive narrow on
+  // missing session.user.orgId. A session with userId + role manager but
+  // orgId undefined must return unauthorized without invoking ack.
+  it('returns unauthorized and never invokes ack when session.user.orgId is missing', async () => {
+    const ack = makeAckSpy();
+    const revalidate = makeRevalidateSpy();
+    const sessionWithoutOrg: Session = {
+      // Deliberately omit orgId to exercise the defensive narrow. The
+      // cast is narrowed to `Session['user']` (not `never`) so a future
+      // change to the Session shape surfaces as a type error here.
+      user: { id: ACTOR_ID, email: 'mgr@x', role: 'manager' } as unknown as Session['user'],
+      expires: '2099-01-01',
+    };
+
+    const result = await acknowledgeFirstAutoProvisionImpl(
+      buildFormData({ event_id: '42' }),
+      {
+        authFn: stubAuth(sessionWithoutOrg),
+        revalidatePathFn: revalidate.fn,
+        acknowledgeFn: ack.fn,
+        db: {} as never,
+      },
+    );
+
+    expect(result).toEqual({ ok: false, code: 'unauthorized' });
+    expect(ack.calls).toHaveLength(0);
+    expect(revalidate.calls).toHaveLength(0);
   });
 
   it('accepts admin role just like manager (defense-in-depth role gate)', async () => {

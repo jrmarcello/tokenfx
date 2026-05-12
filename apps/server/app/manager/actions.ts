@@ -65,6 +65,7 @@ export type AcknowledgeFirstAutoProvisionImplDeps = {
     managerId: string,
     kind: 'first-auto-provision',
     eventId: number,
+    orgId: string,
   ) => Promise<void>;
   /** Test seam — defaults to the real `getDb()` */
   db?: ReturnType<typeof getDb>;
@@ -81,7 +82,13 @@ export const acknowledgeFirstAutoProvisionImpl = async (
   const session = await deps.authFn();
   const role = session?.user?.role;
   const userId = session?.user?.id;
-  if (!userId || (role !== 'manager' && role !== 'admin')) {
+  const orgId = session?.user?.orgId;
+  // Defensive narrow: a session with a manager/admin role ALWAYS carries
+  // orgId in our auth.config wiring, but the typed narrow eliminates a
+  // class of "what if orgId is missing" bugs at the call site below.
+  // Returning `unauthorized` keeps the response shape identical to the
+  // other auth-narrow failures (no info-leak about session shape).
+  if (!userId || !orgId || (role !== 'manager' && role !== 'admin')) {
     return { ok: false, code: 'unauthorized' };
   }
 
@@ -94,7 +101,11 @@ export const acknowledgeFirstAutoProvisionImpl = async (
 
   const ack = deps.acknowledgeFn ?? acknowledgeAlert;
   const db = deps.db ?? getDb();
-  await ack(db, userId, 'first-auto-provision', parsed.data.event_id);
+  // `orgId` flows into the query so the WHERE EXISTS predicate can
+  // reject tampered form payloads pointing to cross-org event_ids
+  // (silent ignore — see security context in
+  // .specs/fix-manager-alert-ack-org-scoping.md).
+  await ack(db, userId, 'first-auto-provision', parsed.data.event_id, orgId);
 
   deps.revalidatePathFn('/manager');
   return { ok: true };

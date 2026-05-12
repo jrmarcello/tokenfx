@@ -24,7 +24,8 @@
  *   - Real testcontainers Postgres; every test cleans up via afterEach.
  *   - Natural-English `it` names, TC-ID embedded for traceability.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { log as logger } from '@root/logger';
 import { and, eq, sql } from 'drizzle-orm';
 
 import { closeDb, getDb } from '@/lib/db/client';
@@ -259,7 +260,7 @@ skipDescribe('manager-alerts queries (Postgres integration)', () => {
     await seedInvite({ orgId, token });
     const { id } = await seedRedemption({ tokenPrefix: token.slice(0, 8) });
 
-    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', id);
+    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', id, orgId);
 
     const result = await loadFirstAutoProvisionAlert(getDb(), orgId, managerId);
     expect(result).toBeNull();
@@ -275,7 +276,7 @@ skipDescribe('manager-alerts queries (Postgres integration)', () => {
     await seedInvite({ orgId, token });
     const { id: firstId } = await seedRedemption({ tokenPrefix: token.slice(0, 8) });
 
-    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', firstId);
+    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', firstId, orgId);
     // Banner hidden:
     expect(await loadFirstAutoProvisionAlert(getDb(), orgId, managerId)).toBeNull();
 
@@ -298,7 +299,7 @@ skipDescribe('manager-alerts queries (Postgres integration)', () => {
     await seedInvite({ orgId, token });
     const { id } = await seedRedemption({ tokenPrefix: token.slice(0, 8) });
 
-    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', id);
+    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', id, orgId);
     const db = getDb();
     const [first] = await db
       .select({ ackedAt: managerAlertAcks.ackedAt })
@@ -315,7 +316,7 @@ skipDescribe('manager-alerts queries (Postgres integration)', () => {
     // if ON CONFLICT was DO UPDATE instead of DO NOTHING.
     await new Promise((r) => setTimeout(r, 25));
 
-    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', id);
+    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', id, orgId);
     const [second] = await db
       .select({ ackedAt: managerAlertAcks.ackedAt })
       .from(managerAlertAcks)
@@ -365,7 +366,7 @@ skipDescribe('manager-alerts queries (Postgres integration)', () => {
       receivedAt: new Date(Date.now() - 1 * 60 * 60 * 1000),
     });
 
-    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', b);
+    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', b, orgId);
 
     const result = await loadFirstAutoProvisionAlert(getDb(), orgId, managerId);
     expect(result).not.toBeNull();
@@ -414,7 +415,7 @@ skipDescribe('manager-alerts queries (Postgres integration)', () => {
 
     // The helper accepts any caller. Role gating belongs in the Server Action.
     await expect(
-      acknowledgeAlert(getDb(), memberId, 'first-auto-provision', id),
+      acknowledgeAlert(getDb(), memberId, 'first-auto-provision', id, orgId),
     ).resolves.toBeUndefined();
 
     const rows = await getDb()
@@ -428,5 +429,200 @@ skipDescribe('manager-alerts queries (Postgres integration)', () => {
         ),
       );
     expect(rows).toHaveLength(1);
+  });
+
+  // ===========================================================================
+  // fix-manager-alert-ack-org-scoping — cross-org rejection + edge cases.
+  // ===========================================================================
+
+  // TC-AO-01 (ack-org-scoping spec) — happy path: same-org ack inserts 1 row.
+  it('inserts an ack row when event_id belongs to the manager org', async () => {
+    const { orgId } = await seedOrg();
+    const { userId: managerId } = await seedUser({ orgId, email: 'mgr@ack01.example', role: 'manager' });
+    const token = makeToken('ack-org-01');
+    await seedInvite({ orgId, token });
+    const { id } = await seedRedemption({ tokenPrefix: token.slice(0, 8) });
+
+    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', id, orgId);
+
+    const rows = await getDb()
+      .select()
+      .from(managerAlertAcks)
+      .where(eq(managerAlertAcks.eventId, id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].managerUserId).toBe(managerId);
+    expect(rows[0].ackedAt).toBeInstanceOf(Date);
+  });
+
+  // TC-AO-02 (ack-org-scoping spec) — cross-org: manager A acking Org B event → 0 rows.
+  it('silently rejects ack when event_id belongs to a different org (cross-org attack)', async () => {
+    const { orgId: orgAId } = await seedOrg();
+    const { orgId: orgBId } = await seedOrg();
+    const { userId: managerA } = await seedUser({ orgId: orgAId, email: 'mgr-a@ack02.example', role: 'manager' });
+    const tokenB = makeToken('ack-org-02-b');
+    await seedInvite({ orgId: orgBId, token: tokenB });
+    const { id: eventB } = await seedRedemption({ tokenPrefix: tokenB.slice(0, 8) });
+
+    await acknowledgeAlert(getDb(), managerA, 'first-auto-provision', eventB, orgAId);
+
+    const rows = await getDb()
+      .select()
+      .from(managerAlertAcks)
+      .where(eq(managerAlertAcks.eventId, eventB));
+    expect(rows).toHaveLength(0);
+  });
+
+  // TC-AO-03 (ack-org-scoping spec) — idempotent re-ack preserves first ackedAt timestamp.
+  it('preserves the first ackedAt timestamp on re-ack of the same event', async () => {
+    const { orgId } = await seedOrg();
+    const { userId: managerId } = await seedUser({ orgId, email: 'mgr@ack03.example', role: 'manager' });
+    const token = makeToken('ack-org-03');
+    await seedInvite({ orgId, token });
+    const { id } = await seedRedemption({ tokenPrefix: token.slice(0, 8) });
+
+    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', id, orgId);
+    const first = await getDb()
+      .select()
+      .from(managerAlertAcks)
+      .where(eq(managerAlertAcks.eventId, id));
+    expect(first).toHaveLength(1);
+    const firstAt = first[0].ackedAt;
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', id, orgId);
+    const second = await getDb()
+      .select()
+      .from(managerAlertAcks)
+      .where(eq(managerAlertAcks.eventId, id));
+    expect(second).toHaveLength(1);
+    expect(second[0].ackedAt.getTime()).toBe(firstAt.getTime());
+  });
+
+  // TC-AO-04 (ack-org-scoping spec) — forensic isolation: acking eventA leaves eventB unacked.
+  it('keeps a second same-org event unacked when only the first is acknowledged', async () => {
+    const { orgId } = await seedOrg();
+    const { userId: managerId } = await seedUser({ orgId, email: 'mgr@ack04.example', role: 'manager' });
+    const token = makeToken('ack-org-04');
+    await seedInvite({ orgId, token });
+    const { id: eventA } = await seedRedemption({ tokenPrefix: token.slice(0, 8) });
+    const { id: eventB } = await seedRedemption({ tokenPrefix: token.slice(0, 8) });
+
+    await acknowledgeAlert(getDb(), managerId, 'first-auto-provision', eventA, orgId);
+
+    const ackedRows = await getDb()
+      .select()
+      .from(managerAlertAcks)
+      .where(eq(managerAlertAcks.managerUserId, managerId));
+    expect(ackedRows.map((r) => r.eventId).sort()).toEqual([eventA].sort());
+
+    const alert = await loadFirstAutoProvisionAlert(getDb(), orgId, managerId);
+    expect(alert?.count).toBe(1);
+    expect(alert?.events.map((e) => e.eventId)).toEqual([eventB]);
+  });
+
+  // TC-AO-05 (ack-org-scoping spec) — positive predicate arm under a different (org, manager, event) tuple.
+  it('accepts an ack from manager B in Org B for an Org B event', async () => {
+    const { orgId: orgBId } = await seedOrg();
+    const { userId: managerB } = await seedUser({ orgId: orgBId, email: 'mgr-b@ack05.example', role: 'manager' });
+    const tokenB = makeToken('ack-org-05-b');
+    await seedInvite({ orgId: orgBId, token: tokenB });
+    const { id: eventB } = await seedRedemption({ tokenPrefix: tokenB.slice(0, 8) });
+
+    await acknowledgeAlert(getDb(), managerB, 'first-auto-provision', eventB, orgBId);
+
+    const rows = await getDb()
+      .select()
+      .from(managerAlertAcks)
+      .where(eq(managerAlertAcks.eventId, eventB));
+    expect(rows).toHaveLength(1);
+  });
+
+  // TC-AO-06 (ack-org-scoping spec) — method=manual-token does NOT bypass the cross-org predicate.
+  it('still rejects cross-org when the event method is manual-token (not sso-auto)', async () => {
+    const { orgId: orgAId } = await seedOrg();
+    const { orgId: orgBId } = await seedOrg();
+    const { userId: managerA } = await seedUser({ orgId: orgAId, email: 'mgr-a@ack06.example', role: 'manager' });
+    const tokenB = makeToken('ack-org-06-b');
+    await seedInvite({ orgId: orgBId, token: tokenB });
+    const { id: eventB } = await seedRedemption({
+      tokenPrefix: tokenB.slice(0, 8),
+      method: 'manual-token',
+    });
+
+    await acknowledgeAlert(getDb(), managerA, 'first-auto-provision', eventB, orgAId);
+
+    const rows = await getDb()
+      .select()
+      .from(managerAlertAcks)
+      .where(eq(managerAlertAcks.eventId, eventB));
+    expect(rows).toHaveLength(0);
+  });
+
+  // TC-AO-07 (ack-org-scoping spec) — non-existent event_id silently no-ops (WHERE EXISTS false).
+  it('silently no-ops when event_id does not exist in onboarding_redemption_log', async () => {
+    const { orgId } = await seedOrg();
+    const { userId: managerId } = await seedUser({ orgId, email: 'mgr@ack07.example', role: 'manager' });
+
+    await expect(
+      acknowledgeAlert(getDb(), managerId, 'first-auto-provision', 999_999_999, orgId),
+    ).resolves.toBeUndefined();
+
+    const rows = await getDb()
+      .select()
+      .from(managerAlertAcks)
+      .where(eq(managerAlertAcks.eventId, 999_999_999));
+    expect(rows).toHaveLength(0);
+  });
+
+  // TC-AO-08 (ack-org-scoping spec) — orgId='' fail-safe (0 rows, no throw on ''::uuid cast).
+  it('fails safe (0 rows, no throw) when orgId is an empty string', async () => {
+    const { orgId } = await seedOrg();
+    const { userId: managerId } = await seedUser({ orgId, email: 'mgr@ack08.example', role: 'manager' });
+    const token = makeToken('ack-org-08');
+    await seedInvite({ orgId, token });
+    const { id } = await seedRedemption({ tokenPrefix: token.slice(0, 8) });
+
+    await expect(
+      acknowledgeAlert(getDb(), managerId, 'first-auto-provision', id, ''),
+    ).resolves.toBeUndefined();
+
+    const rows = await getDb()
+      .select()
+      .from(managerAlertAcks)
+      .where(eq(managerAlertAcks.eventId, id));
+    expect(rows).toHaveLength(0);
+  });
+
+  // TC-AO-09 (ack-org-scoping spec) — privacy invariant: cross-org rejection emits NO log entry.
+  it('does not log anything on cross-org rejection (privacy posture)', async () => {
+    const { orgId: orgAId } = await seedOrg();
+    const { orgId: orgBId } = await seedOrg();
+    const { userId: managerA } = await seedUser({ orgId: orgAId, email: 'mgr-a@ack09.example', role: 'manager' });
+    const tokenB = makeToken('ack-org-09-b');
+    await seedInvite({ orgId: orgBId, token: tokenB });
+    const { id: eventB } = await seedRedemption({ tokenPrefix: tokenB.slice(0, 8) });
+
+    // Spy setup BEFORE try-block so failed setup doesn't leak unrestored
+    // spies. The assertion is forward-looking: acknowledgeAlert today
+    // makes zero logger calls; a future regression that adds
+    // `logger.warn` on the rejection path would break the privacy
+    // posture, and THIS test would catch it.
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => {});
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    try {
+      await acknowledgeAlert(getDb(), managerA, 'first-auto-provision', eventB, orgAId);
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(infoSpy).not.toHaveBeenCalled();
+      expect(debugSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      infoSpy.mockRestore();
+      debugSpy.mockRestore();
+    }
   });
 });
