@@ -26,7 +26,6 @@
  */
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { z } from 'zod';
 import { auth } from '@/lib/auth/auth';
 import { getDb } from '@/lib/db/client';
 import {
@@ -34,78 +33,23 @@ import {
   type AuditLogFilters,
 } from '@/lib/queries/audit-log';
 import { AuditLogFilters as AuditLogFiltersForm } from './audit-log-filters';
+import {
+  OUTCOME_VALUES,
+  PAGE_SIZE,
+  auditLogSearchParamsSchema as searchParamsSchema,
+  type AuditLogOutcome,
+  type AuditLogSearchParams,
+} from './audit-log-page-params';
 
-/** Mirrors the `auth_event_log_outcome_check` CHECK constraint in schema.ts. */
-const OUTCOME_VALUES = [
-  'accepted-sso-auto',
-  'rejected-public-domain',
-  'rejected-multiple-matches',
-  'rejected-no-match',
-  'rejected-race',
-  'rejected-csrf',
-  'rejected-replay',
-  'rejected-cross-idp',
-  'rejected-pre-existing-binding',
-  'email-not-verified',
-] as const;
-
-export type AuditLogOutcome = (typeof OUTCOME_VALUES)[number];
-
-const MAX_TEXT_LEN = 200;
-const MAX_PAGE = 10_000;
-const PAGE_SIZE = 50;
-
-/**
- * Single source of truth for query-string parsing. `.catch(undefined)` /
- * `.catch(0)` makes every field bullet-proof against malformed input: the
- * page renders the first results page silently rather than surfacing a 4xx.
- */
-const searchParamsSchema = z.object({
-  page: z
-    .coerce.number()
-    .int()
-    .min(0)
-    .max(MAX_PAGE)
-    .catch(0),
-  outcome: z
-    .enum(OUTCOME_VALUES)
-    .optional()
-    .catch(undefined),
-  iss: z
-    .string()
-    .max(MAX_TEXT_LEN)
-    .optional()
-    .catch(undefined),
-  city: z
-    .string()
-    .max(MAX_TEXT_LEN)
-    .optional()
-    .catch(undefined),
-  browser: z
-    .string()
-    .max(MAX_TEXT_LEN)
-    .optional()
-    .catch(undefined),
-  from: z
-    .string()
-    .datetime({ offset: true })
-    .optional()
-    .catch(undefined),
-  to: z
-    .string()
-    .datetime({ offset: true })
-    .optional()
-    .catch(undefined),
-});
+// Re-export to preserve the public type contract for any external importer.
+export type { AuditLogOutcome };
 
 /**
  * Trim the URL down to `?key=value` pairs the user actively set. Empty
  * strings and `undefined` are dropped so the CSV export href is clean
  * (and so the back-button history doesn't accumulate noise).
  */
-const buildExportHref = (
-  parsed: z.infer<typeof searchParamsSchema>,
-): string => {
+const buildExportHref = (parsed: AuditLogSearchParams): string => {
   const params = new URLSearchParams();
   if (parsed.outcome) params.set('outcome', parsed.outcome);
   if (parsed.iss) params.set('iss', parsed.iss);

@@ -458,6 +458,29 @@ const normalizeEmail = (email: string): string =>
 // =============================================================================
 
 /**
+ * Pure predicate: does an invite's `allowedSsoProviders` list permit the
+ * requested provider?
+ *
+ * Legacy semantic (locked by .specs/central-server-onboarding-v2-sso.manager-ui.md
+ * §"Decisão #17 — write/read asymmetry"): an EMPTY `allowedSsoProviders`
+ * array means "any provider allowed" for backwards-compat with pre-spec-c
+ * invites. Non-empty array = strict allowlist enforced.
+ *
+ * Case-sensitive `.includes()` comparison — pins the contract; no
+ * normalization happens here (TC-U-03g asserts this explicitly).
+ *
+ * Extracted to a named export for isolated unit-testing per
+ * `.specs/sso-test-coverage-orphans.md` REQ-3.
+ */
+export const enforceAllowedProviders = (
+  invite: { allowedSsoProviders: ReadonlyArray<string> },
+  requestedProvider: string,
+): boolean => {
+  if (invite.allowedSsoProviders.length === 0) return true;
+  return invite.allowedSsoProviders.includes(requestedProvider);
+};
+
+/**
  * Decision-engine entry point. See module header for the full check
  * ordering + audit-log discipline.
  */
@@ -636,14 +659,10 @@ export const evaluateAutoProvision = async (
   const tokenPrefix = invite.token.slice(0, 8);
 
   // -----------------------------------------------------------------------
-  // Step 7: allowed_sso_providers (REQ-4). Empty array = legacy
-  // backwards-compat (any provider allowed). Non-empty + provider not in
-  // list → 'rejected-cross-idp'.
+  // Step 7: allowed_sso_providers (REQ-4) via `enforceAllowedProviders`
+  // predicate. Empty array = legacy backwards-compat (any provider allowed).
   // -----------------------------------------------------------------------
-  if (
-    invite.allowedSsoProviders.length > 0 &&
-    !invite.allowedSsoProviders.includes(input.ssoProvider)
-  ) {
+  if (!enforceAllowedProviders(invite, input.ssoProvider)) {
     await writeAuditRowsForRejection(deps, {
       outcome: 'rejected-cross-idp',
       tokenPrefix,

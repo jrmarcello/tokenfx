@@ -372,6 +372,62 @@ skipDescribe('GET /manager/teams/[id]/export (integration)', () => {
     }
   });
 
+  // TC-AO-23b (sso-test-coverage-orphans) — happy: `?provisioned_via=all`
+  // surfaces ALL provisioned_via types including the legacy
+  // `pre-v2-unknown` rows (users with no `user_machines` row).
+  it('surfaces sso-auto + manual-token + pre-v2-unknown rows under provisioned_via=all', async () => {
+    const session = makeSession('manager', f.managerAId, f.orgAId);
+    const res = await exportTeamRosterImpl(
+      makeReq(f.teamAId, '?provisioned_via=all'),
+      { params: { id: f.teamAId } },
+      { authFn: stubAuth(session), getTeamDetailFn: getTeamDetail },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    const { rows } = parseCsv(body);
+
+    // Seed has 5 fixture members (manualA, manualB, ssoA, ssoB, eve=pre-v2)
+    // + managerA + memberA = 7 users on teamA. `all` returns the whole set.
+    expect(rows).toHaveLength(7);
+
+    // Set-membership assertion: every seeded email_hash_prefix is present.
+    const observedPrefixes = new Set(rows.map((r) => r.split(',')[0]));
+    expect(observedPrefixes.has(hashEmail('alice@example.com').slice(0, 8))).toBe(true);
+    expect(observedPrefixes.has(hashEmail('charlie@example.com').slice(0, 8))).toBe(true);
+    expect(observedPrefixes.has(hashEmail('eve@example.com').slice(0, 8))).toBe(true);
+
+    // Verify the pre-v2-unknown row is actually labeled as such (not
+    // silently filtered or relabeled).
+    const evePrefix = hashEmail('eve@example.com').slice(0, 8);
+    const eveRow = rows.find((r) => r.startsWith(evePrefix));
+    expect(eveRow).toBeDefined();
+    if (eveRow !== undefined) {
+      const cells = eveRow.split(',');
+      expect(cells[1]).toBe('pre-v2-unknown');
+    }
+  });
+
+  // TC-AO-23c (sso-test-coverage-orphans) — business: omitting the
+  // `?provisioned_via` query string yields the same surface as `all`.
+  // Asserts the default INDEPENDENTLY of TC-AO-23b (own assertion, not
+  // a "result identical to" oracle).
+  it('omitting the provisioned_via query string defaults to all', async () => {
+    const session = makeSession('manager', f.managerAId, f.orgAId);
+    const res = await exportTeamRosterImpl(
+      makeReq(f.teamAId, ''),
+      { params: { id: f.teamAId } },
+      { authFn: stubAuth(session), getTeamDetailFn: getTeamDetail },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    const { rows } = parseCsv(body);
+    expect(rows).toHaveLength(7);
+    const observedPrefixes = new Set(rows.map((r) => r.split(',')[0]));
+    expect(observedPrefixes.has(hashEmail('alice@example.com').slice(0, 8))).toBe(true);
+    expect(observedPrefixes.has(hashEmail('charlie@example.com').slice(0, 8))).toBe(true);
+    expect(observedPrefixes.has(hashEmail('eve@example.com').slice(0, 8))).toBe(true);
+  });
+
   // ---------------------------------------------------------------------------
   // Auth/cross-org guards.
   // ---------------------------------------------------------------------------

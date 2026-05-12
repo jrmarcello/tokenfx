@@ -37,6 +37,7 @@ import {
   type FindPreExistingV1User,
   type ProvisionInTxInput,
   type ProvisionInTxResult,
+  enforceAllowedProviders,
   evaluateAutoProvision,
 } from './sso-auto-provision';
 
@@ -561,5 +562,54 @@ describe('evaluateAutoProvision (TASK-10)', () => {
     const result2 = err({ reason: 'transient' });
     expect(result1.ok).toBe(true);
     expect(result2.ok).toBe(false);
+  });
+});
+
+// =============================================================================
+// enforceAllowedProviders — pure predicate unit tests.
+//
+// Source: .specs/sso-test-coverage-orphans.md (REQ-3, TC-U-03a..g).
+// Extracted from the inline check inside `evaluateAutoProvision` so the
+// "empty array = any provider allowed" legacy semantic + case-sensitivity
+// contract are regression-protected at the unit level.
+// =============================================================================
+describe('enforceAllowedProviders', () => {
+  // TC-U-03a — legacy "any provider allowed" when array is empty.
+  it('returns true for ANY provider when allowedSsoProviders is empty (legacy any)', () => {
+    expect(enforceAllowedProviders({ allowedSsoProviders: [] }, 'google')).toBe(true);
+  });
+
+  // TC-U-03b — legacy any also covers non-google providers.
+  it('returns true for okta when allowedSsoProviders is empty', () => {
+    expect(enforceAllowedProviders({ allowedSsoProviders: [] }, 'okta')).toBe(true);
+  });
+
+  // TC-U-03c — single-provider allowlist permits the matching provider.
+  it('returns true when the single allowed provider matches', () => {
+    expect(enforceAllowedProviders({ allowedSsoProviders: ['google'] }, 'google')).toBe(true);
+  });
+
+  // TC-U-03d — single-provider allowlist rejects a different provider.
+  it('returns false when the single allowed provider does not match', () => {
+    expect(enforceAllowedProviders({ allowedSsoProviders: ['google'] }, 'okta')).toBe(false);
+  });
+
+  // TC-U-03e — multi-provider allowlist rejects a provider not in the list.
+  it('returns false when the requested provider is outside a multi-provider allowlist', () => {
+    expect(
+      enforceAllowedProviders({ allowedSsoProviders: ['google', 'okta'] }, 'microsoft'),
+    ).toBe(false);
+  });
+
+  // TC-U-03f — multi-provider allowlist accepts any provider in the list.
+  it('returns true when the requested provider is in a multi-provider allowlist', () => {
+    expect(
+      enforceAllowedProviders({ allowedSsoProviders: ['google', 'okta'] }, 'okta'),
+    ).toBe(true);
+  });
+
+  // TC-U-03g — case-sensitivity contract pinned: no normalization.
+  it('is case-sensitive: GOOGLE does not match google (no normalization in the predicate)', () => {
+    expect(enforceAllowedProviders({ allowedSsoProviders: ['google'] }, 'GOOGLE')).toBe(false);
   });
 });

@@ -25,6 +25,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Session } from 'next-auth';
 import {
+  allowedSsoProvidersSchema,
   createInviteImpl,
   revokeInviteImpl,
   type AuthFn,
@@ -705,4 +706,62 @@ describe('revokeInviteImpl', () => {
       expect(calls).toHaveLength(0);
     },
   );
+});
+
+// =============================================================================
+// allowedSsoProvidersSchema — standalone unit tests.
+//
+// Source: .specs/sso-test-coverage-orphans.md (REQ-1, TC-U-01a..g).
+// The schema is extracted to a named export so a regression that breaks
+// `.min(1)` or `.transform(dedup)` is caught directly, not subsumed by
+// the action-layer integration TCs above.
+// =============================================================================
+describe('allowedSsoProvidersSchema (standalone)', () => {
+  // TC-U-01a — happy: single supported provider parses.
+  it('accepts a single supported provider', () => {
+    expect(allowedSsoProvidersSchema.parse(['google'])).toEqual(['google']);
+  });
+
+  // TC-U-01b — happy: multi-provider preserves insertion order.
+  it('accepts multiple supported providers in original order', () => {
+    expect(allowedSsoProvidersSchema.parse(['google', 'okta'])).toEqual(['google', 'okta']);
+  });
+
+  // TC-U-01c — validation: empty array rejected with too_small.
+  it('rejects an empty array (safeParse) with too_small error code', () => {
+    const result = allowedSsoProvidersSchema.safeParse([]);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].code).toBe('too_small');
+    }
+  });
+
+  // TC-U-01d — validation: unknown provider rejected. Zod 4 emits
+  // `invalid_value` (renamed from Zod 3's `invalid_enum_value`).
+  it('rejects an unknown provider (safeParse) with invalid_value error code', () => {
+    const result = allowedSsoProvidersSchema.safeParse(['nonexistent']);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].code).toBe('invalid_value');
+    }
+  });
+
+  // TC-U-01e — business: duplicates deduped (Set first-seen).
+  it('dedupes duplicates (Set first-seen semantics)', () => {
+    expect(allowedSsoProvidersSchema.parse(['google', 'google'])).toEqual(['google']);
+  });
+
+  // TC-U-01f — business: dedup preserves first-seen order across mixed values.
+  it('dedupes a longer sequence while preserving first-seen order', () => {
+    expect(
+      allowedSsoProvidersSchema.parse(['google', 'okta', 'google']),
+    ).toEqual(['google', 'okta']);
+  });
+
+  // TC-U-01g — validation: .parse() throws on invalid input.
+  // Pins that this schema does NOT use .catch(); .parse() MUST throw on
+  // empty input. Complements TC-U-01c which exercises the .safeParse path.
+  it('parse() throws ZodError on an empty array (no .catch() configured)', () => {
+    expect(() => allowedSsoProvidersSchema.parse([])).toThrow();
+  });
 });
