@@ -13,7 +13,96 @@ import { getDb } from '@/lib/db/client';
 import { orgs, users } from '@/lib/db/schema';
 import { emailDomain } from './email-hash';
 import { evaluateSignIn, loadUserByEmail, loadUserBySsoIdentity } from './load-user';
+import { matchActiveInvitesByEmail } from './match-active-invites';
+import { evaluateAutoProvision } from './sso-auto-provision';
 import { log as logger } from '@root/logger';
+
+/**
+ * SECURITY note: this helper extracts the `iss` claim from a JWT WITHOUT
+ * verifying the token signature. That is intentional — NextAuth v5
+ * signature-verifies the `id_token` upstream of the signIn callback (against
+ * the provider's JWKS) before this code path runs. If a future regression in
+ * NextAuth or a custom provider misconfiguration bypasses upstream
+ * verification, an attacker could forge any `iss`. Defense-in-depth: the
+ * orchestrator's whitelist check (`evaluateAutoProvision` step 2) rejects
+ * unknown issuers, but it trusts the claim as authentic — so the security
+ * boundary is "NextAuth verified the token". Treat this helper purely as a
+ * claim-extraction utility, never as an authentication primitive.
+ *
+ * Extract the OIDC `iss` claim from a NextAuth Account.
+ *
+ * NextAuth v5's `Account` shape varies per provider. For OAuth/OIDC providers,
+ * the issuer can land in two places:
+ *   1. `account.id_token` — a JWT whose middle segment is base64-url-encoded
+ *      JSON. We decode and read `iss` from the claims.
+ *   2. `account.iss` — NextAuth sometimes surfaces it directly (provider-
+ *      dependent).
+ *
+ * Returns empty string when neither is present. The downstream decision
+ * engine treats empty/unknown issuers as 'rejected-csrf' via the whitelist
+ * check.
+ */
+const extractIssuer = (account: Record<string, unknown> | null): string => {
+  if (!account) return '';
+  const direct = account.iss;
+  if (typeof direct === 'string' && direct.length > 0) return direct;
+  const idToken = account.id_token;
+  if (typeof idToken !== 'string') return '';
+  const segments = idToken.split('.');
+  if (segments.length < 2) return '';
+  try {
+    // Base64url → JSON. Node's Buffer handles the url-safe alphabet via
+    // `from(..., 'base64url')`.
+    const payloadJson = Buffer.from(segments[1], 'base64url').toString('utf-8');
+    const payload = JSON.parse(payloadJson) as { iss?: unknown };
+    if (typeof payload.iss === 'string') return payload.iss;
+  } catch {
+    // Malformed id_token: treat as missing — caller's whitelist check will
+    // reject. We deliberately do NOT log the raw token; just fall through.
+  }
+  return '';
+};
+
+/**
+ * Extract `email_verified` from a NextAuth Account/User pair.
+ *
+ * Mirrors `extractIssuer` — checks `account.id_token` claims first, falls
+ * back to a top-level `email_verified` on either object. Default is `false`
+ * (security default — unverified email never auto-provisions per REQ-2a).
+ */
+const extractEmailVerified = (
+  account: Record<string, unknown> | null,
+  user: Record<string, unknown> | null,
+): boolean => {
+  if (account) {
+    const direct = account.email_verified;
+    if (typeof direct === 'boolean') return direct;
+    const idToken = account.id_token;
+    if (typeof idToken === 'string') {
+      const segments = idToken.split('.');
+      if (segments.length >= 2) {
+        try {
+          const payloadJson = Buffer.from(segments[1], 'base64url').toString(
+            'utf-8',
+          );
+          const payload = JSON.parse(payloadJson) as {
+            email_verified?: unknown;
+          };
+          if (typeof payload.email_verified === 'boolean') {
+            return payload.email_verified;
+          }
+        } catch {
+          // ignore malformed token; fall through to default
+        }
+      }
+    }
+  }
+  if (user) {
+    const fromUser = user.email_verified;
+    if (typeof fromUser === 'boolean') return fromUser;
+  }
+  return false;
+};
 
 // Fail-fast on missing auth secret in production. Auth.js v5 falls back to a
 // transient generated secret in dev (with only a console.warn); in production
@@ -196,7 +285,70 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           });
           return false;
         case 'bootstrap': {
-          // No row yet — single-org bootstrap. Reject if 0 or >1 orgs.
+          // central-server-onboarding-v2-sso (TASK-11): try SSO-auto-provision
+          // FIRST. If the email matches an active invite's `email_pattern`,
+          // delegate to the decision engine (issuer/audience/email_verified
+          // checks, public-domain blocklist, transactional invite consumption,
+          // audit-log writes). The orchestrator inserts the `users` row inside
+          // its own tx; we just return true on accept.
+          //
+          // NOTE on `account.audience`: NextAuth v5's `Account` type exposes
+          // some OIDC claims directly and others only via the raw id_token.
+          // We pass an empty string for `audience` when missing — the decision
+          // engine's clientId check will then surface as 'rejected-csrf' for
+          // forged callbacks, which is the desired behavior.
+          //
+          // TODO(spec b follow-up): IP / user-agent are NOT available in the
+          // NextAuth signIn callback (no request context). We pass empty
+          // strings; downstream audit rows have ip='', user_agent='', city=NULL.
+          // A future spec can thread request context via AsyncLocalStorage
+          // from the route handler so Threat-4 forensics are complete.
+          const matches = await matchActiveInvitesByEmail(user.email);
+          if (matches.length >= 1) {
+            // NextAuth v5's Account type doesn't expose OIDC `audience` / `iss`
+            // claims directly; cast to Record<string, unknown> so the extract*
+            // helpers can probe them safely without `any`. Each access is
+            // narrowed via typeof checks (no unchecked dereference).
+            const acctRecord = account as unknown as Record<string, unknown>;
+            const audienceRaw = acctRecord.audience;
+            const audience = typeof audienceRaw === 'string' ? audienceRaw : '';
+            const decision = await evaluateAutoProvision({
+              email: user.email,
+              ssoProvider: account.provider,
+              ssoSubject: account.providerAccountId,
+              ssoIssuer: extractIssuer(acctRecord),
+              audience,
+              emailVerified: extractEmailVerified(
+                acctRecord,
+                user as unknown as Record<string, unknown>,
+              ),
+              ip: '',
+              userAgent: '',
+              displayName: user.name ?? null,
+            });
+            if (decision.kind === 'accepted-sso-auto') {
+              // `users` + audit rows already written inside the orchestrator's
+              // tx. Machine credentials are minted by the standard bearer-auth
+              // flow on a subsequent request, mirroring the v1 bootstrap shape.
+              return true;
+            }
+            if (decision.kind === 'rate-limited') {
+              logger.warn('sso-auto-provision rate-limited at signIn', {
+                dimension: decision.dimension,
+                retry_after_sec: decision.retryAfterSec,
+                emailDomain: emailDomain(user.email),
+              });
+              return false;
+            }
+            // All other rejection kinds — domain only, never the full email.
+            logger.warn('sso-auto-provision rejected at signIn', {
+              kind: decision.kind,
+              emailDomain: emailDomain(user.email),
+            });
+            return false;
+          }
+          // No SSO-auto pattern match → fall through to v1 single-org
+          // bootstrap (preserved). Reject if 0 or >1 orgs.
           const allOrgs = await db.select({ id: orgs.id }).from(orgs).limit(2);
           if (allOrgs.length !== 1) {
             logger.warn('signIn rejected: org count not 1 (single-tenant bootstrap)', {

@@ -1,0 +1,37 @@
+name: Lint public-domains LAST_REVIEWED freshness
+
+on:
+  pull_request:
+    paths:
+      - 'apps/server/lib/auth/public-domains.ts'
+      - '.github/workflows/lint-public-domains.yml'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-public-domains:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify LAST_REVIEWED header is within 90 days
+        run: |
+          set -e
+          FILE="apps/server/lib/auth/public-domains.ts"
+          LINE=$(grep -E 'LAST_REVIEWED: [0-9]{4}-[0-9]{2}-[0-9]{2}' "$FILE" || true)
+          if [ -z "$LINE" ]; then
+            echo "::error::$FILE missing LAST_REVIEWED: YYYY-MM-DD header"
+            exit 1
+          fi
+          DATE=$(echo "$LINE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+          # Portable date diff (BSD + GNU): compute days via epoch
+          REVIEW_TS=$(date -d "$DATE" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$DATE" +%s)
+          NOW_TS=$(date +%s)
+          DIFF_DAYS=$(( (NOW_TS - REVIEW_TS) / 86400 ))
+          echo "LAST_REVIEWED=$DATE; age=${DIFF_DAYS} days"
+          if [ "$DIFF_DAYS" -gt 90 ]; then
+            echo "::error::$FILE LAST_REVIEWED ($DATE) is older than 90 days ($DIFF_DAYS days). Infra-team review required."
+            exit 1
+          fi

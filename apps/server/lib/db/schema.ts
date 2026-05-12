@@ -206,7 +206,13 @@ export const ingestionLog = pgTable(
 // Outcome enum is defined module-level (Drizzle requires this for pgEnum).
 // ---------------------------------------------------------------------------
 
+// Note (central-server-onboarding-v2-sso, migration 0004): the live PG enum
+// has been widened with 10 SSO-auto outcomes via `ALTER TYPE ADD VALUE`. The
+// Drizzle pgEnum declaration is purely type-level (no DDL generated) — we
+// widen it here so TypeScript accepts INSERTs with the new values via the
+// `redemption-log` writer used by the SSO auto-provision flow (TASK-10).
 export const onboardingOutcomeEnum = pgEnum('onboarding_outcome', [
+  // v1 values (migration 0001)
   'accepted',
   'token-invalid',
   'token-expired',
@@ -216,6 +222,17 @@ export const onboardingOutcomeEnum = pgEnum('onboarding_outcome', [
   'rate-limited',
   'validation-error',
   'infra-error',
+  // v2 SSO-auto values (migration 0004 — central-server-onboarding-v2-sso)
+  'accepted-sso-auto',
+  'rejected-public-domain',
+  'rejected-multiple-matches',
+  'rejected-no-match',
+  'rejected-race',
+  'rejected-csrf',
+  'rejected-replay',
+  'rejected-cross-idp',
+  'rejected-pre-existing-binding',
+  'email-not-verified',
 ]);
 
 export const onboardingAuditActionEnum = pgEnum('onboarding_audit_action', [

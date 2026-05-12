@@ -28,6 +28,7 @@ type DrizzleTx = Parameters<Parameters<Db['transaction']>[0]>[0];
  * test stubs reference the strings directly.
  */
 export type OnboardingOutcome =
+  // v1 values (migration 0001)
   | 'accepted'
   | 'token-invalid'
   | 'token-expired'
@@ -36,7 +37,20 @@ export type OnboardingOutcome =
   | 'email-mismatch'
   | 'rate-limited'
   | 'validation-error'
-  | 'infra-error';
+  | 'infra-error'
+  // v2 SSO-auto values (migration 0004 — central-server-onboarding-v2-sso).
+  // Inserted by the auto-provision flow (TASK-10) into
+  // `onboarding_redemption_log` with `method='sso-auto'`.
+  | 'accepted-sso-auto'
+  | 'rejected-public-domain'
+  | 'rejected-multiple-matches'
+  | 'rejected-no-match'
+  | 'rejected-race'
+  | 'rejected-csrf'
+  | 'rejected-replay'
+  | 'rejected-cross-idp'
+  | 'rejected-pre-existing-binding'
+  | 'email-not-verified';
 
 export type WriteRedemptionLogParams = {
   /** First 8 chars of the redeem token. The full token is NEVER logged. */
@@ -50,6 +64,21 @@ export type WriteRedemptionLogParams = {
   /** Truncated /24 (IPv4) or /48 (IPv6). Already redacted by the caller. */
   requestIp: string | null;
   outcome: OnboardingOutcome;
+  /**
+   * Provenance of this redemption row. 'manual-token' (default) for the v1
+   * invite-token redeem flow. 'sso-auto' for SSO auto-provision rows written
+   * by `evaluateAutoProvision` (central-server-onboarding-v2-sso, TASK-10).
+   * Constrained by the `onboarding_redemption_log_method_check` CHECK.
+   */
+  method?: 'manual-token' | 'sso-auto';
+  /** SSO context — populated only when `method='sso-auto'`. NULL otherwise. */
+  ssoProvider?: string | null;
+  /** Peppered SHA-256 hex of the SSO subject (`sub`). NEVER the raw value. */
+  ssoSubjectHash?: string | null;
+  /** OIDC issuer URL (`iss`). NULL for manual-token flow. */
+  iss?: string | null;
+  /** Full UA — caller is responsible for truncation if required at storage. */
+  userAgent?: string | null;
 };
 
 /**
@@ -70,5 +99,14 @@ export const writeRedemptionLog = async (
     emailHash: params.emailHash,
     requestIp: params.requestIp,
     outcome: params.outcome,
+    // Optional SSO-flow columns — omitted defaults to the column's own
+    // DEFAULT ('manual-token' for `method`; NULL for the SSO fields).
+    ...(params.method !== undefined ? { method: params.method } : {}),
+    ...(params.ssoProvider !== undefined ? { ssoProvider: params.ssoProvider } : {}),
+    ...(params.ssoSubjectHash !== undefined
+      ? { ssoSubjectHash: params.ssoSubjectHash }
+      : {}),
+    ...(params.iss !== undefined ? { iss: params.iss } : {}),
+    ...(params.userAgent !== undefined ? { userAgent: params.userAgent } : {}),
   });
 };

@@ -47,6 +47,22 @@ export const authConfig = {
     // so it remains Edge-safe. The Node-runtime `auth.ts` re-exports its
     // own session callback that does the same mirroring (with the JWT
     // pre-augmented by its `jwt()` callback's DB lookup).
+    /**
+     * REQ-17 (central-server-onboarding-v2-sso): `callbackUrl` allowlist.
+     *
+     * NextAuth's default `redirect` callback already strips `callbackUrl`
+     * values that point off-origin, but the contract is intentionally
+     * defensive here — same-origin absolute URLs and relative paths are
+     * preserved; anything else collapses to `baseUrl`. This blocks open-
+     * redirect chains via crafted `?callbackUrl=https://attacker.example`.
+     *
+     * Edge-safe: pure string ops, no DB hits.
+     */
+    redirect({ url, baseUrl }) {
+      if (url.startsWith(baseUrl)) return url;
+      if (url.startsWith('/')) return `${baseUrl}${url}`;
+      return baseUrl;
+    },
     session({ session, token }) {
       if (session.user) {
         if (typeof token.userId === 'string') {

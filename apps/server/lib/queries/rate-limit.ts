@@ -41,9 +41,28 @@
  * window has room — derived from the OLDEST in-window timestamp on the
  * exceeded dimension, rounded up.
  */
+/**
+ * Public dimension-name union. Extended in TASK-8 of the SSO onboarding
+ * spec (`central-server-onboarding-v2-sso.backend`) to cover the SSO
+ * rate-limit dimensions:
+ *
+ *   - `ip`               — pre-existing (redeem-flow, REQ-27 step 0).
+ *   - `token`            — pre-existing (redeem-flow, REQ-27 step 0).
+ *   - `email_hash`       — SSO anti-enumeration (Threat 6 M6.2).
+ *   - `sso_subject_hash` — SSO anti-cred-stuffing.
+ *
+ * Backwards-compatible widening — existing callers passing 'ip' / 'token'
+ * are unaffected.
+ */
+export type RateLimitDimensionName =
+  | 'ip'
+  | 'token'
+  | 'email_hash'
+  | 'sso_subject_hash';
+
 export type RateLimitResult =
   | { ok: true }
-  | { ok: false; retryAfterSec: number; dimension: 'ip' | 'token' };
+  | { ok: false; retryAfterSec: number; dimension: RateLimitDimensionName };
 
 /**
  * Caller-supplied dimension descriptor. The `name` field is part of the
@@ -52,7 +71,7 @@ export type RateLimitResult =
  * maximum number of requests within `windowMs`.
  */
 export type RateLimitDimensionInput = {
-  name: 'ip' | 'token';
+  name: RateLimitDimensionName;
   key: string;
   limit: number;
   windowMs: number;
@@ -65,15 +84,18 @@ export type RateLimitDimensionInput = {
  * lazily on each access.
  */
 type CounterMap = Map<string, number[]>;
-const counters: Map<'ip' | 'token', CounterMap> = new Map([
+const counters: Map<RateLimitDimensionName, CounterMap> = new Map([
   ['ip', new Map()],
   ['token', new Map()],
+  ['email_hash', new Map()],
+  ['sso_subject_hash', new Map()],
 ]);
 
-const getCounterMap = (name: 'ip' | 'token'): CounterMap => {
-  // Both 'ip' and 'token' are pre-seeded above; the assertion is structural,
-  // not value-dependent. We narrow with a concrete fallback to keep TS strict
-  // happy without `!` non-null assertions.
+const getCounterMap = (name: RateLimitDimensionName): CounterMap => {
+  // All known dimension names are pre-seeded above; the assertion is
+  // structural, not value-dependent. We narrow with a concrete fallback to
+  // keep TS strict happy without `!` non-null assertions and to remain
+  // safe if a future dimension is added without seeding.
   const existing = counters.get(name);
   if (existing) return existing;
   const fresh: CounterMap = new Map();
@@ -221,7 +243,7 @@ export const __resetRateLimits = (): void => {
  * memory-pruning test assert the upper bound without exposing the raw Map.
  */
 export const __counterSize = (
-  name: 'ip' | 'token',
+  name: RateLimitDimensionName,
   key: string,
 ): number => {
   const map = counters.get(name);

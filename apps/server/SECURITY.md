@@ -156,3 +156,40 @@ See `.specs/central-server-onboarding-v2-sso.threat-model.md`:
 - §Compliance §Tamper-evidence
 - §Threat 4 (IdP-breach forensics)
 - §Decisão #10 (REVOKE role-name strategy)
+
+## 6. Deferred E2E coverage
+
+The Playwright spec `apps/server/tests/e2e/sso-auto-provision.spec.ts` is
+shipped as a `test.describe.skip` placeholder with a module-level
+`console.warn`. Two cases are deferred:
+
+- **TC-E2E-01 / REQ-13** — full Google SSO sign-in completing the OAuth
+  round-trip and provisioning a `users` row. Blocked on the absence of a
+  stubbed Google OAuth IdP in the Playwright harness. The
+  `e2e-bypass-provider` (see `lib/auth/e2e-bypass-provider.ts`) is **not**
+  a valid substitute because it bypasses the `signIn` callback entirely
+  and therefore exercises neither the auto-provision orchestrator
+  (`lib/auth/sso-auto-provision.ts`) nor the audit-log writers.
+  **Compensating coverage:** TC-I-01..15 + TC-I-22..27
+  (`tests/integration/sso-auto-provision-flow.test.ts`) drive the same
+  signIn callback with a synthetic OAuth profile.
+
+- **TC-E2E-02 / REQ-16** — cross-origin POST to `/api/auth/signin`
+  returning HTTP 403 + writing a `rejected-csrf` audit row. Tractable
+  with the existing `global-setup.ts` (which already binds the dev
+  server to `127.0.0.1`) — only blocked on REQ-16 wiring (TASK-9 +
+  TASK-11). **Compensating coverage:** TC-I-28..30 + TC-I-44
+  (`tests/integration/sso-auto-provision-csrf.test.ts`) exercise the
+  same Origin/Referer guard at the integration layer.
+
+**Re-enablement criteria:**
+
+- TC-E2E-02 unlocks the moment the `csrf-origin-guard.ts` helper +
+  `apps/server/middleware.ts` matcher extension merge. Flip the
+  `describe.skip` to `describe`, replace the `expect.fail(...)` with the
+  inline `request.post(...)` block already sketched in the test
+  comments, and drop the module-level `console.warn`.
+- TC-E2E-01 unlocks once a fake-Google OAuth harness is added (likely a
+  separate spike under `tests/e2e/helpers/` that intercepts
+  `accounts.google.com` + token-exchange URLs via Playwright route
+  handlers). Until then, the integration-test layer carries the load.
