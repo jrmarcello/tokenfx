@@ -15,8 +15,62 @@ import { emailDomain } from './email-hash';
 import { evaluateSignIn, loadUserByEmail, loadUserBySsoIdentity } from './load-user';
 import { matchActiveInvitesByEmail } from './match-active-invites';
 import { getRequestContext } from '@/lib/auth/request-context';
+import { writeReplayAuditRow } from './auth-event-log-writer';
+import { ipToCity } from './ip-to-city';
+import { isStateReplayAuthError } from './replay-detector';
 import { evaluateAutoProvision } from './sso-auto-provision';
 import { log as logger } from '@root/logger';
+
+/**
+ * NextAuth `logger.error` hook for the SSO replay-audit-row spec
+ * (`.specs/sso-replay-audit-row.md` — closes REQ-FU-1 of oauth-idp-stub
+ * + the audit-row half of spec-b TC-I-34).
+ *
+ * Auth.js v5 throws `InvalidCheck` (`@auth/core/errors.ts`) when the
+ * OAuth state/PKCE/nonce cookie cannot be matched. The class is NOT in
+ * Auth.js's `clientErrors` set so the redirect surfaces a generic
+ * `?error=Configuration` — too ambiguous to detect at the URL layer.
+ * BUT the `logger.error` callback receives the raw `AuthError`
+ * instance, and `InvalidCheck` carries `static type = 'InvalidCheck'`.
+ * That's the precise signal — see TASK-0 findings in the spec
+ * Execution Log.
+ *
+ * Why ALS lookup is safe here: the NextAuth handler in
+ * `app/api/auth/[...nextauth]/route.ts:115` wraps the call in
+ * `runInRequestContext(...)`. The error callback fires synchronously
+ * inside the failed promise chain, so `getRequestContext()` returns
+ * the real ip/user-agent of the offending request.
+ *
+ * `ssoProvider` is recorded as `'unknown'` because the logger callback
+ * has no provider info on `InvalidCheck` (the failure happens before
+ * the provider id is bound to the cause). The outcome + ip + ua + time
+ * are sufficient signal for replay analytics; provider enrichment is
+ * out of scope.
+ *
+ * Failure safety: this hook fires INSIDE Auth.js's error-handling
+ * chain. If the audit write fails, we must NOT re-throw — Auth.js
+ * would replace its own redirect-to-error-page with a 500, hiding
+ * the original error from the user. The catch logs at warn level.
+ */
+const writeReplayAuditRowOnInvalidCheck = async (error: unknown): Promise<void> => {
+  if (!isStateReplayAuthError(error)) return;
+  try {
+    const ctx = getRequestContext();
+    const ip = ctx.ip || null;
+    const userAgent = ctx.userAgent || null;
+    const city = ip ? await ipToCity(ip) : null;
+    await writeReplayAuditRow({
+      ssoProvider: 'unknown',
+      ip,
+      city,
+      userAgent,
+    });
+  } catch (err) {
+    logger.warn('auth: writeReplayAuditRow failed', {
+      error_message: err instanceof Error ? err.message : String(err),
+    });
+  }
+};
 
 /**
  * SECURITY note: this helper extracts the `iss` claim from a JWT WITHOUT
@@ -173,6 +227,33 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     ...authConfig.providers,
     ...(e2eBypassProvider ? [e2eBypassProvider] : []),
   ],
+  // Replay-audit hook: Auth.js v5 calls `logger.error(error)` with the
+  // raw AuthError instance whenever the OAuth callback fails. We tap
+  // this hook to write the `rejected-replay` audit row when the failure
+  // is specifically a state/PKCE/nonce check (`InvalidCheck`). All
+  // other AuthError types pass through to the default console logger.
+  logger: {
+    error: (error: Error) => {
+      // Defensive: `Promise.resolve().then(...)` converts ANY sync throw
+      // in the helper into a microtask-queue rejection that the .catch
+      // can swallow. Bare `void asyncFn(error)` would propagate a sync
+      // throw through the logger callback into Auth.js's error chain,
+      // potentially replacing the redirect-to-error-page with a 500.
+      Promise.resolve()
+        .then(() => writeReplayAuditRowOnInvalidCheck(error))
+        .catch((err: unknown) => {
+          logger.warn('auth: logger hook threw synchronously', {
+            error_message: err instanceof Error ? err.message : String(err),
+          });
+        });
+      // Forward to default-style logging so the original diagnostic
+      // surface (stderr) is preserved.
+      logger.error('next-auth error', {
+        error_type: (error as { type?: string }).type ?? error.name,
+        error_message: error.message,
+      });
+    },
+  },
   callbacks: {
     ...authConfig.callbacks,
     /**

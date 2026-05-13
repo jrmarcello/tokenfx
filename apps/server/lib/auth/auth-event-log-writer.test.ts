@@ -25,7 +25,12 @@ import {
   type AuthEventInput,
   type AuthEventOutcome,
   writeAuthEvent,
+  writeReplayAuditRow,
 } from './auth-event-log-writer';
+import {
+  REPLAY_EMAIL_HASH_SENTINEL,
+  REPLAY_ISS_SENTINEL,
+} from './replay-detector';
 
 const SKIP_PG = process.env.SKIP_PG_TESTS === '1';
 const skipDescribe = SKIP_PG ? describe.skip : describe;
@@ -308,5 +313,168 @@ skipDescribe('writeAuthEvent — auth_event_log writer (TASK-5)', () => {
     expect(joined).not.toMatch(/raw-subject/i);
     // Strictly: the writer logs nothing.
     expect(captured.length).toBe(0);
+  });
+});
+
+describe('writeReplayAuditRow (unit — DI seam)', () => {
+  // Pure unit test — uses the `opts.writeAuthEvent` DI seam to assert the
+  // shape passed downstream without touching Postgres. Integration coverage
+  // (real DB) lives in `replay-detector.integration.test.ts`.
+  it('calls the injected writeAuthEvent exactly once with sentinel emailHash + iss + outcome="rejected-replay"', async () => {
+    const captured: Array<Parameters<typeof writeAuthEvent>[0]> = [];
+    const stub = async (
+      input: Parameters<typeof writeAuthEvent>[0],
+    ): Promise<void> => {
+      captured.push(input);
+    };
+
+    await writeReplayAuditRow(
+      {
+        ssoProvider: 'okta',
+        ip: '1.2.3.4',
+        city: 'Lisbon',
+        userAgent: 'Mozilla/100.0',
+      },
+      { writeAuthEvent: stub },
+    );
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toEqual({
+      ssoProvider: 'okta',
+      iss: REPLAY_ISS_SENTINEL,
+      emailHash: REPLAY_EMAIL_HASH_SENTINEL,
+      ssoSubjectHash: null,
+      ip: '1.2.3.4',
+      city: 'Lisbon',
+      userAgent: 'Mozilla/100.0',
+      outcome: 'rejected-replay',
+    });
+  });
+
+  it('passes null ip / city / userAgent through unchanged', async () => {
+    const captured: Array<Parameters<typeof writeAuthEvent>[0]> = [];
+    const stub = async (
+      input: Parameters<typeof writeAuthEvent>[0],
+    ): Promise<void> => {
+      captured.push(input);
+    };
+
+    await writeReplayAuditRow(
+      {
+        ssoProvider: 'unknown',
+        ip: null,
+        city: null,
+        userAgent: null,
+      },
+      { writeAuthEvent: stub },
+    );
+
+    expect(captured[0].ip).toBe(null);
+    expect(captured[0].city).toBe(null);
+    expect(captured[0].userAgent).toBe(null);
+    expect(captured[0].ssoProvider).toBe('unknown');
+  });
+
+  it('TC-I-03 (infra): when injected writeAuthEvent rejects (DB connection failure), writeReplayAuditRow rejects — the caller in auth.ts is responsible for the catch', async () => {
+    const stub = async (): Promise<void> => {
+      throw new Error('ECONNREFUSED');
+    };
+    await expect(
+      writeReplayAuditRow(
+        { ssoProvider: 'okta', ip: '1.2.3.4', city: null, userAgent: null },
+        { writeAuthEvent: stub },
+      ),
+    ).rejects.toThrow('ECONNREFUSED');
+  });
+});
+
+skipDescribe('writeReplayAuditRow (integration — real Postgres)', () => {
+  // Spec: .specs/sso-replay-audit-row.md TC-I-01..TC-I-03.
+  // Runs against the shared testcontainer; gated on SKIP_PG_TESTS=1.
+  beforeAll(async () => {
+    const db = getDb();
+    await db.execute(sql`DELETE FROM auth_event_log WHERE email_hash = ${REPLAY_EMAIL_HASH_SENTINEL}`);
+  });
+  afterEach(async () => {
+    const db = getDb();
+    await db.execute(sql`DELETE FROM auth_event_log WHERE email_hash = ${REPLAY_EMAIL_HASH_SENTINEL}`);
+  });
+  afterAll(async () => {
+    await closeDb();
+  });
+
+  it('TC-I-01: writes one row with sentinel emailHash + sentinel iss + ssoSubjectHash null + outcome=rejected-replay', async () => {
+    await writeReplayAuditRow({
+      ssoProvider: 'okta',
+      ip: '1.2.3.4',
+      city: 'Lisbon',
+      userAgent: 'Mozilla/100.0',
+    });
+
+    const db = getDb();
+    const result = await db.execute(
+      sql`SELECT sso_provider, iss, email_hash, sso_subject_hash, ip, city, user_agent, outcome
+          FROM auth_event_log
+          WHERE email_hash = ${REPLAY_EMAIL_HASH_SENTINEL}`,
+    );
+    expect(result.rows).toHaveLength(1);
+    const row = result.rows[0] as {
+      sso_provider: string;
+      iss: string;
+      email_hash: string;
+      sso_subject_hash: string | null;
+      ip: string | null;
+      city: string | null;
+      user_agent: string | null;
+      outcome: string;
+    };
+    expect(row).toEqual({
+      sso_provider: 'okta',
+      iss: REPLAY_ISS_SENTINEL,
+      email_hash: REPLAY_EMAIL_HASH_SENTINEL,
+      sso_subject_hash: null,
+      ip: '1.2.3.4',
+      city: 'Lisbon',
+      user_agent: 'Mozilla/100.0',
+      outcome: 'rejected-replay',
+    });
+  });
+
+  it('TC-I-02: truncates user_agent to <=512 chars at the write boundary', async () => {
+    const longUa = 'A'.repeat(600);
+    await writeReplayAuditRow({
+      ssoProvider: 'okta',
+      ip: null,
+      city: null,
+      userAgent: longUa,
+    });
+    const db = getDb();
+    const result = await db.execute(
+      sql`SELECT user_agent FROM auth_event_log
+          WHERE email_hash = ${REPLAY_EMAIL_HASH_SENTINEL}`,
+    );
+    expect(result.rows).toHaveLength(1);
+    const row = result.rows[0] as { user_agent: string };
+    expect(row.user_agent.length).toBeLessThanOrEqual(512);
+  });
+
+  it('TC-I-03: accepts null ip/city/userAgent and writes them as NULL', async () => {
+    await writeReplayAuditRow({
+      ssoProvider: 'unknown',
+      ip: null,
+      city: null,
+      userAgent: null,
+    });
+    const db = getDb();
+    const result = await db.execute(
+      sql`SELECT ip, city, user_agent
+          FROM auth_event_log
+          WHERE email_hash = ${REPLAY_EMAIL_HASH_SENTINEL}`,
+    );
+    expect(result.rows).toHaveLength(1);
+    const row = result.rows[0] as { ip: string | null; city: string | null; user_agent: string | null };
+    expect(row.ip).toBe(null);
+    expect(row.city).toBe(null);
+    expect(row.user_agent).toBe(null);
   });
 });

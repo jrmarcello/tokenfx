@@ -242,14 +242,14 @@ TC above except TC-I-45 becomes mechanically executable.
 
 ### Out-of-scope (deferred to future specs)
 
-- **REQ-FU-1 (`'rejected-replay'` audit row write)**: when NextAuth fails
-  state validation in the callback, an `auth_event_log` row with outcome
-  `'rejected-replay'` should be written. Today, `sso-auto-provision.ts:136-140`
-  explicitly excludes `'rejected-replay'` from its decision union, and
-  NextAuth's error path doesn't yet pass through any code we own. A
-  follow-up spec would wire either a NextAuth-error route handler or
-  an explicit `events.signInError`-style hook. **Tracked, not closed
-  by this spec.** TASK-12 marks spec-b's TC-I-34 as PARTIALLY ADDRESSED.
+- **REQ-FU-1 (`'rejected-replay'` audit row write)**: **CLOSED by
+  `.specs/sso-replay-audit-row.md`** (2026-05-13). The new spec wires
+  a `NextAuth.logger.error` hook in `auth.ts` that detects the typed
+  `InvalidCheck` class and writes an `auth_event_log` row with
+  `outcome='rejected-replay'` via `writeReplayAuditRow`. Sentinel
+  values (`email_hash='replay:state-mismatch'`, `iss='replay:unknown-issuer'`)
+  occupy the NOT NULL columns where state-replay leaves no real identity
+  data. Spec-b TC-I-34 is now ADDRESSED.
 
 - **REQ-FU-2 (nonce-reuse replay — TC-I-45)**: spec-b's TC-I-45 covers
   "fresh state + reused nonce → rejected." NextAuth's nonce-handling

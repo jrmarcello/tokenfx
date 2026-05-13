@@ -25,6 +25,10 @@
 import { getDb } from '@/lib/db/client';
 import { authEventLog } from '@/lib/db/schema';
 
+import {
+  REPLAY_EMAIL_HASH_SENTINEL,
+  REPLAY_ISS_SENTINEL,
+} from './replay-detector';
 import { truncateUserAgent } from './truncate-user-agent';
 
 export type AuthEventOutcome =
@@ -69,5 +73,50 @@ export const writeAuthEvent = async (input: AuthEventInput): Promise<void> => {
     city: input.city,
     userAgent: input.userAgent === null ? null : truncateUserAgent(input.userAgent),
     outcome: input.outcome,
+  });
+};
+
+/**
+ * Specialised writer for the `outcome='rejected-replay'` flow.
+ *
+ * Spec: `.specs/sso-replay-audit-row.md` REQ-4 (closes REQ-FU-1 of
+ * `oauth-idp-stub` + audit-row half of spec-b TC-I-34).
+ *
+ * Substitutes deterministic sentinels for the NOT-NULL `email_hash` /
+ * `iss` columns because state-replay is detected BEFORE we can resolve
+ * the user (no verified `id_token` yet) and the only safe thing to
+ * persist about the issuer is "we don't know". Sentinels are non-hex
+ * (cannot collide with real SHA-256 peppered hashes) — see
+ * `replay-detector.ts` for rationale.
+ *
+ * `opts.writeAuthEvent` is the DI seam used by unit tests to assert
+ * the input shape without touching Postgres. Production callers pass
+ * no options; the default uses the real `writeAuthEvent`.
+ */
+export type WriteReplayAuditRowInput = Readonly<{
+  ssoProvider: string;
+  ip: string | null;
+  city: string | null;
+  userAgent: string | null;
+}>;
+
+export type WriteReplayAuditRowOpts = Readonly<{
+  writeAuthEvent?: typeof writeAuthEvent;
+}>;
+
+export const writeReplayAuditRow = async (
+  input: WriteReplayAuditRowInput,
+  opts: WriteReplayAuditRowOpts = {},
+): Promise<void> => {
+  const write = opts.writeAuthEvent ?? writeAuthEvent;
+  await write({
+    ssoProvider: input.ssoProvider,
+    iss: REPLAY_ISS_SENTINEL,
+    emailHash: REPLAY_EMAIL_HASH_SENTINEL,
+    ssoSubjectHash: null,
+    ip: input.ip,
+    city: input.city,
+    userAgent: input.userAgent,
+    outcome: 'rejected-replay',
   });
 };

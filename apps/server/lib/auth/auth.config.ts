@@ -37,6 +37,12 @@ export const authConfig = {
   ],
   pages: {
     signIn: '/api/auth/signin',
+    // sso-replay-audit-row spec REQ-3: NextAuth redirects browsers here
+    // on OAuth callback failures (incl. state-replay). The page itself is
+    // pure presentational UI — the `auth_event_log` row for replay attempts
+    // is written by the `logger.error` hook in `auth.ts` (precise typed-
+    // class detection on `InvalidCheck`), not by sniffing `?error=` here.
+    error: '/auth/error',
   },
   callbacks: {
     // Edge-safe mirror of token → session.user for role + orgId. Required
