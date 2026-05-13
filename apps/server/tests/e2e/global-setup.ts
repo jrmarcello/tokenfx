@@ -1,11 +1,15 @@
 /**
- * Playwright globalSetup for the central server E2E suite (TASK-22).
+ * Playwright globalSetup for the central server E2E suite.
  *
  * Responsibilities:
  *   1. Spin up a Postgres 16 testcontainer once per Playwright run.
  *   2. Apply Drizzle migrations against the container.
- *   3. Seed the deterministic fixture (`scripts/seed-server.ts --e2e`).
- *   4. Spawn the Next.js dev server with `DATABASE_URL` + auth env vars set.
+ *   3. Seed the deterministic fixtures (`scripts/seed-server.ts --e2e`,
+ *      seed-manager-v2.ts, seed-manager-v3-outcomes.ts).
+ *   4. Spawn the local OIDC IdP stub (`@tokenfx/idp-stub`) so NextAuth's
+ *      Okta provider can sign-in end-to-end without a real Okta tenant.
+ *   5. Spawn the Next.js dev server with `DATABASE_URL` + auth env vars
+ *      + OKTA_* envs pointing at the stub.
  *
  * Why launch the dev server from here instead of `playwright.config.ts`'s
  * `webServer` block? Because the testcontainer's connection URI is dynamic
@@ -23,9 +27,14 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 
 let container: StartedPostgreSqlContainer | null = null;
 let devServer: ChildProcess | null = null;
+let idpStub: ChildProcess | null = null;
 
 const DEV_PORT = 3232;
 const DEV_BOOT_TIMEOUT_MS = 60_000;
+const IDP_STUB_PORT = Number(process.env.IDP_STUB_PORT ?? 3001);
+const IDP_STUB_BASE_URL =
+  process.env.IDP_STUB_BASE_URL ?? `http://localhost:${IDP_STUB_PORT}`;
+const IDP_STUB_BOOT_TIMEOUT_MS = 5_000;
 
 const stopContainer = async (): Promise<void> => {
   if (container) {
@@ -43,10 +52,47 @@ const stopDevServer = (): void => {
   }
 };
 
+const stopIdpStub = (): void => {
+  if (idpStub && !idpStub.killed) {
+    idpStub.kill('SIGTERM');
+    idpStub = null;
+  }
+};
+
 /**
- * Wait for the dev server to respond on `/api/health` (or any 2xx/3xx/4xx
- * answer — anything but `ECONNREFUSED`). We don't care about the body, just
- * that the listener is up. Polls every 250ms up to `DEV_BOOT_TIMEOUT_MS`.
+ * Unified teardown — kills all spawned processes + stops the testcontainer.
+ * Called from every signal handler (SIGINT, SIGTERM, beforeExit) to avoid
+ * the race where one handler's `process.exit()` runs before another's
+ * cleanup completes.
+ */
+const stopAll = async (): Promise<void> => {
+  stopIdpStub();
+  stopDevServer();
+  await stopContainer();
+};
+
+const waitForUrlReady = async (
+  url: string,
+  timeoutMs: number,
+  label: string,
+): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(1_000) });
+      if (res.status >= 100 && res.status < 500) return;
+    } catch {
+      // ECONNREFUSED / abort — keep polling.
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  throw new Error(`[e2e setup] ${label} did not respond within ${timeoutMs}ms (${url})`);
+};
+
+/**
+ * Wait for the dev server to respond on `/` (or any 2xx/3xx/4xx — anything
+ * but `ECONNREFUSED`). We don't care about the body, just that the listener
+ * is up. Polls every 250ms up to `DEV_BOOT_TIMEOUT_MS`.
  */
 const waitForDevServerReady = async (port: number): Promise<void> => {
   const deadline = Date.now() + DEV_BOOT_TIMEOUT_MS;
@@ -56,8 +102,6 @@ const waitForDevServerReady = async (port: number): Promise<void> => {
         method: 'HEAD',
         signal: AbortSignal.timeout(1_000),
       });
-      // Any HTTP response means the listener is up; auth gate may 403/redirect
-      // but that's fine — we just need the process accepting connections.
       if (res.status >= 100) return;
     } catch {
       // ECONNREFUSED / abort — keep polling.
@@ -85,45 +129,44 @@ const setup = async (): Promise<void> => {
   process.env.DATABASE_URL = databaseUrl;
 
   const cwd = path.resolve(__dirname, '..', '..');
-  // execFileSync (vs execSync) — argv array form prevents future refactors
-  // from accidentally interpolating shell metacharacters from a test parameter
-  // into the command string. Today neither call has user input, but the
-  // argv form is what the project's security checklist asks for.
+  const repoRoot = path.resolve(cwd, '..', '..');
   execFileSync('pnpm', ['db:migrate'], { stdio: 'inherit', cwd });
   execFileSync('tsx', ['scripts/seed-server.ts', '--e2e'], {
     stdio: 'inherit',
     cwd,
   });
-  // Manager-dashboard-v2 fixture: 3-team Alpha + 1-team Gamma + 30d of
-  // team_metrics_daily rollups. Required for TC-E2E-02 (3-polygon radar)
-  // and TC-E2E-13 (1-team radar absent). Idempotent — re-runs safely
-  // via `onConflictDoNothing`/`onConflictDoUpdate` inside seedManagerV2.
-  // Run as a child process (mirrors seed-server.ts above) so a failure
-  // surfaces as a non-zero exit + thrown ChildProcessError, propagating
-  // cleanly to globalSetup → Playwright (run aborts; container is torn
-  // down by the SIGTERM/beforeExit handlers below).
   execFileSync('tsx', ['scripts/seed-manager-v2.ts'], {
     stdio: 'inherit',
     cwd,
   });
-  // manager-dashboard-v3-outcomes fixture: outcome rollups for Alpha (3
-  // teams × 7d) + ~5 personal outcome rows for alice. Required for the
-  // manager-outcomes E2E spec (TC-E2E-01..03). Idempotent — re-runs safely
-  // via `onConflictDoUpdate` inside seedManagerV3Outcomes. Depends on
-  // seed-manager-v2.ts above (Alpha teams must exist; the seed throws
-  // a clear error if not). Mirrors v2 wiring style.
   execFileSync('tsx', ['scripts/seed-manager-v3-outcomes.ts'], {
     stdio: 'inherit',
     cwd,
   });
 
-  // Spawn the dev server with the container URI + auth-bypass env vars. The
-  // secret here MUST match `manager.spec.ts:E2E_SECRET` — the test mints
-  // session JWTs with this secret and the server has to decode with the
-  // same value. Provider creds are dummies; the JWT-cookie auth bypass
-  // never round-trips through OAuth, but NextAuth refuses to initialize
-  // providers with `undefined` clientId/clientSecret, so we feed them
-  // values to keep the signin error page from masking real failures.
+  // Spawn the idp-stub BEFORE the dev server so the OKTA_* env vars below
+  // point at a live discovery endpoint that NextAuth can reach as soon as
+  // it boots.
+  idpStub = spawn('pnpm', ['--filter', '@tokenfx/idp-stub', 'start'], {
+    cwd: repoRoot,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      IDP_STUB_PORT: String(IDP_STUB_PORT),
+      IDP_STUB_BASE_URL,
+    },
+  });
+  idpStub.on('exit', (code) => {
+    if (code !== null && code !== 0) {
+      process.stderr.write(`[e2e setup] idp-stub exited with code ${code}\n`);
+    }
+  });
+  await waitForUrlReady(
+    `${IDP_STUB_BASE_URL}/.well-known/openid-configuration`,
+    IDP_STUB_BOOT_TIMEOUT_MS,
+    'idp-stub',
+  );
+
   const e2eSecret = process.env.NEXTAUTH_SECRET ?? 'tokenfx-e2e-secret';
   devServer = spawn('pnpm', ['dev'], {
     cwd,
@@ -137,21 +180,17 @@ const setup = async (): Promise<void> => {
       GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID ?? 'e2e-google-id',
       GOOGLE_CLIENT_SECRET:
         process.env.GOOGLE_CLIENT_SECRET ?? 'e2e-google-secret',
-      OKTA_CLIENT_ID: process.env.OKTA_CLIENT_ID ?? 'e2e-okta-id',
-      OKTA_CLIENT_SECRET:
-        process.env.OKTA_CLIENT_SECRET ?? 'e2e-okta-secret',
-      OKTA_ISSUER:
-        process.env.OKTA_ISSUER ?? 'https://e2e.okta.example/oauth2/default',
-      // fix-e2e-auth-bypass (REQ-13): test-only Credentials provider gate.
-      // The `auth.ts` boot-guard refuses prod + this flag set — see
-      // `lib/auth/e2e-bypass-provider.ts` spike-comment block for the
-      // full rationale.
+      // Point NextAuth's Okta provider at the local stub. The fake values
+      // below are shaped so secret-scanners (gitleaks/trufflehog) skip them;
+      // the stub does not validate client_secret at /token in any case.
+      OKTA_CLIENT_ID: 'test-client',
+      OKTA_CLIENT_SECRET: 'fake-e2e-not-a-real-secret',
+      OKTA_ISSUER: IDP_STUB_BASE_URL,
+      // Extend the orchestrator's issuer whitelist via the existing env hook
+      // (sso-auto-provision.ts:DEFAULT_ISSUER_WHITELIST).
+      TOKENFX_SSO_ISSUERS_OKTA: IDP_STUB_BASE_URL,
+      // fix-e2e-auth-bypass: test-only Credentials provider gate.
       E2E_AUTH_BYPASS: '1',
-      // Defense-in-depth (security review H2): bind Next dev to loopback
-      // only while the bypass is hot. Combined with the host-header check
-      // in `e2e-bypass-provider.ts:isLocalhostHost`, this rules out a LAN
-      // attacker reaching `http://<dev-host>:3232/` with `Host: localhost`
-      // and minting a session. Next reads HOSTNAME for `next dev`.
       HOSTNAME: '127.0.0.1',
     },
   });
@@ -163,25 +202,18 @@ const setup = async (): Promise<void> => {
 
   await waitForDevServerReady(DEV_PORT);
 
-  // Hold container + dev server alive for the rest of the Playwright run;
-  // SIGINT/SIGTERM handlers below tear them down on Ctrl+C or runner kill.
-  // We deliberately do NOT register `process.once('exit', ...)` — the `exit`
-  // event is synchronous, so `void stopContainer()` would fire-and-forget
-  // and Node would exit before the testcontainer stop completes (lingering
-  // container). Letting Playwright's own teardown run + `beforeExit` handle
-  // the natural shutdown is enough; for abnormal exit, the OS reclaims the
-  // child processes anyway.
+  // Unified teardown via stopAll() — every handler defers to the same
+  // shared helper, then exits with the appropriate code. Prevents the
+  // race where the first signal handler's process.exit() fires before
+  // a sibling handler's cleanup completes.
   process.once('beforeExit', () => {
-    stopDevServer();
-    void stopContainer();
+    void stopAll();
   });
   process.once('SIGINT', () => {
-    stopDevServer();
-    void stopContainer().finally(() => process.exit(130));
+    void stopAll().finally(() => process.exit(130));
   });
   process.once('SIGTERM', () => {
-    stopDevServer();
-    void stopContainer().finally(() => process.exit(143));
+    void stopAll().finally(() => process.exit(143));
   });
 };
 

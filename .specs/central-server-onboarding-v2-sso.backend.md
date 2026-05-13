@@ -383,7 +383,7 @@ The SSO-auto-provision **decision engine** + **production wiring** in the NextAu
 | TC-I-31 | REQ-17 | security | `callbackUrl=https://evil.example.com` → NextAuth `redirect` returns `baseUrl + '/'` | match |
 | TC-I-32 | REQ-17 | security | `callbackUrl=/manager` (same-origin relative) → returns `baseUrl + '/manager'` | match |
 | TC-I-33 | REQ-17 | edge | State cookie has `HttpOnly` + `SameSite=Lax` set | inspect Set-Cookie header |
-| TC-I-34 | REQ-18 | security | Replay-detection: capture state token from first callback; invoke second callback with same state → rejected with NextAuth state error AND `'rejected-replay'` audit row | match |
+| TC-I-34 | REQ-18 | security | **PARTIALLY ADDRESSED** by `.specs/oauth-idp-stub.md` TC-E2E-08 — state-rejection verified; the `'rejected-replay'` audit-row write remains DEFERRED to REQ-FU-1 follow-up. Original: Replay-detection: capture state token from first callback; invoke second callback with same state → rejected with NextAuth state error AND `'rejected-replay'` audit row | match |
 | TC-I-35 | REQ-19 | happy | `auth_event_log` row written for every distinct outcome — table any of the 10 outcomes, each produces exactly 1 row | row counts verified |
 | TC-I-36 | REQ-20 | business | Impossible-travel: simulate 2 successful signIns same sso_subject_hash, distant cities, 30min apart → `logger.warn('impossible-travel', ...)` fires | log line verified |
 | TC-I-37 | REQ-22 | business | Pre-existing-binding email helper invoked exactly once on `'rejected-pre-existing-binding'` outcome | spy verified |
@@ -403,8 +403,8 @@ The SSO-auto-provision **decision engine** + **production wiring** in the NextAu
 
 | TC | REQ | Category | Description | Expected |
 | --- | --- | --- | --- | --- |
-| TC-E2E-01 | REQ-13 | happy | Playwright: visit `/api/auth/signin/google` from a browser; trigger NextAuth OAuth flow with stubbed Google IdP; observe new `users` row + dashboard accessible | session works |
-| TC-E2E-02 | REQ-16 | security | Playwright: simulate cross-origin signin initiation via `fetch('/api/auth/signin', { headers: { Origin: 'https://evil.example.com' } })` → 403 | match |
+| TC-E2E-01 | REQ-13 | happy | **ADDRESSED** by `.specs/oauth-idp-stub.md` TC-E2E-01 (Okta-emulating stub; provider identity is provider-agnostic in the orchestrator). Playwright: visit `/api/auth/signin/okta` from a browser; trigger NextAuth OAuth flow with stubbed IdP; observe new `users` row + gated page accessible | session works |
+| TC-E2E-02 | REQ-16 | security | **ADDRESSED** by `.specs/oauth-idp-stub.md` TC-E2E-02. Playwright: cross-origin signin initiation via `request.post('/api/auth/signin/okta', { headers: { Origin: 'https://evil.example.com' } })` → 403 | match |
 
 > Note: E2E tests require a stubbed OAuth IdP + NextAuth dev-mode environment. Standard for the project; verify infra during execution. If unavailable, mark as `DEFERRED`.
 

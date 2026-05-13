@@ -317,11 +317,11 @@ This spec wires:
 
 | TC | REQ | Category | Description | Expected |
 | --- | --- | --- | --- | --- |
-| TC-E2E-01 | REQ-1, REQ-2 | happy | banner appears with sso-auto event, dismiss → hidden, new event → reappears | full flow |
-| TC-E2E-02 | REQ-4, REQ-5 | happy | navigate to audit-log, apply each filter, verify rows update | filters interactive |
-| TC-E2E-03 | REQ-6 | happy | export CSV from audit-log → browser downloads file with correct headers | download works |
-| TC-E2E-04 | REQ-7 | happy | invite-create form with multi-select for allowed_sso_providers → DB row reflects choice | UI persists |
-| TC-E2E-05 | REQ-9, REQ-10 | happy | team detail page with `provisioned_via` filter → table updates; CSV export downloads | filter + CSV |
+| TC-E2E-01 | REQ-1, REQ-2 | happy | **ADDRESSED** by `.specs/oauth-idp-stub.md` TC-E2E-03 (`apps/server/tests/e2e/manager-ui.spec.ts`). banner appears with sso-auto event, dismiss → hidden, new event → reappears | full flow |
+| TC-E2E-02 | REQ-4, REQ-5 | happy | **ADDRESSED** by `.specs/oauth-idp-stub.md` TC-E2E-04. navigate to audit-log, apply each filter, verify rows update | filters interactive |
+| TC-E2E-03 | REQ-6 | happy | **ADDRESSED** by `.specs/oauth-idp-stub.md` TC-E2E-05. export CSV from audit-log → browser downloads file with correct headers | download works |
+| TC-E2E-04 | REQ-7 | happy | **ADDRESSED** by `.specs/oauth-idp-stub.md` TC-E2E-06. invite-create form with multi-select for allowed_sso_providers → DB row reflects choice | UI persists |
+| TC-E2E-05 | REQ-9, REQ-10 | happy | **ADDRESSED** by `.specs/oauth-idp-stub.md` TC-E2E-07. team detail page with `provisioned_via` filter → table updates; CSV export downloads | filter + CSV |
 
 ## Design
 
