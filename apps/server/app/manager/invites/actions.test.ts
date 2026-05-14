@@ -25,11 +25,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Session } from 'next-auth';
 import {
-  allowedSsoProvidersSchema,
   createInviteImpl,
   revokeInviteImpl,
   type AuthFn,
 } from './actions';
+import { allowedSsoProvidersSchema } from './actions.schemas';
 import type {
   CreateInviteCoreDeps,
   CreateInviteCoreParams,

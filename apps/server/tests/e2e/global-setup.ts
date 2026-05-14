@@ -22,7 +22,9 @@
  * when running specs against an already-running stack).
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { Pool } from 'pg';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 
 let container: StartedPostgreSqlContainer | null = null;
@@ -131,6 +133,52 @@ const setup = async (): Promise<void> => {
   const cwd = path.resolve(__dirname, '..', '..');
   const repoRoot = path.resolve(cwd, '..', '..');
   execFileSync('pnpm', ['db:migrate'], { stdio: 'inherit', cwd });
+
+  // Apply orphan hand-crafted .sql migrations that aren't yet registered
+  // in the Drizzle journal (`meta/_journal.json`). Mirrors the integration
+  // suite's logic in `tests/integration/setup-pg.ts:62-109` — without this,
+  // migrations 0004 + 0005 are skipped here and seed-server.ts fails on
+  // `column "provisioned_via" does not exist`.
+  const migrationsFolder = path.resolve(cwd, 'lib', 'db', 'migrations');
+  const journalPath = path.join(migrationsFolder, 'meta', '_journal.json');
+  const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as {
+    entries: { tag: string }[];
+  };
+  const knownTags = new Set(journal.entries.map((e) => e.tag));
+  const orphans = readdirSync(migrationsFolder)
+    .filter((f) => f.endsWith('.sql'))
+    .filter((f) => !knownTags.has(f.replace(/\.sql$/, '')))
+    .sort();
+  if (orphans.length > 0) {
+    const orphanPool = new Pool({ connectionString: databaseUrl });
+    try {
+      for (const file of orphans) {
+        const sql = readFileSync(path.join(migrationsFolder, file), 'utf8');
+        const stmts = sql
+          .split(/^[ \t]*-->[ \t]+statement-breakpoint[ \t]*$/m)
+          .map((s) => s.trim())
+          .filter((s) => {
+            if (s.length === 0) return false;
+            const stripped = s
+              .split('\n')
+              .map((l) => l.trim())
+              .filter((l) => l.length > 0 && !l.startsWith('--'))
+              .join('\n');
+            if (stripped.length === 0) return false;
+            // Skip psql client-side variable substitution (`:"role_name"`)
+            // — production hardening with no test-time semantics.
+            if (/:"[A-Za-z_][A-Za-z0-9_]*"/.test(stripped)) return false;
+            return true;
+          });
+        for (const stmt of stmts) {
+          await orphanPool.query(stmt);
+        }
+      }
+    } finally {
+      await orphanPool.end();
+    }
+  }
+
   execFileSync('tsx', ['scripts/seed-server.ts', '--e2e'], {
     stdio: 'inherit',
     cwd,

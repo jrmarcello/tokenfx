@@ -37,40 +37,18 @@ import {
   setFlashCookie,
   type FlashCookieStore,
 } from '@/lib/auth/flash-cookie';
+// Non-function exports (constants + Zod schemas) live in a sibling file so
+// the `'use server'` directive at the top of this module doesn't reject
+// them at build time — Next.js requires every export of a 'use server'
+// module to be an async function. See `actions.schemas.ts` for the rationale.
+import { allowedSsoProvidersSchema } from './actions.schemas';
 
 // ---------------------------------------------------------------------------
-// Zod schemas — boundary validation. `.strict()` rejects unknown fields so
-// a tampered form payload with extra keys can't smuggle data through.
+// Form-schema composition — wraps the standalone field schema with the rest
+// of the invite-create form's strict object. `.strict()` rejects unknown
+// fields so a tampered form payload with extra keys can't smuggle data
+// through.
 // ---------------------------------------------------------------------------
-
-/**
- * Supported SSO provider keys. Matches the v2-sso spec REQ-7 enumeration
- * (Google, Okta, Microsoft, Auth0). Mirrored in the form UI checkbox group.
- */
-export const SSO_PROVIDER_VALUES = ['google', 'okta', 'microsoft', 'auth0'] as const;
-
-/**
- * Standalone Zod schema for the `allowed_sso_providers` invite field.
- *
- * Extracted from `createInviteFormSchema` to enable direct unit-testing
- * of the parse/transform contract without going through the full Server
- * Action — see `.specs/sso-test-coverage-orphans.md` REQ-1.
- *
- * Behavior contract:
- *   - Write-path (this schema): `.min(1)` rejects empty arrays. A manager
- *     creating a NEW invite must select ≥1 provider explicitly.
- *   - Read-path (legacy DB rows): an empty array means "any provider
- *     allowed" — `enforceAllowedProviders` in `lib/auth/sso-auto-provision.ts`
- *     short-circuits on `[]` to preserve pre-spec-c invites.
- *   - `.transform` dedupes via `Set` (first-seen order preserved) — same
- *     provider clicked twice in the UI shouldn't bloat the DB column.
- *   - Throws `ZodError` on `.parse()` of invalid input (no `.catch()`);
- *     callers using `.safeParse()` get a tagged result.
- */
-export const allowedSsoProvidersSchema = z
-  .array(z.enum(SSO_PROVIDER_VALUES))
-  .min(1, 'allowed_sso_providers requires at least one provider')
-  .transform((arr) => Array.from(new Set(arr)));
 
 const createInviteFormSchema = z
   .object({
