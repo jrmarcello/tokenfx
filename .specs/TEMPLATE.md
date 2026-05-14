@@ -13,6 +13,33 @@
 - [ ] REQ-1: ...
 - [ ] REQ-2: ...
 
+## Threat Model (opcional)
+
+<!-- Preencher SOMENTE se a spec toca:
+     - auth, SSO, credenciais, secrets, tokens, cookies, JWT
+     - PII (email, hash de email, IP, user-agent, location)
+     - filesystem reads driven por user input
+     - superfície anônima (rate-limit, DoS, unauth probes)
+     - audit-log / forensic-readiness surface
+
+     Caso contrário, REMOVER a seção inteira (não deixar "N/A" item-a-item —
+     ou a seção é relevante e responde tudo, ou some).
+
+     As respostas alimentam diretamente a Test Plan (categoria `security`) e
+     são auditadas pelo security-reviewer no Phase 3 da /ralph-loop. -->
+
+1. **Trust boundary** — qual fronteira esse código atravessa (process / network / device)? Quem confia em quem do outro lado?
+
+2. **Identidade autenticada** — quem é o caller? (user humano via SSO, machine bearer, SSO subject, anônimo)? Como a identidade é verificada antes de qualquer side-effect?
+
+3. **Credenciais em jogo** — passwords, bearer tokens, SSO ID tokens, state/nonce cookies, idempotency keys? Quanto tempo vivem em memória / disco / log? Onde estão validadas (Zod boundary, signature check, expiry)?
+
+4. **Replay & idempotency** — uma requisição capturada pode ser reexecutada com efeito? Que mecanismo previne? (state cookie, nonce, jti dedup, idempotency key, time-window guard)
+
+5. **Authorization scope** — depois de autenticar, o caller pode tocar QUE recursos? Há check de `org_id` / `team_id` / `role` na query/route? Onde? (middleware vs route vs query WHERE clause)
+
+6. **PII / audit trail** — que dados de usuário fluem? São hashados / redacted nos logs e exports? Que eventos devem aterrissar em `auth_event_log` (ou equivalente) com `email_hash` em vez de plaintext?
+
 ## Test Plan
 
 <!-- Derive test cases from Requirements and Design.

@@ -37,6 +37,7 @@ The skill runs three phases back-to-back in a single response: **Author → Self
 4. **Write `.specs/<name>.md`** from `.specs/TEMPLATE.md`. Fill in:
    - **Context** — why the feature exists, decisions already locked, prior art.
    - **Requirements** in GIVEN/WHEN/THEN form. No vague "should kinda".
+   - **Threat Model** — if the spec touches auth/SSO/credentials/secrets/PII/anonymous-surface, answer the 6 questions in the TEMPLATE's "Threat Model" section. The answers seed the `security`-category TCs and inform Design. **If the spec does NOT touch any of these areas, REMOVE the entire Threat Model section from the spec** (don't leave it with "N/A" answers — empty rubber-stamping defeats the gate).
    - **Test Plan** (see *Test Plan rigor* below — this is the load-bearing section).
    - **Design** — approach paragraph + affected files + dependencies. Mark unknown items `[NEEDS CLARIFICATION]` instead of assuming.
    - **Tasks** — concrete, ordered, each with `files:`, `tests:` (TC-IDs), `depends:`.
