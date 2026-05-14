@@ -32,7 +32,7 @@
 
 import bcrypt from 'bcrypt';
 import { createHash } from 'node:crypto';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { closeDb, getDb } from '@/lib/db/client';
 import { BCRYPT_COST } from '@/lib/auth/bearer-auth';
 import {
@@ -222,6 +222,14 @@ const seedOrgAndUsers = async (db: Db, spec: OrgSpec): Promise<void> => {
         .update(`e2e-secret:${spec.slug}:${userSpec.localPart}`)
         .digest('hex');
       const secretHash = await bcrypt.hash(plaintextSecret, BCRYPT_COST);
+      // TC-E2E-07 (.specs/sso-e2e-live-execution.md): mixed-provisioning fixture
+      // for the provisioned_via filter — quinn+rita: sso-auto, paula:
+      // pre-v2-unknown. All other teams keep the schema default.
+      const provisionedVia =
+        teamSpec.slug === 'team-platform' &&
+        (userSpec.localPart === 'quinn' || userSpec.localPart === 'rita')
+          ? ('sso-auto' as const)
+          : undefined;
       await db
         .insert(userMachines)
         .values({
@@ -230,8 +238,20 @@ const seedOrgAndUsers = async (db: Db, spec: OrgSpec): Promise<void> => {
           machineId,
           keyId,
           secretHash,
+          ...(provisionedVia ? { provisionedVia } : {}),
         })
         .onConflictDoNothing();
+      // Idempotency-on-dirty-DB guard for TC-E2E-07: if a prior seed run
+      // (before this spec) inserted quinn/rita with the schema default
+      // `pre-v2-unknown`, `onConflictDoNothing` above would have left them
+      // there. Force the override so re-running the seed against an existing
+      // DB still produces the mixed-provisioning fixture the E2E asserts on.
+      if (provisionedVia) {
+        await db
+          .update(userMachines)
+          .set({ provisionedVia })
+          .where(eq(userMachines.id, stableUuid(`um:${spec.slug}:${userSpec.localPart}`)));
+      }
     }
   }
 };

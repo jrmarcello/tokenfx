@@ -6,11 +6,18 @@
  *   - TC-E2E-03 / spec-c REQ-1, REQ-2 — banner appear / dismiss / reappear
  *   - TC-E2E-04 / spec-c REQ-4, REQ-5 — audit-log filters interactive
  *   - TC-E2E-05 / spec-c REQ-6       — audit-log CSV export download
- *   - TC-E2E-06 / spec-c REQ-7       — invite-create allowed_sso_providers UX
- *   - TC-E2E-07 / spec-c REQ-9, REQ-10 — team-roster filter + CSV
+ *   - TC-E2E-06 + 06b / spec-c REQ-7 — invite-create allowed_sso_providers
+ *     persist + empty-rejection (sso-e2e-live-execution REQ-1)
+ *   - TC-E2E-07 + 07b / spec-c REQ-9, REQ-10 — team-roster filter + CSV +
+ *     href propagation (sso-e2e-live-execution REQ-2)
  */
 import { test, expect } from '@playwright/test';
 
+import { stableUuid } from '../../lib/e2e/seed-ids';
+import {
+  queryInviteByTokenPrefix,
+  queryInvitesCreatedSince,
+} from './helpers/invite-probe';
 import { signInAs } from './helpers/sign-in-as';
 import { resetStubScenario, setStubScenario } from './helpers/idp-stub-control';
 
@@ -18,6 +25,11 @@ const BASE_URL = 'http://localhost:3232';
 const STUB_BASE_URL = process.env.IDP_STUB_BASE_URL ?? 'http://localhost:3001';
 
 const MANAGER_EMAIL = 'alice@alpha.test';
+
+// Alpha-platform team UUID, deterministically derived to match the seed at
+// `apps/server/scripts/seed-manager-v2.ts:192`. TC-E2E-07 + TC-E2E-07b
+// navigate to this team's detail page.
+const ALPHA_PLATFORM_TEAM_ID = stableUuid('team:org-alpha:team-platform');
 
 const ensureManager = async (context: import('@playwright/test').BrowserContext) => {
   await signInAs(context, { email: MANAGER_EMAIL, baseUrl: BASE_URL });
@@ -101,32 +113,132 @@ test.describe('Manager UI: SSO-driven E2E flows', () => {
     expect(download.suggestedFilename()).toMatch(/audit-log.*\.csv$/i);
   });
 
-  test.skip('TC-E2E-06: invite-create persists allowed_sso_providers — PARTIALLY ADDRESSED (form-render check only; full submit+persist round-trip requires the live invite create surface and is integration-tested in apps/server/app/manager/invites/actions.test.ts)', async ({
+  // TC-E2E-06 (.specs/sso-e2e-live-execution.md REQ-1) — invite-create form
+  // submit + SQL persistence assertion via token-prefix probe.
+  test('invite-create persists allowed_sso_providers when okta is the only selection', async ({
     page,
     context,
   }) => {
     await ensureManager(context);
-    await page.goto(`${BASE_URL}/manager/invites/new`);
-    // The exact field name + interaction depends on the implementation;
-    // assert the form loads with allowed_sso_providers control present.
-    const ssoControl = page.getByLabel(/sso.?provider/i);
-    expect(await ssoControl.count()).toBeGreaterThanOrEqual(1);
+    await page.goto(`${BASE_URL}/manager/invites/create`);
+
+    const form = page.getByTestId('invite-create-form');
+    await expect(form).toBeVisible();
+
+    // Uncheck the default `google`, check `okta`. The provider checkboxes
+    // are stable by `name="allowed_sso_providers"` + `value="<provider>"`.
+    await page.locator('input[name="allowed_sso_providers"][value="google"]').uncheck();
+    await page.locator('input[name="allowed_sso_providers"][value="okta"]').check();
+
+    await page.getByTestId('invite-create-submit').click();
+    await page.waitForURL(/\/manager\/invites\/created/);
+
+    // The flash page renders `<base>/onboard#token=<64-hex>` inside
+    // `flash-onboard-url-value`. Throw-narrow (not `as`) so TypeScript sees
+    // the if-throw as control-flow narrowing — `match[1]` is then non-null
+    // without a cast.
+    const urlText = await page.getByTestId('flash-onboard-url-value').textContent();
+    const match = /#token=([0-9a-f]{64})/.exec(urlText ?? '');
+    if (match === null) {
+      throw new Error(`token fragment missing from flash URL: ${urlText ?? '<empty>'}`);
+    }
+    const tokenPrefix = match[1].slice(0, 8);
+
+    const row = await queryInviteByTokenPrefix(tokenPrefix);
+    // Throw-narrow (not `!`): Playwright's `expect(...).not.toBeNull()` does
+    // NOT narrow TypeScript's type — same pattern as the token regex match
+    // above. The runtime invariant is "row exists", so spell it out.
+    if (row === null) {
+      throw new Error(`invite row must be persisted for prefix ${tokenPrefix}`);
+    }
+    // `toEqual` for deep array equality. `toBe` would always fail on arrays
+    // (reference identity). The persisted column must be exactly ['okta'],
+    // not the default `['google']` and not a merged `['google','okta']`.
+    expect(row.allowed_sso_providers).toEqual(['okta']);
   });
 
-  test.skip('TC-E2E-07: team-roster provisioned_via filter + CSV export — PARTIALLY ADDRESSED (filter logic integration-tested in tests/integration/team-roster-csv.test.ts including the ?provisioned_via=all path; full UI interaction blocked on stable team-detail selectors)', async ({
+  // TC-E2E-06b (.specs/sso-e2e-live-execution.md REQ-1) — empty-selection
+  // rejection, locked against silent acceptance.
+  test('invite-create rejects empty provider selection and writes no row', async ({
     page,
     context,
   }) => {
     await ensureManager(context);
-    // Navigate to a seeded team-detail page; fixture provides at least one.
-    await page.goto(`${BASE_URL}/manager`);
-    const teamLink = page.getByRole('link', { name: /team/i }).first();
-    if (await teamLink.count()) {
-      await teamLink.click();
-      await page.waitForLoadState('networkidle');
-      // CSV export presence
-      const csv = page.getByRole('link', { name: /export.*csv/i }).first();
-      expect(await csv.count()).toBeGreaterThanOrEqual(0);
-    }
+    await page.goto(`${BASE_URL}/manager/invites/create`);
+
+    // -2000ms matches the established margin in
+    // `tests/integration/team-roster-csv.test.ts`. CI testcontainer startup
+    // + clock drift routinely exceeds 500ms; 2s is safe and serial-test
+    // execution guarantees no cross-test invite-insert in this window.
+    const beforeMs = Date.now() - 2000;
+
+    // Uncheck `google` (the only default). All four boxes now empty.
+    await page.locator('input[name="allowed_sso_providers"][value="google"]').uncheck();
+
+    await page.getByTestId('invite-create-submit').click();
+
+    // Form does NOT redirect to /created.
+    await expect(page).toHaveURL(/\/manager\/invites\/create/);
+
+    // The form maps the Server Action's `invalid_input` code to "Invalid
+    // form data. Check the fields." via the `ERROR_LABEL` table in
+    // `invite-create-form.tsx:40-43`. We don't lock the Zod source message
+    // because it never reaches the UI.
+    const errorEl = page.getByTestId('invite-create-error');
+    await expect(errorEl).toBeVisible();
+    await expect(errorEl).toContainText(/invalid form data/i);
+
+    // No invite row was written in the window.
+    const newRows = await queryInvitesCreatedSince(beforeMs);
+    expect(newRows).toHaveLength(0);
+  });
+
+  // TC-E2E-07 (.specs/sso-e2e-live-execution.md REQ-2) — filter form drives
+  // URL + table re-render; CSV export link triggers download event.
+  test('team-roster sso-auto filter re-renders the members table and CSV export triggers download', async ({
+    page,
+    context,
+  }) => {
+    await ensureManager(context);
+    await page.goto(`${BASE_URL}/manager/teams/${ALPHA_PLATFORM_TEAM_ID}`);
+    await expect(page.getByTestId('team-detail-name')).toBeVisible();
+
+    // Initial URL has no `provisioned_via` query (route defaults to `all`).
+    expect(page.url()).not.toContain('provisioned_via=');
+
+    // Select sso-auto radio + click Apply (GET form — URL updates on submit).
+    await page.locator('input[name="provisioned_via"][value="sso-auto"]').check();
+    await page.getByTestId('team-members-filter-form').getByRole('button', { name: /apply/i }).click();
+    await page.waitForURL(/provisioned_via=sso-auto/);
+
+    // Drain the streamed Server-Component render before asserting row count
+    // — waitForURL fires before SSR completes, so an immediate assertion
+    // can race and read a stale empty DOM.
+    await page.waitForSelector('[data-testid="team-members-table"]');
+    const rowCount = await page.locator('[data-testid="team-members-table"] tbody tr').count();
+    expect(rowCount, 'seed marks quinn+rita as sso-auto on team-platform — filter must return ≥ 1 row').toBeGreaterThanOrEqual(1);
+
+    // CSV export: clicking the link triggers a real download event.
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByTestId('team-export-csv-link').click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/team-.*-roster-.*\.csv$/i);
+  });
+
+  // TC-E2E-07b (.specs/sso-e2e-live-execution.md REQ-2) — standalone:
+  // direct-nav exportHref propagation, no dependence on TC-E2E-07 state.
+  test('team-export-csv-link href propagates the active provisioned_via filter on direct nav', async ({
+    page,
+    context,
+  }) => {
+    await ensureManager(context);
+    await page.goto(`${BASE_URL}/manager/teams/${ALPHA_PLATFORM_TEAM_ID}?provisioned_via=sso-auto`);
+    await expect(page.getByTestId('team-detail-name')).toBeVisible();
+
+    // The page builds `exportHref` server-side from the resolved
+    // `provisionedVia` query param; the rendered href must reflect it
+    // so the CSV reports the same filter the user is viewing.
+    const href = await page.getByTestId('team-export-csv-link').getAttribute('href');
+    expect(href).toContain('provisioned_via=sso-auto');
   });
 });
