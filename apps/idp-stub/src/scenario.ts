@@ -78,6 +78,19 @@ export interface ScenarioStore {
   get(): Scenario;
   set(patch: ScenarioOverride): void;
   reset(): void;
+  /**
+   * Record the `nonce` value captured from a `GET /authorize` query
+   * param. Read at `/token` minting time as the fallback for the
+   * `id_token.nonce` claim when the scenario does not pin a `nonce`.
+   *
+   * Pass `null` to clear the slot (e.g. when /authorize is called
+   * without a `nonce` param OR with an empty one).
+   *
+   * Spec: .specs/sso-nonce-replay.md TASK-1.
+   */
+  setPendingNonce(value: string | null): void;
+  /** Read the last-recorded pending nonce. `null` when never set or cleared. */
+  getPendingNonce(): string | null;
 }
 
 /**
@@ -85,9 +98,14 @@ export interface ScenarioStore {
  * store — required so Vitest workers / parallel test files don't share
  * state. The stub's process-lifetime singleton is `defaultScenarioStore`
  * below.
+ *
+ * The pending-nonce slot lives in the same factory closure as `current`
+ * so per-test isolation extends to it: tests that build a fresh store
+ * via `createScenarioStore()` start with `pendingNonce = null`.
  */
 export const createScenarioStore = (): ScenarioStore => {
   let current: Scenario = DEFAULT_SCENARIO;
+  let pendingNonce: string | null = null;
   return {
     get: () => current,
     set: (patch) => {
@@ -95,7 +113,12 @@ export const createScenarioStore = (): ScenarioStore => {
     },
     reset: () => {
       current = DEFAULT_SCENARIO;
+      pendingNonce = null;
     },
+    setPendingNonce: (value) => {
+      pendingNonce = value;
+    },
+    getPendingNonce: () => pendingNonce,
   };
 };
 

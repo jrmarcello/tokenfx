@@ -251,12 +251,15 @@ TC above except TC-I-45 becomes mechanically executable.
   occupy the NOT NULL columns where state-replay leaves no real identity
   data. Spec-b TC-I-34 is now ADDRESSED.
 
-- **REQ-FU-2 (nonce-reuse replay — TC-I-45)**: spec-b's TC-I-45 covers
-  "fresh state + reused nonce → rejected." NextAuth's nonce-handling
-  path is less directly exposed than the state-cookie path; the stub
-  COULD be extended to mint a duplicate-nonce id_token, but exercising
-  NextAuth's nonce-check end-to-end requires more reverse-engineering
-  of NextAuth v5 internals than this spec budgets for. Deferred.
+- **REQ-FU-2 (nonce-reuse replay — TC-I-45)**: **CLOSED by
+  `.specs/sso-nonce-replay.md`** (2026-05-13). Approach: enable
+  `checks: ['pkce', 'state', 'nonce']` on the Okta provider; extend
+  the IdP stub so `/authorize` records the captured `nonce` query
+  param into a pending slot read by `/token` when minting the
+  id_token. Test isolation via tampered-nonce single callback (Auth.js
+  v5 runs state-check before nonce-check, so a literal URL-replay
+  fires state first — the tampered-nonce path proves nonce validation
+  is actually wired). Spec-b TC-I-45 marked ADDRESSED.
 
 - **Real Google provider testing**: emulating Google's exact OIDC
   endpoints (the `accounts.google.com` issuer is hardcoded in

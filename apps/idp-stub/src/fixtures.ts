@@ -38,12 +38,26 @@ export type SignInput = Readonly<{
   jwks: JwksKit;
   issuer: string;
   scenario: Scenario;
+  /**
+   * Nonce captured from the most recent `GET /authorize?nonce=...`
+   * request. Used as a FALLBACK only — when `scenario.nonce` is set
+   * (e.g. a tampered-nonce test), the pinned value wins. When BOTH
+   * are null/undefined, the `nonce` claim is omitted entirely
+   * (preserves existing behaviour for tests that don't exercise nonce).
+   *
+   * Note: `undefined` and `null` both fall through `??` to the next
+   * fallback — empty-string callers MUST normalise to null upstream
+   * (the `/authorize` handler in `server.ts` does this).
+   *
+   * Spec: .specs/sso-nonce-replay.md TASK-2.
+   */
+  pendingNonce?: string | null;
 }>;
 
 export const signIdToken = async (
   input: SignInput,
 ): Promise<Result<string, Error>> => {
-  const { jwks, issuer, scenario } = input;
+  const { jwks, issuer, scenario, pendingNonce } = input;
   const now = Math.floor(Date.now() / 1000);
 
   const iss = scenario.forceIssOverride ?? issuer;
@@ -51,13 +65,16 @@ export const signIdToken = async (
   const exp = scenario.exp ?? now + 3600;
   const jti = scenario.jti ?? randomUUID();
 
+  // Resolution order: pin (scenario.nonce) > pending (from /authorize) > absent.
+  const resolvedNonce = scenario.nonce ?? pendingNonce ?? null;
+
   const payload: jose.JWTPayload = {
     sub: scenario.sub,
     email: scenario.email,
     email_verified: scenario.email_verified,
   };
-  if (scenario.nonce !== null) {
-    payload.nonce = scenario.nonce;
+  if (resolvedNonce !== null) {
+    payload.nonce = resolvedNonce;
   }
 
   try {

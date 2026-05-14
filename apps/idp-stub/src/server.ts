@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
+import { z } from 'zod';
 
 import { buildDiscoveryDoc, signIdToken } from './fixtures.js';
 import type { JwksKit } from './jwks.js';
@@ -9,6 +10,27 @@ import {
   ScenarioOverrideSchema,
   type ScenarioStore,
 } from './scenario.js';
+
+/**
+ * `/authorize` query-param schema. Zod-validated at the boundary per
+ * `.claude/rules/security.md` ("Zod at every external input").
+ *
+ * - `redirect_uri` and `state` are required (existing contract).
+ * - `nonce` is optional, ≤ 255 chars. Empty string is normalised to
+ *   undefined in a post-parse step (treated as "no nonce captured" —
+ *   NOT a validation error, since an empty `?nonce=` from a
+ *   misconfigured OAuth caller is a protocol-level no-op, not abuse).
+ *
+ * Spec: .specs/sso-nonce-replay.md TASK-3 §Decisões #4.
+ */
+const AuthorizeQuerySchema = z.object({
+  response_type: z.string().optional(),
+  client_id: z.string().optional(),
+  redirect_uri: z.string().min(1, 'redirect_uri is required'),
+  state: z.string().min(1, 'state is required'),
+  scope: z.string().optional(),
+  nonce: z.string().max(255).optional(),
+});
 
 export type Deps = Readonly<{
   baseUrl: string;
@@ -44,20 +66,29 @@ export const createApp = (deps: Deps): Hono => {
 
   // --- Authorize -------------------------------------------------------
   app.get('/authorize', (c) => {
-    const q = c.req.query();
-    const redirectUri = q.redirect_uri;
-    const state = q.state;
-
-    if (!redirectUri) return c.json(badRequest('redirect_uri is required'), 400);
-    if (state === undefined || state === '') {
-      return c.json(badRequest('state is required'), 400);
+    const parsed = AuthorizeQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const message = issue
+        ? `${issue.path.join('.') || '<root>'}: ${issue.message}`
+        : 'invalid authorize query';
+      return c.json(badRequest(message), 400);
     }
+    const { redirect_uri: redirectUri, state, nonce: nonceRaw } = parsed.data;
+
     if (!isAllowedRedirectUri(redirectUri, deps.baseUrl)) {
       return c.json(
         badRequest('redirect_uri must be localhost / 127.0.0.1 / stub base URL'),
         400,
       );
     }
+
+    // Empty-string nonce normalises to null (no record). Non-empty
+    // values are recorded into the pending slot so /token can echo
+    // them into the id_token's `nonce` claim — NextAuth requires this
+    // for nonce-check validation (sso-nonce-replay REQ-2).
+    const pendingNonce = nonceRaw && nonceRaw.length > 0 ? nonceRaw : null;
+    deps.scenario.setPendingNonce(pendingNonce);
 
     const code = randomUUID();
     const url = new URL(redirectUri);
@@ -81,7 +112,6 @@ export const createApp = (deps: Deps): Hono => {
     const grantType = typeof body.grant_type === 'string' ? body.grant_type : '';
     const code = typeof body.code === 'string' ? body.code : '';
     const redirectUri = typeof body.redirect_uri === 'string' ? body.redirect_uri : '';
-    const nonce = typeof body.nonce === 'string' && body.nonce.length > 0 ? body.nonce : null;
 
     if (!grantType) return c.json(badRequest('grant_type is required'), 400);
     if (grantType !== 'authorization_code') {
@@ -90,13 +120,19 @@ export const createApp = (deps: Deps): Hono => {
     if (!code) return c.json(badRequest('code is required'), 400);
     if (!redirectUri) return c.json(badRequest('redirect_uri is required'), 400);
 
+    // Note: form-body `nonce` is INTENTIONALLY NOT READ. NextAuth's
+    // OAuth flow places `nonce` on the `/authorize` query, not the
+    // `/token` POST body — the previous form-body echo was dead code
+    // under the real flow (sso-nonce-replay TASK-3 dead-code removal).
+    // The pending slot captured at `/authorize` time is the sole
+    // fallback for the `nonce` claim when scenario.nonce is null.
     const scenario = deps.scenario.get();
-    // Echo nonce from form body if scenario doesn't pin one.
-    const scenarioForSign = nonce !== null ? { ...scenario, nonce } : scenario;
+    const pendingNonce = deps.scenario.getPendingNonce();
     const signed = await signIdToken({
       jwks: deps.jwks,
       issuer: deps.baseUrl,
-      scenario: scenarioForSign,
+      scenario,
+      pendingNonce,
     });
 
     if (!signed.ok) {

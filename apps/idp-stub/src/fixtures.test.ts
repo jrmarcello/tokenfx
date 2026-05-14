@@ -153,5 +153,61 @@ describe('fixtures module', () => {
       expect(result.error).toBeInstanceOf(Error);
       expect(result.error.message.length).toBeGreaterThan(0);
     });
+
+    describe('pendingNonce resolution (sso-nonce-replay TASK-2)', () => {
+      it('TC-U-06: pendingNonce is used when scenario.nonce is null', async () => {
+        const kit = await generateJwks();
+        const scenario: Scenario = { ...DEFAULT_SCENARIO, nonce: null };
+        const result = await signIdToken({
+          jwks: kit,
+          issuer: STUB_ISS,
+          scenario,
+          pendingNonce: 'abc',
+        });
+        if (!result.ok) throw new Error('signIdToken should have succeeded');
+        const decoded = jose.decodeJwt(result.value);
+        expect(decoded.nonce).toBe('abc');
+      });
+
+      it('TC-U-07: scenario.nonce wins over pendingNonce (pin > pending)', async () => {
+        const kit = await generateJwks();
+        const scenario: Scenario = { ...DEFAULT_SCENARIO, nonce: 'pinned' };
+        const result = await signIdToken({
+          jwks: kit,
+          issuer: STUB_ISS,
+          scenario,
+          pendingNonce: 'abc',
+        });
+        if (!result.ok) throw new Error('signIdToken should have succeeded');
+        const decoded = jose.decodeJwt(result.value);
+        expect(decoded.nonce).toBe('pinned');
+      });
+
+      it('TC-U-08: both null/absent → claim absent (strict property absence)', async () => {
+        const kit = await generateJwks();
+        const result = await signIdToken({
+          jwks: kit,
+          issuer: STUB_ISS,
+          scenario: { ...DEFAULT_SCENARIO, nonce: null },
+          pendingNonce: null,
+        });
+        if (!result.ok) throw new Error('signIdToken should have succeeded');
+        const decoded = jose.decodeJwt(result.value);
+        expect('nonce' in decoded).toBe(false);
+      });
+
+      it('TC-U-09: pendingNonce omitted (legacy callers) is treated identically to null — claim absent', async () => {
+        const kit = await generateJwks();
+        const result = await signIdToken({
+          jwks: kit,
+          issuer: STUB_ISS,
+          scenario: { ...DEFAULT_SCENARIO, nonce: null },
+          // pendingNonce omitted — undefined collapses via `??` same as null
+        });
+        if (!result.ok) throw new Error('signIdToken should have succeeded');
+        const decoded = jose.decodeJwt(result.value);
+        expect('nonce' in decoded).toBe(false);
+      });
+    });
   });
 });

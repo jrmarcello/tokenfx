@@ -33,6 +33,15 @@ export const authConfig = {
       clientId: process.env.OKTA_CLIENT_ID,
       clientSecret: process.env.OKTA_CLIENT_SECRET,
       issuer: process.env.OKTA_ISSUER,
+      // sso-nonce-replay REQ-1: Auth.js v5's Okta provider defaults to
+      // `checks: ['pkce', 'state']` (verified at
+      // `@auth/core@0.37.2/src/providers/okta.ts:108`). Adding `'nonce'`
+      // enables the nonce-cookie validation path so tampered id_tokens
+      // are rejected with `InvalidCheck`. The existing
+      // `auth.ts:logger.error` hook (commit 1961b61) already writes the
+      // `'rejected-replay'` audit row for any InvalidCheck regardless
+      // of kind — no orchestrator changes needed.
+      checks: ['pkce', 'state', 'nonce'],
     }),
   ],
   pages: {

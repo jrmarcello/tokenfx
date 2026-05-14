@@ -165,3 +165,44 @@ describe('ScenarioOverrideSchema', () => {
     expect(() => ScenarioOverrideSchema.parse({ iat: -1 })).toThrow(ZodError);
   });
 });
+
+describe('createScenarioStore — pendingNonce slot (sso-nonce-replay TASK-1)', () => {
+  it('TC-U-01: setPendingNonce stores the value; get() and getPendingNonce() are independent surfaces', () => {
+    const store = createScenarioStore();
+    store.setPendingNonce('abc');
+    expect(store.getPendingNonce()).toBe('abc');
+    expect(store.get().nonce).toBe(null);
+  });
+
+  it('TC-U-02: reset() clears the pending slot AND restores DEFAULT_SCENARIO (one TC, two assertions)', () => {
+    const store = createScenarioStore();
+    store.set({ email: 'overridden@example.com' });
+    store.setPendingNonce('abc');
+    store.reset();
+    expect(store.getPendingNonce()).toBe(null);
+    expect(store.get()).toEqual(DEFAULT_SCENARIO);
+  });
+
+  it('TC-U-03: last-write-wins on repeated setPendingNonce calls (no overwrite guard regression)', () => {
+    const store = createScenarioStore();
+    store.setPendingNonce('first');
+    store.setPendingNonce('second');
+    expect(store.getPendingNonce()).toBe('second');
+  });
+
+  it('TC-U-04: setPendingNonce(null) clears the slot explicitly', () => {
+    const store = createScenarioStore();
+    store.setPendingNonce('abc');
+    store.setPendingNonce(null);
+    expect(store.getPendingNonce()).toBe(null);
+  });
+
+  it('TC-U-05: two independent createScenarioStore() instances do NOT share pending state (per-test isolation lock)', () => {
+    const a = createScenarioStore();
+    const b = createScenarioStore();
+    a.setPendingNonce('only-a');
+    expect(b.getPendingNonce()).toBe(null);
+    b.setPendingNonce('only-b');
+    expect(a.getPendingNonce()).toBe('only-a');
+  });
+});

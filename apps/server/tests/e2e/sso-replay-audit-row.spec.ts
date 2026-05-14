@@ -26,57 +26,12 @@ import {
   REPLAY_EMAIL_HASH_SENTINEL,
   REPLAY_ISS_SENTINEL,
 } from '../../lib/auth/replay-detector';
+import { waitForReplayRow } from './helpers/audit-log-probe';
 import { resetStubScenario, setStubScenario } from './helpers/idp-stub-control';
 import { signInAs } from './helpers/sign-in-as';
 
 const BASE_URL = 'http://localhost:3232';
 const STUB_BASE_URL = process.env.IDP_STUB_BASE_URL ?? 'http://localhost:3001';
-
-type ReplayRow = {
-  outcome: string;
-  email_hash: string;
-  iss: string;
-  sso_provider: string;
-  ip: string | null;
-  city: string | null;
-  user_agent: string | null;
-  occurred_at: Date;
-};
-
-const queryReplayRowsSince = async (sinceMs: number): Promise<ReplayRow[]> => {
-  const client = new Client({ connectionString: process.env.DATABASE_URL });
-  await client.connect();
-  try {
-    const sinceIso = new Date(sinceMs).toISOString();
-    const res = await client.query<ReplayRow>(
-      `SELECT outcome, email_hash, iss, sso_provider, ip, city, user_agent, occurred_at
-         FROM auth_event_log
-        WHERE outcome = 'rejected-replay'
-          AND email_hash = $1
-          AND occurred_at > $2
-        ORDER BY occurred_at DESC`,
-      [REPLAY_EMAIL_HASH_SENTINEL, sinceIso],
-    );
-    return res.rows;
-  } finally {
-    await client.end();
-  }
-};
-
-/**
- * Poll the replay-row probe until at least one row appears OR timeout.
- * The replay-write happens in a fire-and-forget microtask after the
- * NextAuth redirect response is sent, so a fixed sleep is flake-prone.
- */
-const waitForReplayRow = async (sinceMs: number, timeoutMs = 3_000): Promise<ReplayRow[]> => {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const rows = await queryReplayRowsSince(sinceMs);
-    if (rows.length > 0) return rows;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  return queryReplayRowsSince(sinceMs);
-};
 
 test.describe('SSO state-replay → audit row', () => {
   test.beforeEach(async () => {

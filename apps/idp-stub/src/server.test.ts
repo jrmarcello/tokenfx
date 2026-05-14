@@ -212,13 +212,21 @@ describe('Hono server', () => {
       );
     });
 
-    it('echoes nonce from form body into id_token claim', async () => {
+    it('TC-I-06 (sso-nonce-replay): form-body `nonce` is IGNORED — only /authorize-captured nonce flows into the id_token claim (dead-code removal regression lock)', async () => {
+      // NextAuth places `nonce` on the /authorize query string, NOT on
+      // the /token POST body. The previous form-body echo at
+      // server.ts:84 was dead code under the real OAuth flow and
+      // removed by sso-nonce-replay TASK-3. This test locks against
+      // accidental re-introduction.
       const { app } = await makeApp();
-      const { body, headers } = form({ ...happyForm, nonce: 'NONCE-123' });
+      const { body, headers } = form({ ...happyForm, nonce: 'fromBody' });
       const res = await app.request('/token', { method: 'POST', body, headers });
       const data = await readJson<TokenResponse>(res);
       const decoded = jose.decodeJwt(data.id_token);
-      expect(decoded.nonce).toBe('NONCE-123');
+      // Strict property-absence — matches the canonical pattern used by
+      // every other nonce-absence assertion in this file (TC-I-03/04 +
+      // fixtures.test.ts TC-U-08).
+      expect('nonce' in decoded).toBe(false);
     });
 
     it('400 when Content-Type is application/json', async () => {
@@ -419,6 +427,130 @@ describe('Hono server', () => {
       const data = await readJson<TokenResponse>(tokRes);
       const decoded = jose.decodeJwt(data.id_token);
       expect(decoded.email).toBe('e2e-sso-new@alpha.test'); // DEFAULT_SCENARIO
+    });
+  });
+
+  describe('pendingNonce flow (sso-nonce-replay TASK-3)', () => {
+    const happyForm = {
+      grant_type: 'authorization_code',
+      code: 'x',
+      redirect_uri: 'http://localhost:3232/cb',
+    };
+
+    it('TC-I-01: /authorize?nonce=abc records into pending slot; subsequent /token echoes nonce=abc', async () => {
+      const { app } = await makeApp();
+      const authorizeRes = await app.request(
+        '/authorize?response_type=code&client_id=x&redirect_uri=http://localhost:3232/cb&state=ST&nonce=abc&scope=openid+email',
+      );
+      expect(authorizeRes.status).toBe(302);
+
+      const { body, headers } = form(happyForm);
+      const tokRes = await app.request('/token', { method: 'POST', body, headers });
+      const data = await readJson<TokenResponse>(tokRes);
+      const decoded = jose.decodeJwt(data.id_token);
+      expect(decoded.nonce).toBe('abc');
+    });
+
+    it('TC-I-02: scenario.nonce pin wins over /authorize-recorded pending nonce', async () => {
+      const store = createScenarioStore();
+      const { app } = await makeApp({ scenario: store });
+
+      // POST scenario { nonce: 'pinned' } sets the pin.
+      await app.request('/admin/scenario', {
+        method: 'POST',
+        body: JSON.stringify({ nonce: 'pinned' }),
+        headers: new Headers({ 'content-type': 'application/json' }),
+      });
+      // /authorize records 'abc' into pending — both values now coexist.
+      await app.request(
+        '/authorize?response_type=code&redirect_uri=http://localhost:3232/cb&state=ST&nonce=abc',
+      );
+
+      // Slot probe: both the pin and the pending value are live.
+      expect(store.get().nonce).toBe('pinned');
+      expect(store.getPendingNonce()).toBe('abc');
+
+      // /token resolves via `scenario.nonce ?? pendingNonce ?? null`
+      // → 'pinned' wins.
+      const { body, headers } = form(happyForm);
+      const tokRes = await app.request('/token', { method: 'POST', body, headers });
+      const decoded = jose.decodeJwt((await readJson<TokenResponse>(tokRes)).id_token);
+      expect(decoded.nonce).toBe('pinned');
+    });
+
+    it('TC-I-02b: pending slot survives independently — fresh store with only setPendingNonce and no scenario.nonce pin → /token echoes pending', async () => {
+      const store = createScenarioStore();
+      const { app } = await makeApp({ scenario: store });
+
+      // No scenario.nonce pin. /authorize records into pending.
+      await app.request(
+        '/authorize?response_type=code&redirect_uri=http://localhost:3232/cb&state=ST&nonce=abc',
+      );
+
+      // Resolution: `scenario.nonce (null) ?? pendingNonce ('abc') ?? null`
+      // → 'abc'.
+      const { body, headers } = form(happyForm);
+      const tokRes = await app.request('/token', { method: 'POST', body, headers });
+      const decoded = jose.decodeJwt((await readJson<TokenResponse>(tokRes)).id_token);
+      expect(decoded.nonce).toBe('abc');
+    });
+
+    it('TC-I-03: /authorize WITHOUT nonce param → /token id_token has no nonce claim', async () => {
+      const { app } = await makeApp();
+      await app.request(
+        '/authorize?response_type=code&redirect_uri=http://localhost:3232/cb&state=ST',
+      );
+      const { body, headers } = form(happyForm);
+      const tokRes = await app.request('/token', { method: 'POST', body, headers });
+      const decoded = jose.decodeJwt((await readJson<TokenResponse>(tokRes)).id_token);
+      expect('nonce' in decoded).toBe(false);
+    });
+
+    it('TC-I-04: /authorize?nonce= (empty) normalises to no record → /token id_token has no nonce claim', async () => {
+      const { app } = await makeApp();
+      const authorizeRes = await app.request(
+        '/authorize?response_type=code&redirect_uri=http://localhost:3232/cb&state=ST&nonce=',
+      );
+      expect(authorizeRes.status).toBe(302); // Empty is NOT a Zod error
+      const { body, headers } = form(happyForm);
+      const tokRes = await app.request('/token', { method: 'POST', body, headers });
+      const decoded = jose.decodeJwt((await readJson<TokenResponse>(tokRes)).id_token);
+      expect('nonce' in decoded).toBe(false);
+    });
+
+    it('TC-I-05a: /authorize?nonce=<255 chars> accepted (valid max boundary)', async () => {
+      const { app } = await makeApp();
+      const nonce255 = 'a'.repeat(255);
+      const authorizeRes = await app.request(
+        `/authorize?response_type=code&redirect_uri=http://localhost:3232/cb&state=ST&nonce=${nonce255}`,
+      );
+      expect(authorizeRes.status).toBe(302);
+      const { body, headers } = form(happyForm);
+      const tokRes = await app.request('/token', { method: 'POST', body, headers });
+      const decoded = jose.decodeJwt((await readJson<TokenResponse>(tokRes)).id_token);
+      expect(decoded.nonce).toBe(nonce255);
+    });
+
+    it('TC-I-05b: /authorize?nonce=<256 chars> rejected with 400; pending slot is NOT poisoned', async () => {
+      const store = createScenarioStore();
+      const { app } = await makeApp({ scenario: store });
+      const nonce256 = 'a'.repeat(256);
+
+      const authorizeRes = await app.request(
+        `/authorize?response_type=code&redirect_uri=http://localhost:3232/cb&state=ST&nonce=${nonce256}`,
+      );
+      expect(authorizeRes.status).toBe(400);
+      const errBody = await readJson<{ error: { message: string } }>(authorizeRes);
+      expect(typeof errBody.error.message).toBe('string');
+
+      // Slot must NOT have been poisoned with the rejected value.
+      expect(store.getPendingNonce()).toBe(null);
+
+      // Subsequent /token produces no nonce claim (slot still null).
+      const { body, headers } = form(happyForm);
+      const tokRes = await app.request('/token', { method: 'POST', body, headers });
+      const decoded = jose.decodeJwt((await readJson<TokenResponse>(tokRes)).id_token);
+      expect('nonce' in decoded).toBe(false);
     });
   });
 });
