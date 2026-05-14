@@ -1,6 +1,6 @@
 # Spec: review-report-2026-05-14-fixes
 
-## Status: DONE (pending commit)
+## Status: DONE
 
 ## Context
 
