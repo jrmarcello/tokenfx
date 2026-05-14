@@ -35,8 +35,8 @@ For each requirement:
 
 ### 3. Run Validation
 
-- Execute all validation criteria listed in the spec
-- Run `make lint` and `make test`
+- Execute all validation criteria listed in the spec (see the spec's "Validation Criteria" section)
+- Run the project's gate commands: `pnpm typecheck`, `pnpm lint`, `pnpm test --run` (and `pnpm test:e2e` when the spec has E2E TCs). For the `apps/server` workspace, prefix with `pnpm --filter @tokenfx/server`.
 - Check for regressions in existing functionality
 
 ### 4. Generate Report
@@ -70,4 +70,4 @@ Append a review section to the spec file:
 
 - Can be run standalone after manual implementation
 - Recommended after `/ralph-loop` completes with `DONE` status
-- For deeper review, delegate to `/full-review-team` or `/security-review-team`
+- For deeper cross-cutting review (code + security + data in parallel), invoke `/review` after the requirements pass — `/review` is project-wide and complements the spec-anchored audit this skill performs.

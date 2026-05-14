@@ -1,72 +1,64 @@
 ---
 name: review
-description: Single-agent code review for TypeScript/Next.js conventions, security, and data layer
+description: Parallel 3-agent project review — code + security + data, in parallel
 user-invocable: true
 ---
 
-# /review [file|branch]
+# /review
 
-Code review focused on TypeScript/React/Next.js conventions, security, and data-layer quality.
+Launches a project-wide review with 3 specialized agents auditing the codebase independently and in parallel. **Project-scope by default** (whole codebase or current diff); for spec-anchored review with REQ-by-REQ traceability against `.specs/<name>.md`, use `/spec-review` instead.
 
-## Scope
+## Team
 
-- No arguments: review all uncommitted changes (`git diff` + `git diff --cached`)
-- File path: review specific file
-- Branch name: review all changes on branch vs main
+### 1. Code Reviewer (code-reviewer agent)
 
-## Checklist
+- TypeScript correctness (no `any`, strict null checks, discriminated unions)
+- React / Next.js App Router conventions (Server Components default, revalidation, Rules of Hooks)
+- shadcn/ui composition
+- Error handling (Result pattern, typed errors)
+- Test quality (Vitest colocated, hand-written stubs, error paths)
 
-### TypeScript
+### 2. Security Reviewer (security-reviewer agent)
 
-- [ ] No `any`; uses `unknown` + narrowing at boundaries
-- [ ] No non-null assertions (`!`) without justification
-- [ ] Named exports preferred (defaults only where Next requires)
-- [ ] Zod validation at ingestion/API boundaries
-- [ ] Result pattern (or typed errors) for fallible operations; avoid throwing across module boundaries
+- SQL injection (prepared statements via better-sqlite3)
+- Path traversal in filesystem reads (`~/.claude/projects/`)
+- XSS (dangerouslySetInnerHTML, unsafe bypasses)
+- CSRF / API route exposure
+- Secret exposure (credentials, PII in logs, transcripts sent externally)
+- Dependency risk (unpopular/native packages)
 
-### React / Next.js (App Router)
+### 3. Data Reviewer (data-reviewer agent)
 
-- [ ] Server Components by default; `'use client'` only when needed
-- [ ] Data fetched in Server Components via `lib/queries/*`, not client fetch
-- [ ] Mutations via Server Actions or Route Handlers; `revalidatePath`/`revalidateTag` after writes
-- [ ] Rules of Hooks respected; `key` on lists; no prop drilling where composition works
-- [ ] `loading.tsx` / `error.tsx` present for long-running or fallible routes
+- SQLite schema design (types, constraints, NOT NULL, CHECK)
+- Query performance (EXPLAIN QUERY PLAN, indexes on FK and filter/sort columns)
+- PRAGMA configuration (`foreign_keys=ON`, `journal_mode=WAL`)
+- Transaction usage (`db.transaction(fn)` for multi-statement writes)
+- Idempotency patterns (ON CONFLICT, natural keys)
 
-### Data Layer (better-sqlite3)
+## Execution
 
-- [ ] All queries via `db.prepare(...)` with parameter binding — no string concat
-- [ ] Prepared statements hoisted / memoized, not rebuilt per call
-- [ ] Multi-statement writes wrapped in `db.transaction(fn)`
-- [ ] Indexes on foreign keys and common WHERE/ORDER BY columns
-- [ ] Idempotency via `ON CONFLICT DO UPDATE` or natural keys
-
-### Security
-
-- [ ] No credentials in code
-- [ ] Path traversal guard for filesystem reads (`lib/fs-paths.ts`)
-- [ ] No `dangerouslySetInnerHTML` without sanitization
-- [ ] No PII in logs; no transcripts shipped to external services
-
-### Testing
-
-- [ ] New code has corresponding tests (Vitest)
-- [ ] Tests colocated (`foo.ts` + `foo.test.ts`)
-- [ ] Hand-written stubs (no mocking frameworks)
-- [ ] Error paths and boundaries covered, not only happy paths
-
-### Project Quality
-
-- [ ] `lib/logger.ts` used instead of `console.log` in library/UI code
-- [ ] Public modules have clear names; internal helpers colocated
-- [ ] No dead code, no TODOs lingering without issue references
-
-## Output Format
-
-For each finding:
+Launch all 3 agents in parallel using Agent tool:
 
 ```text
-[SEVERITY] file:line — Description
-  Suggested fix: ...
+Agent(code-reviewer): Review codebase for TS/React/Next conventions and test quality
+Agent(security-reviewer): Audit codebase for injection, traversal, XSS, secrets
+Agent(data-reviewer): Analyze SQLite schema, queries, PRAGMA, and transactions
 ```
 
-Severities: MUST FIX, SHOULD FIX, NICE TO HAVE
+## Output
+
+Synthesize findings into a unified report and save as `docs/review-report-YYYY-MM-DD.md` (using the current date).
+
+The report must include:
+
+1. Executive summary table (severity x category counts)
+2. All findings grouped by priority (CRITICAL/MUST FIX first)
+3. Deduplicated findings (when multiple reviewers flag the same issue)
+4. Positive findings section (patterns to preserve)
+5. Recommended action plan in phases
+
+| Category | Severity | Count |
+| --- | --- | --- |
+| Code | MUST FIX / SHOULD FIX / NICE TO HAVE | N |
+| Security | CRITICAL / HIGH / MEDIUM / LOW | N |
+| Data | MUST FIX / SHOULD FIX / NICE TO HAVE | N |

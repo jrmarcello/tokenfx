@@ -78,8 +78,7 @@ Layered, but deliberately flat — this is a single-user local tool, not a distr
 | `/ralph-loop` | Autonomous task-by-task execution from a spec | After `/spec` approval, for autonomous implementation |
 | `/validate` | Full validation pipeline (typecheck + lint + tests + build) | Before committing any code change |
 | `/validate quick` | Typecheck + tests only | Quick feedback during development |
-| `/review` | Single-agent code review | Quick review of small changes |
-| `/full-review-team` | Parallel review: code + security + data (Agent Team) | PRs, major changes, cross-layer work |
+| `/review` | Parallel 3-agent project review (code + security + data) | PRs, major changes, cross-layer work — project-scope (not spec-anchored) |
 
 ### Agents
 
@@ -89,7 +88,7 @@ Agent Teams enabled (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`). Each agent has p
 - `security-reviewer` (model: opus) — injection, XSS, path traversal, secrets, dependency risk.
 - `data-reviewer` (model: sonnet) — SQLite schema, query performance, PRAGMA, transactions.
 
-Delegate with "use a subagent to..." or launch a team via `/full-review-team`.
+Delegate with "use a subagent to..." or launch a team via `/review`.
 
 > **Naming note**: the underlying Claude Code tool that launches a subagent is called `Agent` (renamed from `Task` in a recent version — no schema bump). Our JSONL parser and aggregation queries reference the `SUBAGENT_TOOL_NAME` constant in `lib/analytics/subagent.ts`; external docs and tools like `ccusage` may still say "Task tool" — it's the same thing.
 
