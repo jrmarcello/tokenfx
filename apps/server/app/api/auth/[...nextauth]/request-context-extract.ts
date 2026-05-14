@@ -23,6 +23,7 @@
 import type { NextRequest } from 'next/server';
 import { log as logger } from '@root/logger';
 import type { RequestContext } from '@/lib/auth/request-context';
+import { getTrustedClientIp } from '@/lib/util/ip-trust';
 
 const EMPTY_CONTEXT: RequestContext = { ip: '', userAgent: '' };
 
@@ -47,15 +48,15 @@ const warnOnce = (errorMessage: string): void => {
 };
 
 const readIp = (request: NextRequest): string => {
-  const forwarded = request.headers.get('x-forwarded-for');
-  if (forwarded !== null) {
-    const first = forwarded.split(',')[0]?.trim();
-    if (first) return first;
-  }
-  const real = request.headers.get('x-real-ip');
-  if (real !== null) {
-    const trimmed = real.trim();
-    if (trimmed) return trimmed;
+  // Delegated to `getTrustedClientIp` (review M1). The prior inline impl
+  // trusted `X-Forwarded-For` unconditionally; the central helper gates
+  // XFF on `TOKENFX_TRUSTED_PROXY=1` and falls back to `X-Real-IP`.
+  // REQ-13/REQ-13a require the empty-string sentinel (NOT null) so the
+  // RequestContext stays string-typed end-to-end; we narrow null here.
+  const ip = getTrustedClientIp(request);
+  if (ip !== null) {
+    const trimmed = ip.trim();
+    if (trimmed.length > 0) return trimmed;
   }
   return '';
 };

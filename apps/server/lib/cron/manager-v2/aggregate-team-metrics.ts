@@ -26,6 +26,7 @@
  */
 import { sql } from 'drizzle-orm';
 import { cronRuns } from '@/lib/db/schema';
+import { extractExecRows } from '@/lib/db/exec';
 import type { getDb } from '@/lib/db/client';
 
 type Db = ReturnType<typeof getDb>;
@@ -140,13 +141,10 @@ const resolveWindowStartsByOrg = async (
            ) AS has_rows
     FROM (SELECT DISTINCT org_id FROM users) AS u
   `);
-  // `db.execute` returns a `pg`-style result object on the node-postgres
-  // adapter (`.rows`) and a bare array on others. Mirror the existing
-  // narrowing pattern from `runAggregation`.
-  const rowsField = (probe as unknown as { rows?: { org_id: string; has_rows: boolean }[] }).rows;
-  const probeRows = rowsField ?? (probe as unknown as { org_id: string; has_rows: boolean }[]);
+  // `db.execute` driver-shape unwrap is centralized in `extractExecRows`.
+  const probeRows = extractExecRows<{ org_id: string; has_rows: boolean }>(probe);
   const map = new Map<string, Date>();
-  for (const r of Array.isArray(probeRows) ? probeRows : []) {
+  for (const r of probeRows) {
     if (options.since) {
       map.set(r.org_id, options.since);
     } else {

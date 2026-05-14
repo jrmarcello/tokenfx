@@ -48,6 +48,7 @@ import {
 } from '@/lib/db/schema';
 import { recomputePerUserCalibration } from '@/lib/queries/calibration';
 import { truncateIpForAudit } from '@/lib/util/ip';
+import { getTrustedClientIp } from '@/lib/util/ip-trust';
 import {
   parseBearerAuthorization,
   verifyKeySecret,
@@ -383,10 +384,11 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
 
       // Audit log (REQ-27). One row per request, even on empty batches or
       // all-rejected batches.
-      const ip =
-        req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-        req.headers.get('x-real-ip')?.trim() ??
-        null;
+      // IP source delegated to `getTrustedClientIp` (review M1). XFF is only
+      // honored when the operator opts in via `TOKENFX_TRUSTED_PROXY=1`;
+      // otherwise we fall back to `X-Real-IP` to keep the audit trail safe
+      // against spoofing in deploys without a controlled reverse proxy.
+      const ip = getTrustedClientIp(req);
       const payloadSize = Buffer.byteLength(JSON.stringify(env.data), 'utf8');
       await tx.insert(ingestionLog).values({
         userId: machine.userId,

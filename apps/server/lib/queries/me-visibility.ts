@@ -48,6 +48,7 @@
  */
 import { sql } from 'drizzle-orm';
 import { bucketizeToolMix, type ToolBucket } from '@/lib/analytics/tool-mix';
+import { extractExecRows as extractRows } from '@/lib/db/exec';
 import type { getDb } from '@/lib/db/client';
 
 type Db = ReturnType<typeof getDb>;
@@ -119,12 +120,6 @@ LIMIT $2 OFFSET $3
 // ---------------------------------------------------------------------------
 // getMyKpis
 // ---------------------------------------------------------------------------
-
-const extractRows = <Row>(result: unknown): Row[] => {
-  if (Array.isArray(result)) return result as Row[];
-  const wrapped = result as { rows?: Row[] } | null;
-  return wrapped?.rows ?? [];
-};
 
 /**
  * 30-day aggregated KPIs for a single dev — the SAME numbers their manager
@@ -365,9 +360,8 @@ export const getMyOutcomeKpis = async (
       AND so.outcome_status = 'evaluated'
       AND s.started_at >= now() - INTERVAL '30 days'
   `);
-  const rowsField = (result as unknown as { rows?: AggRow[] }).rows;
-  const rows = rowsField ?? (result as unknown as AggRow[]);
-  const row = (Array.isArray(rows) ? rows[0] : undefined) as AggRow | undefined;
+  const rows = extractRows<AggRow>(result);
+  const row: AggRow | undefined = rows[0];
 
   return {
     totalLocAdded: row?.totalLocAdded ?? 0,

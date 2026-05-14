@@ -29,6 +29,20 @@
       "when": 1778000000000,
       "tag": "0003_manager_v3_outcomes",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1778200000000,
+      "tag": "0004_sso_auto_provision_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1778400000000,
+      "tag": "0005_manager_alert_acks",
+      "breakpoints": true
     }
   ]
 }

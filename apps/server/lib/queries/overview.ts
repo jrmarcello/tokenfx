@@ -27,6 +27,7 @@ import {
   teams,
   users,
 } from '@/lib/db/schema';
+import { extractExecRows } from '@/lib/db/exec';
 import type { getDb } from '@/lib/db/client';
 
 type Db = ReturnType<typeof getDb>;
@@ -242,13 +243,8 @@ const loadSessionsForOrg = async (
       AND s.started_at >= ${cutoff}
   `);
 
-  // node-postgres returns `{ rows }`; some Drizzle versions return the array
-  // directly. Handle both shapes — the alternative is a wrapper utility we
-  // would copy from `calibration.ts`.
-  const raw: Array<Record<string, unknown>> = Array.isArray(result)
-    ? (result as unknown as Array<Record<string, unknown>>)
-    : ((result as unknown as { rows: Array<Record<string, unknown>> }).rows ??
-       []);
+  // Driver-shape unwrap is centralized in `extractExecRows` (TASK-C4).
+  const raw = extractExecRows<Record<string, unknown>>(result);
 
   return raw.map((r) => ({
     userId: String(r.userId),

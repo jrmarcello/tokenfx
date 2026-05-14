@@ -28,6 +28,7 @@ import {
   modelBreakdownAgg,
   sessionsAgg,
 } from '@/lib/db/schema';
+import { extractExecRows } from '@/lib/db/exec';
 import type { getDb } from '@/lib/db/client';
 
 type Db = ReturnType<typeof getDb>;
@@ -101,9 +102,7 @@ export const recomputePerUserCalibration = async (
 
   // Drizzle's `execute` returns the underlying pg.QueryResult on node-postgres,
   // which exposes `.rows`. Some Drizzle versions return the array directly.
-  const sessionRows: SessionRow[] = Array.isArray(result)
-    ? (result as unknown as SessionRow[])
-    : ((result as unknown as { rows: SessionRow[] }).rows ?? []);
+  const sessionRows = extractExecRows<SessionRow>(result);
 
   const buckets = new Map<CalibrationFamily, FamilyAggregate>();
   const bump = (family: CalibrationFamily, sumLocal: number, sumOtel: number): void => {

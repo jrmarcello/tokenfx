@@ -1,6 +1,6 @@
 /**
  * Bearer-token authentication helpers for `/api/ingest` and `/api/health`
- * (central-server-onboarding REQ-6, REQ-37).
+ * (central-server-onboarding REQ-6, REQ-37; review-report REQ-23).
  *
  * Wire format: `Authorization: Bearer <secret>` (RFC 6750 / RFC 7235).
  * The plaintext `<secret>` is bcrypt-compared against `user_machines.secret_hash`.
@@ -8,17 +8,20 @@
  * Two reasons this lives in its own module:
  *
  *   1. Two routes need the SAME verification cache. If `/api/ingest` and
- *      `/api/health` each held their own `Map<key_id, plaintext>`, the
- *      "warm health probe → cold ingest" pattern would pay bcrypt twice.
+ *      `/api/health` each held their own state, the "warm health probe →
+ *      cold ingest" pattern would lose the shared invalidation signal.
  *      A shared module-level Map keeps them aligned.
  *   2. The header-parser is shared. Reimplementing RFC 7235 case-insensitive
  *      scheme handling in two places would invite drift.
  *
- * Cache trade-off: plaintext secrets sit in process memory for up to 60s
- * after the first successful verification. Process memory is the existing
- * trust boundary — an attacker with code execution in the server process
- * already has the DB connection string. The cache is never persisted, never
- * logged, never serialized.
+ * Cache shape (post REQ-23 / M5 fix): `{ secretHash, expiresAt }`. We
+ * deliberately do NOT store plaintext anywhere. The cache exists ONLY to
+ * detect hash rotation early — comparing the freshly-supplied `secretHash`
+ * argument against the cached `secretHash` tells us if the DB row changed
+ * since the last verification. bcrypt.compare still runs on every call;
+ * there is no skip-bcrypt optimization. This closes the 60s stale-window
+ * vulnerability that the previous plaintext-cache design exposed at the
+ * cost of ~25ms per ingest call (acceptable for low-throughput ingest API).
  *
  * Bcrypt cost: 10 (~25ms on commodity hardware). Industry minimum
  * recommendation per Auth0/Stripe — cost 12 (~100ms) saturates the ingest
@@ -36,24 +39,27 @@ import bcrypt from 'bcrypt';
 export const BCRYPT_COST = 10;
 
 /**
- * Cache TTL: 60s. Matches the plaintext window the server is willing to
- * keep in memory. Picked at the small end of the credible range — long
- * enough to cover a typical batch interval, short enough that a stolen
- * Bearer is still rate-limited by bcrypt within a minute.
+ * Cache TTL: 60s. The cache no longer holds plaintext; it now holds the
+ * `secretHash` last seen so we can detect rotation early. TTL bounds how
+ * long a stale row would survive in the cache if the verifier was never
+ * called again after rotation — but since every call re-reads `secretHash`
+ * from the DB and re-verifies via bcrypt, the TTL is mainly a memory cap
+ * (entries expire even if `keyId` is never touched again).
  */
 const CACHE_TTL_MS = 60_000;
 
-type CacheEntry = {
-  /** Plaintext secret last verified. */
-  readonly plaintext: string;
+type CacheEntry = Readonly<{
+  /** Hash last verified against. Used to detect rotation between calls. */
+  secretHash: string;
   /** Epoch ms after which the entry is considered stale. */
-  readonly expiresAt: number;
-};
+  expiresAt: number;
+}>;
 
 /**
- * Module-level cache: `key_id -> plaintext`. Per-process; reset between
- * test runs via `__resetIngestAuthCache`. Reading and writing this Map is
- * safe in Node's single-threaded event loop without explicit locking.
+ * Module-level cache: `key_id -> { secretHash, expiresAt }`. Per-process;
+ * reset between test runs via `__resetIngestAuthCache`. Reading and writing
+ * this Map is safe in Node's single-threaded event loop without explicit
+ * locking.
  */
 const verificationCache = new Map<string, CacheEntry>();
 
@@ -66,9 +72,7 @@ const verificationCache = new Map<string, CacheEntry>();
  * authenticated secret on both sides); it normalizes length and lets
  * `timingSafeEqual` work safely.
  *
- * Using a plain `===` would be fine for trust-boundary semantics (we already
- * verified the secret via bcrypt), but the spec asks for "constant-time
- * string-compare (microseconds)" so we use the dedicated primitive.
+ * Retained for the `secretHash`-vs-`secretHash` rotation check below.
  */
 const constantTimeStringEqual = (a: string, b: string): boolean => {
   const ha = createHash('sha256').update(a, 'utf8').digest();
@@ -128,41 +132,70 @@ export const parseBearerAuthorization = (
 };
 
 /**
+ * DI seam for `bcrypt.compare`. Production code never passes `deps`; tests
+ * inject a counting stub so they can assert "bcrypt ran N times" without
+ * a mocking framework. Typed against the real signature so the seam can
+ * never drift from the production behavior.
+ */
+export type VerifyKeySecretDeps = Readonly<{
+  bcrypt?: { compare: typeof bcrypt.compare };
+}>;
+
+/**
  * Verify that `secret` matches `secretHash` (bcrypt) for the given `keyId`.
  *
- * Cache flow:
- *   - Cache hit AND TTL valid: constant-time compare against cached plaintext.
- *     - Match → return true (skip bcrypt entirely).
- *     - Mismatch → fall through to bcrypt.compare (don't blindly reject; the
- *       cached plaintext could be stale if the secret was just rotated).
- *   - Cache miss OR TTL expired: bcrypt.compare. On match, update the cache.
+ * Post REQ-23: bcrypt.compare runs on EVERY call. There is no skip path.
+ * The cache stores only `{ secretHash, expiresAt }` and exists ONLY to:
+ *   (a) detect rotation early — if the incoming `secretHash` argument
+ *       differs from the cached one, the row was rotated and the cache
+ *       entry is stale (we replace it on success / delete it on failure).
+ *   (b) bound memory by expiring entries after `CACHE_TTL_MS`.
  *
- * The cache stores plaintext only AFTER bcrypt confirms it (we never seed
- * the cache with an unverified value). Plaintext lifetime ≤ TTL.
+ * The previous design cached plaintext and skipped bcrypt on cache hits.
+ * That left a 60s window where a rotated DB hash didn't invalidate
+ * in-flight tokens. Removing the skip closes that window at the cost of
+ * ~25ms (cost-10 bcrypt) per verification — acceptable for the ingest API.
  */
 export const verifyKeySecret = async (
   keyId: string,
   secret: string,
   secretHash: string,
+  deps?: VerifyKeySecretDeps,
 ): Promise<boolean> => {
+  const compare = deps?.bcrypt?.compare ?? bcrypt.compare;
   const now = Date.now();
+
+  // Always run bcrypt — no skip. The cache below is only for rotation
+  // bookkeeping and TTL-bounded memory use.
+  const ok = await compare(secret, secretHash);
+
   const cached = verificationCache.get(keyId);
-  if (cached && cached.expiresAt > now) {
-    if (constantTimeStringEqual(cached.plaintext, secret)) {
-      return true;
-    }
-    // Cached secret didn't match — either the caller has the wrong secret,
-    // or the secret was rotated. Fall through to bcrypt.
+  const cacheFresh = cached !== undefined && cached.expiresAt > now;
+  const cacheMatchesCurrentHash =
+    cacheFresh && constantTimeStringEqual(cached.secretHash, secretHash);
+
+  if (ok) {
+    // Successful verification: refresh the cache entry. If the hash
+    // rotated since last call, this overwrites the stale entry with the
+    // new hash. Either way, TTL resets so frequent callers don't pay
+    // memory pressure churn.
+    verificationCache.set(keyId, { secretHash, expiresAt: now + CACHE_TTL_MS });
+    return true;
   }
 
-  const ok = await bcrypt.compare(secret, secretHash);
-  if (!ok) return false;
-
-  verificationCache.set(keyId, {
-    plaintext: secret,
-    expiresAt: now + CACHE_TTL_MS,
-  });
-  return true;
+  // Failed verification. Two sub-cases:
+  //   1. Cache had a stale hash (rotation case) — drop it so a subsequent
+  //      retry with the correct plaintext can re-populate cleanly.
+  //   2. Cache had the current hash but the plaintext is just wrong
+  //      (caller error) — still drop defensively; the entry encodes "this
+  //      hash was last verified successfully", and an immediate failed
+  //      verification against the same hash means we can't claim that
+  //      invariant any longer without ambiguity.
+  // Note: `cacheMatchesCurrentHash` is computed for documentation/clarity;
+  // the deletion is unconditional because both sub-cases want the entry gone.
+  void cacheMatchesCurrentHash;
+  verificationCache.delete(keyId);
+  return false;
 };
 
 /**
@@ -176,7 +209,8 @@ export const __resetIngestAuthCache = (): void => {
 
 /**
  * Test-only: probe whether a `keyId` currently has a fresh cache entry.
- * Used by TC-I-71e to assert the bcrypt-skip path was taken.
+ * Used by integration tests to assert the cache invariants (presence after
+ * successful verify, absence after a rotated-hash mismatch).
  */
 export const __hasCachedVerification = (keyId: string): boolean => {
   const entry = verificationCache.get(keyId);

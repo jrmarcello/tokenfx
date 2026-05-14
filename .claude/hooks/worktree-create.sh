@@ -17,8 +17,12 @@ WORKTREE_DIR="${REPO_ROOT}/.claude/worktrees/${SAFE_NAME}"
 BRANCH="worktree-${NAME}"
 
 # ── Determine base branch ────────────────────────────────────────
-# Prefer origin/main, fallback to origin/HEAD
-if git rev-parse --verify "origin/main" &>/dev/null; then
+# Prefer local main (may be ahead of origin/main if commits haven't been
+# pushed yet — common in solo-dev workflows). Fall back to origin/main, then
+# origin/HEAD.
+if git rev-parse --verify "main" &>/dev/null; then
+  BASE="main"
+elif git rev-parse --verify "origin/main" &>/dev/null; then
   BASE="origin/main"
 else
   DEFAULT=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@refs/remotes/origin/@@' || echo "main")

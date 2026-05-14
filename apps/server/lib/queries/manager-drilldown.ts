@@ -65,6 +65,7 @@ import { sql } from 'drizzle-orm';
 import { displayLabelFor } from '@/lib/util/user-display';
 import { bucketizeToolMix, type ToolBucket } from '@/lib/analytics/tool-mix';
 import type { AuditContext } from '@/lib/audit/drilldown-audit';
+import { extractExecRows as extractRows } from '@/lib/db/exec';
 import type { getDb } from '@/lib/db/client';
 
 type Db = ReturnType<typeof getDb>;
@@ -127,12 +128,6 @@ const toNullableNumber = (value: unknown): number | null => {
   if (value == null) return null;
   const n = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(n) ? n : null;
-};
-
-const extractRows = <Row>(result: unknown): Row[] => {
-  if (Array.isArray(result)) return result as Row[];
-  const wrapped = result as { rows?: Row[] } | null;
-  return wrapped?.rows ?? [];
 };
 
 /**

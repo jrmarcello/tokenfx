@@ -76,6 +76,14 @@ const RENUMBER_ALL_SQL = `
 // turns × 8 correlated subqueries). Sessions without any turns are left as-is
 // — the ingestion pipeline never produces a session row without turns, so
 // the semantic divergence from the per-session version is inert in practice.
+//
+// `tool_cnt` comes from a *pre-aggregated* subquery joined to `turns` by
+// session_id, then LEFT JOINed onto the per-session turn rollup. Naively
+// joining `tool_calls` inside the same GROUP BY as the turn sums would
+// explode rows by (tool_calls per turn) and inflate SUM(input_tokens) /
+// COUNT(turn.id). The two-level aggregation keeps every column correct and
+// eliminates the prior CORRELATED SCALAR SUBQUERY against `tool_calls`
+// (verified by EXPLAIN QUERY PLAN in reconcile.test.ts).
 const ROLLUP_ALL_SQL = `
   UPDATE sessions
   SET started_at = COALESCE(agg.min_ts, sessions.started_at),
@@ -88,20 +96,36 @@ const ROLLUP_ALL_SQL = `
       turn_count = COALESCE(agg.cnt, 0),
       tool_call_count = COALESCE(agg.tool_cnt, 0)
   FROM (
-    SELECT turns.session_id AS session_id,
-           MIN(turns.timestamp) AS min_ts,
-           MAX(turns.timestamp) AS max_ts,
-           SUM(turns.input_tokens) AS ti,
-           SUM(turns.output_tokens) AS to_,
-           SUM(turns.cache_read_tokens) AS tcr,
-           SUM(turns.cache_creation_tokens) AS tcc,
-           SUM(turns.cost_usd) AS tc,
-           COUNT(*) AS cnt,
-           (SELECT COUNT(*)
-              FROM tool_calls tc JOIN turns tt ON tt.id = tc.turn_id
-              WHERE tt.session_id = turns.session_id) AS tool_cnt
-    FROM turns
-    GROUP BY turns.session_id
+    SELECT t_agg.session_id AS session_id,
+           t_agg.min_ts AS min_ts,
+           t_agg.max_ts AS max_ts,
+           t_agg.ti AS ti,
+           t_agg.to_ AS to_,
+           t_agg.tcr AS tcr,
+           t_agg.tcc AS tcc,
+           t_agg.tc AS tc,
+           t_agg.cnt AS cnt,
+           COALESCE(tc_agg.tool_cnt, 0) AS tool_cnt
+    FROM (
+      SELECT turns.session_id AS session_id,
+             MIN(turns.timestamp) AS min_ts,
+             MAX(turns.timestamp) AS max_ts,
+             SUM(turns.input_tokens) AS ti,
+             SUM(turns.output_tokens) AS to_,
+             SUM(turns.cache_read_tokens) AS tcr,
+             SUM(turns.cache_creation_tokens) AS tcc,
+             SUM(turns.cost_usd) AS tc,
+             COUNT(turns.id) AS cnt
+      FROM turns
+      GROUP BY turns.session_id
+    ) AS t_agg
+    LEFT JOIN (
+      SELECT tt.session_id AS session_id,
+             COUNT(tc.id) AS tool_cnt
+      FROM tool_calls tc
+      JOIN turns tt ON tt.id = tc.turn_id
+      GROUP BY tt.session_id
+    ) AS tc_agg ON tc_agg.session_id = t_agg.session_id
   ) AS agg
   WHERE sessions.id = agg.session_id
 `;

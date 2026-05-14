@@ -10,6 +10,8 @@ import {
   writeOtelScrapes,
   ingestAll,
   ingestSingleFile,
+  __runOutcomeSweep,
+  __getOutcomeSweepPrepareCount,
 } from './writer';
 import type {
   CompactionEvent,
@@ -999,6 +1001,56 @@ describe('ingestAll', () => {
       expect(orphanTurns).toBe(0);
     } finally {
       fs.rmSync(treeRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---- TC-I-13 (REQ-16): runOutcomeSweep prepare-statement caching ----
+//
+// `runOutcomeSweep` has two SQL variants (force vs with-cutoff). Both should
+// be prepared lazily on first call and cached in a module-level WeakMap keyed
+// by Database. Calling the sweep N times on the same DB must not re-prepare
+// the statements N times — at most 2 total prepare()s per DB lifetime, one
+// per SQL variant. The test-only export `__getOutcomeSweepPrepareCount(db)`
+// returns 2 once any variant has been prepared (the cache stores both
+// statements together) and 0 otherwise.
+describe('runOutcomeSweep prepare caching (TC-I-13, REQ-16)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDatabase(':memory:');
+    migrate(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('TC-I-13: with-cutoff variant called 3× on the same DB caches both prepares (2 total)', () => {
+    // Sanity: nothing prepared yet for this DB.
+    expect(__getOutcomeSweepPrepareCount(db)).toBe(0);
+
+    // Empty DB ⇒ sweep finds no candidates; the prepare-and-execute path
+    // still runs, exercising the WeakMap caching code.
+    __runOutcomeSweep(db, { forceOutcomes: false });
+    __runOutcomeSweep(db, { forceOutcomes: false });
+    __runOutcomeSweep(db, { forceOutcomes: false });
+
+    // Both statements (force + withCutoff) are stored together in the cache
+    // entry on first call; the count is 2 regardless of which variant ran.
+    expect(__getOutcomeSweepPrepareCount(db)).toBe(2);
+  });
+
+  it('TC-I-13b: cache is per-Database — a fresh DB starts at 0', () => {
+    __runOutcomeSweep(db, { forceOutcomes: false });
+    expect(__getOutcomeSweepPrepareCount(db)).toBe(2);
+
+    const other = openDatabase(':memory:');
+    try {
+      migrate(other);
+      expect(__getOutcomeSweepPrepareCount(other)).toBe(0);
+    } finally {
+      other.close();
     }
   });
 });

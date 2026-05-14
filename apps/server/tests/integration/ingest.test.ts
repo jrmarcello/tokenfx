@@ -158,7 +158,14 @@ const makeRequest = (
 };
 
 skipDescribe('POST /api/ingest (Postgres integration)', () => {
+  // TASK-M1 (review-report-2026-05-14-fixes): `getTrustedClientIp` ignores
+  // `x-forwarded-for` unless `TOKENFX_TRUSTED_PROXY=1` is set. The test
+  // fixtures send XFF (`203.0.113.42`) to exercise the IP-truncation path
+  // through ingestion_log. Set the trust flag for the file so the helper
+  // honors XFF; the trust-model assumption is documented in M1's design.
+  const originalTrust = process.env.TOKENFX_TRUSTED_PROXY;
   beforeAll(async () => {
+    process.env.TOKENFX_TRUSTED_PROXY = '1';
     const db = getDb();
     // Reset shared Postgres state — Testcontainers persists across the suite,
     // sibling test files seed orgs/users/machines too. Without this, this
@@ -196,6 +203,11 @@ skipDescribe('POST /api/ingest (Postgres integration)', () => {
 
   afterAll(async () => {
     await closeDb();
+    if (originalTrust === undefined) {
+      delete process.env.TOKENFX_TRUSTED_PROXY;
+    } else {
+      process.env.TOKENFX_TRUSTED_PROXY = originalTrust;
+    }
   });
 
   beforeEach(() => {

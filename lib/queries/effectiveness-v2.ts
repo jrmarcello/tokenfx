@@ -72,6 +72,17 @@ export type DailyEffectivenessPoint = {
 // ---------------- Internal row types ----------------
 
 type FirstEditRow = { seq: number | null };
+type AggregateMetricsRow = {
+  sessionId: string;
+  turnCount: number | null;
+  rereadCount: number;
+  reads: number;
+  edits: number;
+  errors: number;
+  total: number;
+  compactionCount: number;
+  withAgent: number;
+};
 type TokensRow = { tokens: number | null };
 type RereadRow = { rereadCount: number | null };
 type ReadsEditsRow = { reads: number | null; edits: number | null };
@@ -116,6 +127,11 @@ type PreparedSet = {
   sessionsWithCompactionInWindow: import('better-sqlite3').Statement<[number]>;
   totalSessionsInWindow: import('better-sqlite3').Statement<[number]>;
   sessionIdsInWindow: import('better-sqlite3').Statement<[number]>;
+  // Single-round-trip aggregate for the 5 GROUP-BY-friendly metrics
+  // (REQ-19 / D-4). Binds a JSON array of session ids; `json_each`
+  // unpacks it into a virtual table we LEFT JOIN sessions/turns/tool_calls
+  // against. Returns one row per input session id.
+  aggregateMetricsForSessions: import('better-sqlite3').Statement<[string]>;
 
   // Scatter
   scatterRaw: import('better-sqlite3').Statement<[number]>;
@@ -214,6 +230,80 @@ const getPrepared = (db: DB): PreparedSet => {
     ),
     sessionIdsInWindow: db.prepare(
       `SELECT id FROM sessions WHERE started_at >= ?`,
+    ),
+    // REQ-19 (D-4): collapse the 5 GROUP-BY-friendly per-session metrics
+    // into a single round-trip. `?` binds a JSON array of session ids;
+    // `json_each` unpacks it into a virtual table we drive aggregates
+    // from. Returns ONE ROW PER input session id (LEFT JOINs preserve
+    // sessions with zero tool_calls / turns / compaction events).
+    //
+    // - rereadCount: 2-level aggregation — inner per-(session,path) read
+    //   counts, outer SUM(reads-1) per session, only paths with reads>1.
+    // - readsEditsCounts: SUM of CASE expressions per session.
+    // - toolErrorRate parts: errors + total tool_calls per session
+    //   (rate computed in JS so null-when-zero semantics are preserved).
+    // - compactionCount: COUNT compaction_events per session.
+    // - subagentTurns: SUM of turns with subagent_type per session
+    //   (paired with sessions.turn_count for the ratio in JS).
+    aggregateMetricsForSessions: db.prepare(
+      `WITH ids(id) AS (SELECT j.value FROM json_each(?) j),
+            reread AS (
+              SELECT t.session_id        AS session_id,
+                     json_extract(tc.input_json, '$.file_path') AS path,
+                     COUNT(*)            AS reads
+              FROM tool_calls tc
+              JOIN turns t ON t.id = tc.turn_id
+              JOIN ids ON ids.id = t.session_id
+              WHERE tc.tool_name = 'Read'
+                AND json_valid(tc.input_json)
+                AND json_extract(tc.input_json, '$.file_path') IS NOT NULL
+              GROUP BY t.session_id, path
+              HAVING reads > 1
+            ),
+            reread_agg AS (
+              SELECT session_id, COALESCE(SUM(reads - 1), 0) AS reread_count
+              FROM reread
+              GROUP BY session_id
+            ),
+            tc_agg AS (
+              SELECT t.session_id AS session_id,
+                     SUM(CASE WHEN tc.tool_name = 'Read' THEN 1 ELSE 0 END) AS reads,
+                     SUM(CASE WHEN tc.tool_name IN ('Edit','MultiEdit','Write') THEN 1 ELSE 0 END) AS edits,
+                     COALESCE(SUM(tc.result_is_error), 0) AS errors,
+                     COUNT(tc.id) AS total
+              FROM tool_calls tc
+              JOIN turns t ON t.id = tc.turn_id
+              JOIN ids ON ids.id = t.session_id
+              GROUP BY t.session_id
+            ),
+            comp_agg AS (
+              SELECT ce.session_id AS session_id, COUNT(*) AS c
+              FROM compaction_events ce
+              JOIN ids ON ids.id = ce.session_id
+              GROUP BY ce.session_id
+            ),
+            sub_agg AS (
+              SELECT t.session_id AS session_id,
+                     SUM(CASE WHEN t.subagent_type IS NOT NULL THEN 1 ELSE 0 END) AS with_agent
+              FROM turns t
+              JOIN ids ON ids.id = t.session_id
+              GROUP BY t.session_id
+            )
+       SELECT ids.id                              AS sessionId,
+              s.turn_count                        AS turnCount,
+              COALESCE(reread_agg.reread_count, 0) AS rereadCount,
+              COALESCE(tc_agg.reads, 0)           AS reads,
+              COALESCE(tc_agg.edits, 0)           AS edits,
+              COALESCE(tc_agg.errors, 0)          AS errors,
+              COALESCE(tc_agg.total, 0)           AS total,
+              COALESCE(comp_agg.c, 0)             AS compactionCount,
+              COALESCE(sub_agg.with_agent, 0)     AS withAgent
+       FROM ids
+       LEFT JOIN sessions s ON s.id = ids.id
+       LEFT JOIN reread_agg ON reread_agg.session_id = ids.id
+       LEFT JOIN tc_agg ON tc_agg.session_id = ids.id
+       LEFT JOIN comp_agg ON comp_agg.session_id = ids.id
+       LEFT JOIN sub_agg ON sub_agg.session_id = ids.id`,
     ),
     // Scatter: only sessions with ≥1 rating. Returns raw cost columns and
     // model so JS can apply `effectiveCostForSession` cascade — REQ-16
@@ -381,19 +471,62 @@ export const getPersonalEffectivenessAggregates = (
   }
 
   const idRows = p.sessionIdsInWindow.all(cutoff) as Array<{ id: string }>;
+  const sessionIds = idRows.map((r) => r.id);
+
+  // REQ-19 / D-4: single round-trip for the 5 GROUP-BY-friendly metrics.
+  // `firstEditSeq` + `tokensBeforeSeq` (computed below per session) remain
+  // per-session because `tokensBeforeFirstEditSequence` needs the resolved
+  // MIN(sequence) to drive a second SUM with a `< seq` predicate — a
+  // correlated subquery we explicitly avoid here.
+  const aggRows = p.aggregateMetricsForSessions.all(
+    JSON.stringify(sessionIds),
+  ) as AggregateMetricsRow[];
+  const aggById = new Map<string, AggregateMetricsRow>();
+  for (const row of aggRows) aggById.set(row.sessionId, row);
 
   const rereadVals: number[] = [];
   const tokensVals: Array<number | null> = [];
   const ratioVals: Array<number | null> = [];
   const errorVals: Array<number | null> = [];
 
-  for (const { id } of idRows) {
-    const m = getPersonalEffectivenessSession(db, id);
-    if (!m) continue;
-    rereadVals.push(m.rereadCount);
-    tokensVals.push(m.tokensUntilFirstEdit);
-    ratioVals.push(m.readsToEditsRatio);
-    errorVals.push(m.toolErrorRate);
+  for (const id of sessionIds) {
+    const agg = aggById.get(id);
+    if (!agg || agg.turnCount === null) {
+      // Session row absent (race: deleted between sessionIdsInWindow and
+      // aggregate query). Mirrors the legacy `getPersonalEffectivenessSession`
+      // null short-circuit so behavior is byte-identical.
+      continue;
+    }
+
+    // tokensUntilFirstEdit — same 2-prepared-stmt logic as the per-session
+    // path. Kept per-session (NOT inlined into the aggregate) because the
+    // second statement's `sequence < ?` predicate depends on the result of
+    // the first — see Design §"root tokenfx — data + ingest".
+    const firstEdit = p.firstEditSeq.get(id) as FirstEditRow | undefined;
+    let tokensUntilFirstEdit: number | null;
+    if (!firstEdit || firstEdit.seq === null) {
+      tokensUntilFirstEdit = null;
+    } else {
+      const seq = firstEdit.seq;
+      if (seq <= 1) {
+        tokensUntilFirstEdit = 0;
+      } else {
+        const tokensRow = p.tokensBeforeSeq.get(id, seq) as
+          | TokensRow
+          | undefined;
+        tokensUntilFirstEdit = tokensRow?.tokens ?? 0;
+      }
+    }
+
+    // Derived metrics from the single aggregate row (null semantics
+    // preserved: rate is null when denominator is zero).
+    const toolErrorRate = agg.total > 0 ? agg.errors / agg.total : null;
+    const readsToEditsRatio = agg.edits === 0 ? null : agg.reads / agg.edits;
+
+    rereadVals.push(agg.rereadCount);
+    tokensVals.push(tokensUntilFirstEdit);
+    ratioVals.push(readsToEditsRatio);
+    errorVals.push(toolErrorRate);
   }
 
   return {

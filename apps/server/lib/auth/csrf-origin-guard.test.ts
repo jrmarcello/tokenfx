@@ -76,12 +76,62 @@ describe('checkSigninOrigin', () => {
     });
   });
 
-  it('matches via prefix: Origin = baseUrl + path is acceptable', () => {
-    // Origin should NOT carry a path per RFC 6454, but some user-agents do
-    // append one (or proxies rewrite). Be defensive: prefix-match accepts
-    // both forms without weakening the cross-origin check (a path on a
-    // different origin still fails the prefix test).
-    const req = stubRequest({ origin: `${BASE}/somewhere` });
+  // TC-U-08: suffix-injection attack via Referer — `https://app.tokenfx.io.evil.com`
+  // is a DIFFERENT origin from `https://app.tokenfx.io`, but `startsWith` would
+  // pass it. Origin-equality (via `new URL(...).origin`) correctly rejects it.
+  it('rejects Referer https://app.tokenfx.io.evil.com/foo as cross-origin (suffix injection)', () => {
+    const req = stubRequest({ referer: 'https://app.tokenfx.io.evil.com/foo' });
+    expect(checkSigninOrigin(req, BASE)).toEqual({
+      ok: false,
+      reason: 'cross-origin',
+    });
+  });
+
+  // TC-U-09: same suffix-injection attack via Origin header.
+  it('rejects Origin https://app.tokenfx.io.evil.com as cross-origin (suffix injection)', () => {
+    const req = stubRequest({ origin: 'https://app.tokenfx.io.evil.com' });
+    expect(checkSigninOrigin(req, BASE)).toEqual({
+      ok: false,
+      reason: 'cross-origin',
+    });
+  });
+
+  // TC-U-09b: a non-parseable Referer (URL constructor throws) is treated as
+  // cross-origin — safer default than letting it bubble.
+  it('rejects Referer that fails URL parsing as cross-origin', () => {
+    const req = stubRequest({ referer: 'not-a-url' });
+    expect(checkSigninOrigin(req, BASE)).toEqual({
+      ok: false,
+      reason: 'cross-origin',
+    });
+  });
+
+  // TC-U-09c: explicit nulls in both headers → missing-origin (preserves the
+  // existing null-pair behavior under the new origin-equality logic).
+  it('returns missing-origin when both Origin and Referer are explicitly null', () => {
+    const req = stubRequest({ origin: null, referer: null });
+    expect(checkSigninOrigin(req, BASE)).toEqual({
+      ok: false,
+      reason: 'missing-origin',
+    });
+  });
+
+  // TC-U-10: exact origin equality, no path, no port → ok.
+  it('accepts Origin exact https://app.tokenfx.io', () => {
+    const req = stubRequest({ origin: 'https://app.tokenfx.io' });
+    expect(checkSigninOrigin(req, BASE)).toEqual({ ok: true });
+  });
+
+  // TC-U-11: Referer carrying a path → ok (origin-equality strips the path).
+  it('accepts Referer https://app.tokenfx.io/some/path', () => {
+    const req = stubRequest({ referer: 'https://app.tokenfx.io/some/path' });
+    expect(checkSigninOrigin(req, BASE)).toEqual({ ok: true });
+  });
+
+  // TC-U-12: default-port normalization — `https://app.tokenfx.io:443` and
+  // `https://app.tokenfx.io` share the same `.origin` value per WHATWG URL.
+  it('accepts Origin https://app.tokenfx.io:443 when baseUrl omits the default port', () => {
+    const req = stubRequest({ origin: 'https://app.tokenfx.io:443' });
     expect(checkSigninOrigin(req, BASE)).toEqual({ ok: true });
   });
 });

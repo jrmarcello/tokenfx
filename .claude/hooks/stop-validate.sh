@@ -75,7 +75,9 @@ if [ "$STOP_HOOK_ACTIVE" != "true" ]; then
     LINT_OUT=$(pnpm lint 2>&1) || ERRORS="${ERRORS}LINT FAILED:\n${LINT_OUT}\n\n"
   fi
   if [ -z "$ERRORS" ] && has_script test; then
-    TEST_OUT=$(pnpm test --run --silent 2>&1) || ERRORS="${ERRORS}TEST FAILURES:\n${TEST_OUT}\n\n"
+    # `--` separator forwards args to the `test` script (`vitest`). Without
+    # it, pnpm itself swallows `--run` and errors out (`Unknown option`).
+    TEST_OUT=$(pnpm test -- --run --silent 2>&1) || ERRORS="${ERRORS}TEST FAILURES:\n${TEST_OUT}\n\n"
   fi
 else
   # ── Tier 2: typecheck only ───────────────────────────────────────

@@ -102,7 +102,7 @@ describe('boot-time guard (TC-U-39)', () => {
     setEnv('INTERNAL_CRON_SECRET', undefined);
     vi.resetModules();
     await expect(import('./auth')).rejects.toThrow(
-      /INTERNAL_CRON_SECRET is required/,
+      /INTERNAL_CRON_SECRET required in production\/staging/,
     );
   });
 
@@ -115,7 +115,7 @@ describe('boot-time guard (TC-U-39)', () => {
     // guard. Asserting the guard rejects the empty string is the whole point
     // of TC-U-39.
     await expect(import('./auth')).rejects.toThrow(
-      /INTERNAL_CRON_SECRET is required/,
+      /INTERNAL_CRON_SECRET required in production\/staging/,
     );
   });
 
@@ -151,5 +151,107 @@ describe('boot-time guard (TC-U-39)', () => {
     const mod = await import('./auth');
     const req = buildRequest('');
     expect(() => mod.assertInternalCronAuth(req)).toThrow(mod.CronAuthError);
+  });
+});
+
+describe('assertCronSecretConfigured — staging guard (TC-U-34)', () => {
+  // `NODE_ENV` is narrowed to `'development' | 'production' | 'test'` by
+  // Next.js typings in this workspace. The helper accepts the wider runtime
+  // shape (`NodeJS.ProcessEnv`), so we cast each fake-env literal through
+  // `ProcessEnv` here. Mirrors `apps/server/lib/auth/auth.ts` conventions.
+  const asEnv = (e: Record<string, string | undefined>): NodeJS.ProcessEnv =>
+    e as unknown as NodeJS.ProcessEnv;
+
+  it('TC-U-34: NODE_ENV=staging AND INTERNAL_CRON_SECRET unset → throws', async () => {
+    setEnv('NODE_ENV', 'test');
+    setEnv('INTERNAL_CRON_SECRET', 'placeholder-to-allow-import');
+    vi.resetModules();
+    const mod = await import('./auth');
+    expect(() =>
+      mod.assertCronSecretConfigured(asEnv({ NODE_ENV: 'staging' })),
+    ).toThrow(/INTERNAL_CRON_SECRET required in production\/staging/);
+  });
+
+  it('TC-U-34 (empty string variant): NODE_ENV=staging AND INTERNAL_CRON_SECRET="" → throws', async () => {
+    setEnv('NODE_ENV', 'test');
+    setEnv('INTERNAL_CRON_SECRET', 'placeholder-to-allow-import');
+    vi.resetModules();
+    const mod = await import('./auth');
+    expect(() =>
+      mod.assertCronSecretConfigured(
+        asEnv({ NODE_ENV: 'staging', INTERNAL_CRON_SECRET: '' }),
+      ),
+    ).toThrow(/INTERNAL_CRON_SECRET required in production\/staging/);
+  });
+
+  it('TC-U-34b (regression): NODE_ENV=production AND INTERNAL_CRON_SECRET unset → throws (preserves existing prod guard)', async () => {
+    setEnv('NODE_ENV', 'test');
+    setEnv('INTERNAL_CRON_SECRET', 'placeholder-to-allow-import');
+    vi.resetModules();
+    const mod = await import('./auth');
+    expect(() =>
+      mod.assertCronSecretConfigured(asEnv({ NODE_ENV: 'production' })),
+    ).toThrow(/INTERNAL_CRON_SECRET required in production\/staging/);
+  });
+
+  it('TC-U-34c: NODE_ENV=development AND INTERNAL_CRON_SECRET unset → does NOT throw (dev/test unaffected)', async () => {
+    setEnv('NODE_ENV', 'test');
+    setEnv('INTERNAL_CRON_SECRET', 'placeholder-to-allow-import');
+    vi.resetModules();
+    const mod = await import('./auth');
+    expect(() =>
+      mod.assertCronSecretConfigured(asEnv({ NODE_ENV: 'development' })),
+    ).not.toThrow();
+  });
+
+  it('TC-U-34c (test env): NODE_ENV=test AND INTERNAL_CRON_SECRET unset → does NOT throw', async () => {
+    setEnv('NODE_ENV', 'test');
+    setEnv('INTERNAL_CRON_SECRET', 'placeholder-to-allow-import');
+    vi.resetModules();
+    const mod = await import('./auth');
+    expect(() =>
+      mod.assertCronSecretConfigured(asEnv({ NODE_ENV: 'test' })),
+    ).not.toThrow();
+  });
+
+  it('TC-U-34c (missing NODE_ENV): undefined NODE_ENV + missing secret → does NOT throw', async () => {
+    setEnv('NODE_ENV', 'test');
+    setEnv('INTERNAL_CRON_SECRET', 'placeholder-to-allow-import');
+    vi.resetModules();
+    const mod = await import('./auth');
+    expect(() => mod.assertCronSecretConfigured(asEnv({}))).not.toThrow();
+  });
+
+  it('TC-U-34 (staging happy path): NODE_ENV=staging AND INTERNAL_CRON_SECRET set → does NOT throw', async () => {
+    setEnv('NODE_ENV', 'test');
+    setEnv('INTERNAL_CRON_SECRET', 'placeholder-to-allow-import');
+    vi.resetModules();
+    const mod = await import('./auth');
+    expect(() =>
+      mod.assertCronSecretConfigured(
+        asEnv({
+          NODE_ENV: 'staging',
+          INTERNAL_CRON_SECRET: 'staging-secret',
+        }),
+      ),
+    ).not.toThrow();
+  });
+});
+
+describe('boot-time guard — staging coverage (TC-U-34 module-load)', () => {
+  it('TC-U-34 (module-load): NODE_ENV=staging AND INTERNAL_CRON_SECRET unset → importing the module throws', async () => {
+    setEnv('NODE_ENV', 'staging');
+    setEnv('INTERNAL_CRON_SECRET', undefined);
+    vi.resetModules();
+    await expect(import('./auth')).rejects.toThrow(
+      /INTERNAL_CRON_SECRET required in production\/staging/,
+    );
+  });
+
+  it('TC-U-34 (staging happy path, module-load): NODE_ENV=staging AND INTERNAL_CRON_SECRET set → import succeeds', async () => {
+    setEnv('NODE_ENV', 'staging');
+    setEnv('INTERNAL_CRON_SECRET', 'staging-secret-value');
+    vi.resetModules();
+    await expect(import('./auth')).resolves.toBeDefined();
   });
 });

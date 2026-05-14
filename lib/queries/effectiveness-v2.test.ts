@@ -647,6 +647,260 @@ describe('effectiveness-v2 queries', () => {
     });
   });
 
+  // ---------------- Aggregates refactor (REQ-19, D-4) ----------------
+
+  describe('getPersonalEffectivenessAggregates — refactor parity (REQ-19, D-4)', () => {
+    // Seed builder shared by TC-I-09 (parity) and TC-I-10 (count).
+    // 12 sessions with varied shapes to exercise every branch:
+    //   - Sessions with/without Edit on first turn (tokensUntilFirstEdit null/0/>0).
+    //   - Sessions with/without compaction events.
+    //   - Sessions with/without subagent turns.
+    //   - Sessions with/without tool errors.
+    //   - Sessions with reads, edits, and re-reads on same paths.
+    //   - One empty session (turn_count === 0).
+    function seedAggregateFixture(): { sessionIds: readonly string[]; expectedN: number } {
+      const ids: string[] = [];
+      const base = now - 5 * DAY_MS;
+
+      // s0: no turns at all (turn_count = 0)
+      insertSession(db, { id: 's0', startedAt: base, turnCount: 0 });
+      ids.push('s0');
+
+      // s1: Edit on first turn → tokensUntilFirstEdit = 0
+      insertSession(db, { id: 's1', startedAt: base + 1, turnCount: 2 });
+      insertTurn(db, { id: 's1t1', sessionId: 's1', sequence: 1, inputTokens: 50 });
+      insertTurn(db, { id: 's1t2', sessionId: 's1', sequence: 2 });
+      insertToolCall(db, { id: 's1tc1', turnId: 's1t1', toolName: 'Edit' });
+      ids.push('s1');
+
+      // s2: no Edit → tokensUntilFirstEdit = null
+      insertSession(db, { id: 's2', startedAt: base + 2, turnCount: 2 });
+      insertTurn(db, { id: 's2t1', sessionId: 's2', sequence: 1, inputTokens: 100 });
+      insertTurn(db, { id: 's2t2', sessionId: 's2', sequence: 2 });
+      insertToolCall(db, { id: 's2tc1', turnId: 's2t1', toolName: 'Read', inputJson: JSON.stringify({ file_path: '/a' }) });
+      ids.push('s2');
+
+      // s3: Edit on turn 3, tokens accumulate
+      insertSession(db, { id: 's3', startedAt: base + 3, turnCount: 4 });
+      insertTurn(db, { id: 's3t1', sessionId: 's3', sequence: 1, inputTokens: 10, outputTokens: 5, cacheCreationTokens: 5 });
+      insertTurn(db, { id: 's3t2', sessionId: 's3', sequence: 2, inputTokens: 20, outputTokens: 10, cacheCreationTokens: 10 });
+      insertTurn(db, { id: 's3t3', sessionId: 's3', sequence: 3 });
+      insertTurn(db, { id: 's3t4', sessionId: 's3', sequence: 4 });
+      insertToolCall(db, { id: 's3tc1', turnId: 's3t3', toolName: 'MultiEdit' });
+      insertToolCall(db, { id: 's3tc2', turnId: 's3t1', toolName: 'Read', inputJson: JSON.stringify({ file_path: '/x' }) });
+      insertToolCall(db, { id: 's3tc3', turnId: 's3t2', toolName: 'Read', inputJson: JSON.stringify({ file_path: '/x' }) });
+      ids.push('s3');
+
+      // s4: tool errors (2 of 4)
+      insertSession(db, { id: 's4', startedAt: base + 4, turnCount: 1 });
+      insertTurn(db, { id: 's4t1', sessionId: 's4', sequence: 1 });
+      insertToolCall(db, { id: 's4tc1', turnId: 's4t1', toolName: 'Bash', isError: true });
+      insertToolCall(db, { id: 's4tc2', turnId: 's4t1', toolName: 'Bash', isError: true });
+      insertToolCall(db, { id: 's4tc3', turnId: 's4t1', toolName: 'Read', inputJson: JSON.stringify({ file_path: '/r' }) });
+      insertToolCall(db, { id: 's4tc4', turnId: 's4t1', toolName: 'Write' });
+      ids.push('s4');
+
+      // s5: re-reads on same path
+      insertSession(db, { id: 's5', startedAt: base + 5, turnCount: 1 });
+      insertTurn(db, { id: 's5t1', sessionId: 's5', sequence: 1 });
+      insertToolCall(db, { id: 's5r1', turnId: 's5t1', toolName: 'Read', inputJson: JSON.stringify({ file_path: '/p' }) });
+      insertToolCall(db, { id: 's5r2', turnId: 's5t1', toolName: 'Read', inputJson: JSON.stringify({ file_path: '/p' }) });
+      insertToolCall(db, { id: 's5r3', turnId: 's5t1', toolName: 'Read', inputJson: JSON.stringify({ file_path: '/p' }) });
+      insertToolCall(db, { id: 's5e1', turnId: 's5t1', toolName: 'Edit' });
+      ids.push('s5');
+
+      // s6: compaction event + subagent turn
+      insertSession(db, { id: 's6', startedAt: base + 6, turnCount: 2 });
+      insertTurn(db, { id: 's6t1', sessionId: 's6', sequence: 1, subagentType: 'general' });
+      insertTurn(db, { id: 's6t2', sessionId: 's6', sequence: 2 });
+      insertCompactionEvent(db, { sessionId: 's6', sourceFile: 's6.jsonl', sequenceInFile: 1 });
+      ids.push('s6');
+
+      // s7: many reads, many edits → ratio > 1
+      insertSession(db, { id: 's7', startedAt: base + 7, turnCount: 1 });
+      insertTurn(db, { id: 's7t1', sessionId: 's7', sequence: 1, inputTokens: 30 });
+      for (let i = 0; i < 5; i++) {
+        insertToolCall(db, { id: `s7r${i}`, turnId: 's7t1', toolName: 'Read', inputJson: JSON.stringify({ file_path: `/f${i}` }) });
+      }
+      insertToolCall(db, { id: 's7e1', turnId: 's7t1', toolName: 'Edit' });
+      ids.push('s7');
+
+      // s8: malformed json on reads (should be ignored — REQ-9)
+      insertSession(db, { id: 's8', startedAt: base + 8, turnCount: 1 });
+      insertTurn(db, { id: 's8t1', sessionId: 's8', sequence: 1 });
+      insertToolCall(db, { id: 's8r1', turnId: 's8t1', toolName: 'Read', inputJson: 'not-json' });
+      insertToolCall(db, { id: 's8r2', turnId: 's8t1', toolName: 'Read', inputJson: 'not-json' });
+      ids.push('s8');
+
+      // s9: multiple compactions + multiple subagent turns
+      insertSession(db, { id: 's9', startedAt: base + 9, turnCount: 3 });
+      insertTurn(db, { id: 's9t1', sessionId: 's9', sequence: 1, subagentType: 'general' });
+      insertTurn(db, { id: 's9t2', sessionId: 's9', sequence: 2, subagentType: 'reviewer' });
+      insertTurn(db, { id: 's9t3', sessionId: 's9', sequence: 3 });
+      insertCompactionEvent(db, { sessionId: 's9', sourceFile: 's9.jsonl', sequenceInFile: 1 });
+      insertCompactionEvent(db, { sessionId: 's9', sourceFile: 's9.jsonl', sequenceInFile: 2 });
+      ids.push('s9');
+
+      // s10: edits without reads
+      insertSession(db, { id: 's10', startedAt: base + 10, turnCount: 1 });
+      insertTurn(db, { id: 's10t1', sessionId: 's10', sequence: 1 });
+      insertToolCall(db, { id: 's10e1', turnId: 's10t1', toolName: 'Edit' });
+      insertToolCall(db, { id: 's10e2', turnId: 's10t1', toolName: 'Edit' });
+      ids.push('s10');
+
+      // s11: out-of-window — must NOT appear
+      insertSession(db, { id: 's11_out', startedAt: now - 60 * DAY_MS, turnCount: 1 });
+      insertTurn(db, { id: 's11t1', sessionId: 's11_out', sequence: 1 });
+      insertToolCall(db, { id: 's11e1', turnId: 's11t1', toolName: 'Edit' });
+
+      return { sessionIds: ids, expectedN: ids.length };
+    }
+
+    it('TC-I-09: aggregates are byte-identical to the parity oracle (REQ-19 parity)', () => {
+      // Parity oracle: compute the expected aggregate purely via the
+      // already-unit-tested `getPersonalEffectivenessSession` (which is
+      // intentionally NOT refactored). This decouples the parity assertion
+      // from the production aggregate's internals so the test stays a
+      // black-box behavioral contract across the refactor.
+      const { sessionIds, expectedN } = seedAggregateFixture();
+      expect(expectedN).toBeGreaterThan(10); // spec: >10 sessions
+
+      // Build the oracle (mirrors the public contract of getPersonalEffectivenessAggregates).
+      const rereadVals: number[] = [];
+      const tokensVals: Array<number | null> = [];
+      const ratioVals: Array<number | null> = [];
+      const errorVals: Array<number | null> = [];
+      let sessionsWithCompaction = 0;
+      for (const id of sessionIds) {
+        const m = getPersonalEffectivenessSession(db, id);
+        if (!m) continue;
+        rereadVals.push(m.rereadCount);
+        tokensVals.push(m.tokensUntilFirstEdit);
+        ratioVals.push(m.readsToEditsRatio);
+        errorVals.push(m.toolErrorRate);
+        if (m.compactionEventCount > 0) sessionsWithCompaction += 1;
+      }
+      const avg = (xs: Array<number | null>): number | null => {
+        const f = xs.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+        return f.length === 0 ? null : f.reduce((a, v) => a + v, 0) / f.length;
+      };
+      const expected = {
+        avgRereadCount: rereadVals.length === 0 ? null : avg(rereadVals),
+        avgTokensUntilFirstEdit: avg(tokensVals),
+        avgReadsToEditsRatio: avg(ratioVals),
+        avgToolErrorRate: avg(errorVals),
+        sessionsWithCompaction,
+        totalSessions: sessionIds.length,
+      };
+
+      const actual = getPersonalEffectivenessAggregates(db, 30);
+
+      // Byte-identical via JSON.stringify, as the spec requires.
+      expect(JSON.stringify(actual)).toBe(JSON.stringify(expected));
+    });
+
+    it('TC-I-10: prepared-stmt executions in window ≤ 2N+1 (REQ-19 count)', () => {
+      // Use a FRESH DB so the WeakMap cache is empty — every `prepare`
+      // call (and its resulting stmt's `.get`/`.all` invocations) goes
+      // through our spy. Spying after warmup wouldn't catch executions
+      // on already-cached statements.
+      type Stmt = ReturnType<typeof db.prepare>;
+      const measureDb = fresh();
+      // Re-seed inline (mirror seedAggregateFixture)
+      const base = now - 5 * DAY_MS;
+      insertSession(measureDb, { id: 's0', startedAt: base, turnCount: 0 });
+      insertSession(measureDb, { id: 's1', startedAt: base + 1, turnCount: 2 });
+      insertTurn(measureDb, { id: 's1t1', sessionId: 's1', sequence: 1, inputTokens: 50 });
+      insertTurn(measureDb, { id: 's1t2', sessionId: 's1', sequence: 2 });
+      insertToolCall(measureDb, { id: 's1tc1', turnId: 's1t1', toolName: 'Edit' });
+      insertSession(measureDb, { id: 's2', startedAt: base + 2, turnCount: 2 });
+      insertTurn(measureDb, { id: 's2t1', sessionId: 's2', sequence: 1, inputTokens: 100 });
+      insertTurn(measureDb, { id: 's2t2', sessionId: 's2', sequence: 2 });
+      insertToolCall(measureDb, { id: 's2tc1', turnId: 's2t1', toolName: 'Read', inputJson: JSON.stringify({ file_path: '/a' }) });
+      insertSession(measureDb, { id: 's3', startedAt: base + 3, turnCount: 4 });
+      insertTurn(measureDb, { id: 's3t1', sessionId: 's3', sequence: 1, inputTokens: 10, outputTokens: 5, cacheCreationTokens: 5 });
+      insertTurn(measureDb, { id: 's3t2', sessionId: 's3', sequence: 2, inputTokens: 20, outputTokens: 10, cacheCreationTokens: 10 });
+      insertTurn(measureDb, { id: 's3t3', sessionId: 's3', sequence: 3 });
+      insertTurn(measureDb, { id: 's3t4', sessionId: 's3', sequence: 4 });
+      insertToolCall(measureDb, { id: 's3tc1', turnId: 's3t3', toolName: 'MultiEdit' });
+      insertSession(measureDb, { id: 's4', startedAt: base + 4, turnCount: 1 });
+      insertTurn(measureDb, { id: 's4t1', sessionId: 's4', sequence: 1 });
+      insertToolCall(measureDb, { id: 's4tc1', turnId: 's4t1', toolName: 'Bash', isError: true });
+      insertSession(measureDb, { id: 's5', startedAt: base + 5, turnCount: 1 });
+      insertTurn(measureDb, { id: 's5t1', sessionId: 's5', sequence: 1 });
+      insertToolCall(measureDb, { id: 's5r1', turnId: 's5t1', toolName: 'Read', inputJson: JSON.stringify({ file_path: '/p' }) });
+      insertToolCall(measureDb, { id: 's5e1', turnId: 's5t1', toolName: 'Edit' });
+      insertSession(measureDb, { id: 's6', startedAt: base + 6, turnCount: 2 });
+      insertTurn(measureDb, { id: 's6t1', sessionId: 's6', sequence: 1, subagentType: 'general' });
+      insertTurn(measureDb, { id: 's6t2', sessionId: 's6', sequence: 2 });
+      insertCompactionEvent(measureDb, { sessionId: 's6', sourceFile: 's6.jsonl', sequenceInFile: 1 });
+      insertSession(measureDb, { id: 's7', startedAt: base + 7, turnCount: 1 });
+      insertTurn(measureDb, { id: 's7t1', sessionId: 's7', sequence: 1, inputTokens: 30 });
+      insertToolCall(measureDb, { id: 's7e1', turnId: 's7t1', toolName: 'Edit' });
+      insertSession(measureDb, { id: 's8', startedAt: base + 8, turnCount: 1 });
+      insertTurn(measureDb, { id: 's8t1', sessionId: 's8', sequence: 1 });
+      insertSession(measureDb, { id: 's9', startedAt: base + 9, turnCount: 3 });
+      insertTurn(measureDb, { id: 's9t1', sessionId: 's9', sequence: 1, subagentType: 'general' });
+      insertTurn(measureDb, { id: 's9t2', sessionId: 's9', sequence: 2, subagentType: 'reviewer' });
+      insertTurn(measureDb, { id: 's9t3', sessionId: 's9', sequence: 3 });
+      insertCompactionEvent(measureDb, { sessionId: 's9', sourceFile: 's9.jsonl', sequenceInFile: 1 });
+      insertSession(measureDb, { id: 's10', startedAt: base + 10, turnCount: 1 });
+      insertTurn(measureDb, { id: 's10t1', sessionId: 's10', sequence: 1 });
+      insertToolCall(measureDb, { id: 's10e1', turnId: 's10t1', toolName: 'Edit' });
+
+      // Now wrap prepare on the FRESH measureDb so every prepared stmt
+      // method runs through our counter. WeakMap is empty for measureDb.
+      let mGetCalls = 0;
+      let mAllCalls = 0;
+      const measureOriginalPrepare = measureDb.prepare.bind(measureDb);
+      const mDbAny = measureDb as unknown as { prepare: (sql: string) => Stmt };
+      type StmtMethods = {
+        get: (...args: unknown[]) => unknown;
+        all: (...args: unknown[]) => unknown;
+      };
+      const wrapMeasureStmt = (stmt: Stmt): Stmt => {
+        const sm = stmt as unknown as StmtMethods;
+        const origGet = sm.get.bind(stmt);
+        const origAll = sm.all.bind(stmt);
+        sm.get = (...args: unknown[]) => {
+          mGetCalls += 1;
+          return origGet(...args);
+        };
+        sm.all = (...args: unknown[]) => {
+          mAllCalls += 1;
+          return origAll(...args);
+        };
+        return stmt;
+      };
+      mDbAny.prepare = (sql: string): Stmt => {
+        return wrapMeasureStmt(measureOriginalPrepare(sql));
+      };
+
+      // Single call under measurement.
+      getPersonalEffectivenessAggregates(measureDb, 30);
+
+      // Restore so other tests aren't affected.
+      mDbAny.prepare = measureOriginalPrepare;
+
+      // N = number of in-window sessions inserted into measureDb (s0..s10).
+      const N = 11;
+
+      // Total stmt executions = .get() + .all() calls. Spec REQ-19 budget
+      // is ≤ 2N + 1 for the refactor target itself (one aggregate `.all`
+      // + two per-session `.get` calls for firstEditSeq + tokensBeforeSeq).
+      // The window-level scans (totalSessions, sessionsWithCompaction,
+      // sessionIdsInWindow) are unchanged by the refactor and count
+      // separately. We subtract those 3 fixed scans before comparing.
+      const fixedWindowScans = 3;
+      const refactorExecutions = mGetCalls + mAllCalls - fixedWindowScans;
+
+      // Spec budget: ≤ 2N + 1
+      expect(refactorExecutions).toBeLessThanOrEqual(2 * N + 1);
+      // Sanity floor: at least 1 aggregate `.all` must have happened.
+      expect(refactorExecutions).toBeGreaterThanOrEqual(1);
+    });
+  });
+
   // ---------------- Prepared statement reuse ----------------
 
   describe('prepared statements (REQ-30)', () => {

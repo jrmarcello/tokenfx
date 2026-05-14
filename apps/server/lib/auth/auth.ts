@@ -20,144 +20,37 @@ import { ipToCity } from './ip-to-city';
 import { isStateReplayAuthError } from './replay-detector';
 import { evaluateAutoProvision } from './sso-auto-provision';
 import { log as logger } from '@root/logger';
+import {
+  createInvalidCheckHandler,
+  extractEmailVerified,
+  extractIssuer,
+} from './auth-helpers';
 
 /**
  * NextAuth `logger.error` hook for the SSO replay-audit-row spec
  * (`.specs/sso-replay-audit-row.md` — closes REQ-FU-1 of oauth-idp-stub
  * + the audit-row half of spec-b TC-I-34).
  *
- * Auth.js v5 throws `InvalidCheck` (`@auth/core/errors.ts`) when the
- * OAuth state/PKCE/nonce cookie cannot be matched. The class is NOT in
- * Auth.js's `clientErrors` set so the redirect surfaces a generic
- * `?error=Configuration` — too ambiguous to detect at the URL layer.
- * BUT the `logger.error` callback receives the raw `AuthError`
- * instance, and `InvalidCheck` carries `static type = 'InvalidCheck'`.
- * That's the precise signal — see TASK-0 findings in the spec
- * Execution Log.
+ * The helper itself lives in `./auth-helpers` as a pure factory so
+ * unit tests can inject hand-written stubs for the writer / ipToCity /
+ * context provider without pulling Postgres / GeoIP / NextAuth into
+ * the Vitest module graph. Here we wire the production dependencies.
  *
- * Why ALS lookup is safe here: the NextAuth handler in
- * `app/api/auth/[...nextauth]/route.ts:115` wraps the call in
- * `runInRequestContext(...)`. The error callback fires synchronously
- * inside the failed promise chain, so `getRequestContext()` returns
- * the real ip/user-agent of the offending request.
- *
- * `ssoProvider` is recorded as `'unknown'` because the logger callback
- * has no provider info on `InvalidCheck` (the failure happens before
- * the provider id is bound to the cause). The outcome + ip + ua + time
- * are sufficient signal for replay analytics; provider enrichment is
- * out of scope.
- *
- * Failure safety: this hook fires INSIDE Auth.js's error-handling
- * chain. If the audit write fails, we must NOT re-throw — Auth.js
- * would replace its own redirect-to-error-page with a 500, hiding
- * the original error from the user. The catch logs at warn level.
+ * Failure safety, narrowing, and the rationale for `ssoProvider:
+ * 'unknown'` are documented inside `createInvalidCheckHandler`.
  */
-const writeReplayAuditRowOnInvalidCheck = async (error: unknown): Promise<void> => {
-  if (!isStateReplayAuthError(error)) return;
-  try {
-    const ctx = getRequestContext();
-    const ip = ctx.ip || null;
-    const userAgent = ctx.userAgent || null;
-    const city = ip ? await ipToCity(ip) : null;
-    await writeReplayAuditRow({
-      ssoProvider: 'unknown',
-      ip,
-      city,
-      userAgent,
-    });
-  } catch (err) {
-    logger.warn('auth: writeReplayAuditRow failed', {
-      error_message: err instanceof Error ? err.message : String(err),
-    });
-  }
-};
+const writeReplayAuditRowOnInvalidCheck = createInvalidCheckHandler({
+  writer: writeReplayAuditRow,
+  ipToCity,
+  getRequestContext,
+});
 
-/**
- * SECURITY note: this helper extracts the `iss` claim from a JWT WITHOUT
- * verifying the token signature. That is intentional — NextAuth v5
- * signature-verifies the `id_token` upstream of the signIn callback (against
- * the provider's JWKS) before this code path runs. If a future regression in
- * NextAuth or a custom provider misconfiguration bypasses upstream
- * verification, an attacker could forge any `iss`. Defense-in-depth: the
- * orchestrator's whitelist check (`evaluateAutoProvision` step 2) rejects
- * unknown issuers, but it trusts the claim as authentic — so the security
- * boundary is "NextAuth verified the token". Treat this helper purely as a
- * claim-extraction utility, never as an authentication primitive.
- *
- * Extract the OIDC `iss` claim from a NextAuth Account.
- *
- * NextAuth v5's `Account` shape varies per provider. For OAuth/OIDC providers,
- * the issuer can land in two places:
- *   1. `account.id_token` — a JWT whose middle segment is base64-url-encoded
- *      JSON. We decode and read `iss` from the claims.
- *   2. `account.iss` — NextAuth sometimes surfaces it directly (provider-
- *      dependent).
- *
- * Returns empty string when neither is present. The downstream decision
- * engine treats empty/unknown issuers as 'rejected-csrf' via the whitelist
- * check.
- */
-const extractIssuer = (account: Record<string, unknown> | null): string => {
-  if (!account) return '';
-  const direct = account.iss;
-  if (typeof direct === 'string' && direct.length > 0) return direct;
-  const idToken = account.id_token;
-  if (typeof idToken !== 'string') return '';
-  const segments = idToken.split('.');
-  if (segments.length < 2) return '';
-  try {
-    // Base64url → JSON. Node's Buffer handles the url-safe alphabet via
-    // `from(..., 'base64url')`.
-    const payloadJson = Buffer.from(segments[1], 'base64url').toString('utf-8');
-    const payload = JSON.parse(payloadJson) as { iss?: unknown };
-    if (typeof payload.iss === 'string') return payload.iss;
-  } catch {
-    // Malformed id_token: treat as missing — caller's whitelist check will
-    // reject. We deliberately do NOT log the raw token; just fall through.
-  }
-  return '';
-};
-
-/**
- * Extract `email_verified` from a NextAuth Account/User pair.
- *
- * Mirrors `extractIssuer` — checks `account.id_token` claims first, falls
- * back to a top-level `email_verified` on either object. Default is `false`
- * (security default — unverified email never auto-provisions per REQ-2a).
- */
-const extractEmailVerified = (
-  account: Record<string, unknown> | null,
-  user: Record<string, unknown> | null,
-): boolean => {
-  if (account) {
-    const direct = account.email_verified;
-    if (typeof direct === 'boolean') return direct;
-    const idToken = account.id_token;
-    if (typeof idToken === 'string') {
-      const segments = idToken.split('.');
-      if (segments.length >= 2) {
-        try {
-          const payloadJson = Buffer.from(segments[1], 'base64url').toString(
-            'utf-8',
-          );
-          const payload = JSON.parse(payloadJson) as {
-            email_verified?: unknown;
-          };
-          if (typeof payload.email_verified === 'boolean') {
-            return payload.email_verified;
-          }
-        } catch {
-          // ignore malformed token; fall through to default
-        }
-      }
-    }
-  }
-  if (user) {
-    const fromUser = user.email_verified;
-    if (typeof fromUser === 'boolean') return fromUser;
-  }
-  return false;
-};
+// `extractIssuer` (REQ-7 cap @ 512 + REQ-8 happy/edges) and
+// `extractEmailVerified` now live in `./auth-helpers` so unit tests
+// exercise them without pulling NextAuth into the Vitest module graph.
+// See `auth-helpers.ts` for the security note on issuer-claim extraction
+// without local signature verification (NextAuth verifies the id_token
+// upstream of this code path).
 
 // Fail-fast on missing auth secret in production. Auth.js v5 falls back to a
 // transient generated secret in dev (with only a console.warn); in production
@@ -248,8 +141,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         });
       // Forward to default-style logging so the original diagnostic
       // surface (stderr) is preserved.
+      // C-1 (REQ-10): detect InvalidCheck via the typed guard instead
+      // of an unchecked `as { type?: string }` cast. The guard narrows
+      // safely; any other AuthError falls back to `error.name` (Auth.js
+      // does not stabilise a `type` field across all subclasses).
       logger.error('next-auth error', {
-        error_type: (error as { type?: string }).type ?? error.name,
+        error_type: isStateReplayAuthError(error) ? 'InvalidCheck' : error.name,
         error_message: error.message,
       });
     },
@@ -457,6 +354,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           });
           return true;
         }
+        // C-3 (REQ-12): exhaustiveness guard. `const _exhaustive: never`
+        // forces a tsc error if `SignInDecision.kind` grows a new variant
+        // without a corresponding case here. At runtime (JS only — would
+        // require the type system to be bypassed), we silent-reject
+        // rather than throwing: a 500 inside `signIn` would replace the
+        // generic NextAuth error redirect with an opaque crash page,
+        // hiding the original cause from the user.
+        default: {
+          const _exhaustive: never = decision;
+          void _exhaustive;
+          logger.warn('signIn rejected: unknown decision variant', {
+            kind: (decision as { kind: string }).kind,
+          });
+          return false;
+        }
       }
     },
     /**
@@ -552,3 +464,4 @@ declare module 'next-auth/jwt' {
     orgId?: string;
   }
 }
+

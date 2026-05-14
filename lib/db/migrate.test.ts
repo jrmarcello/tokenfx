@@ -332,6 +332,47 @@ describe('migrate — user_settings singleton', () => {
   });
 });
 
+describe('migrate — performance indexes (TASK-INDEXES)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it('TC-I-07 (REQ-17): turns.timestamp lookup uses idx_turns_timestamp (not full scan)', () => {
+    // EXPLAIN QUERY PLAN returns one row per pipeline step. The `detail`
+    // column reports access strategy (e.g. `SCAN turns` vs `SEARCH turns
+    // USING INDEX idx_turns_timestamp (timestamp>?)`). We assert the index
+    // name appears in any detail row — exact match string varies by SQLite
+    // version, but the index name is stable.
+    const plan = db
+      .prepare(
+        'EXPLAIN QUERY PLAN SELECT id FROM turns WHERE timestamp >= ?',
+      )
+      .all(0) as Array<{ detail: string }>;
+    const combinedDetail = plan.map((r) => r.detail).join(' | ');
+    expect(combinedDetail).toMatch(/idx_turns_timestamp/);
+  });
+
+  it('TC-I-08 (REQ-18): runOutcomeSweep with-cutoff plan uses idx_sessions_ended_at', () => {
+    // Mirrors the `WITH_CUTOFF_SQL` shape from runOutcomeSweep in
+    // lib/ingest/writer.ts: sessions LEFT JOIN session_outcomes with a
+    // cutoff on sessions.ended_at. The new idx_sessions_ended_at should
+    // be picked up for the cutoff predicate.
+    const plan = db
+      .prepare(
+        `EXPLAIN QUERY PLAN
+         SELECT s.id FROM sessions s
+         LEFT JOIN session_outcomes so ON so.session_id = s.id
+         WHERE (so.last_evaluated_at IS NULL OR so.last_evaluated_at < s.ended_at)
+           AND s.ended_at >= ?`,
+      )
+      .all(0) as Array<{ detail: string }>;
+    const combinedDetail = plan.map((r) => r.detail).join(' | ');
+    expect(combinedDetail).toMatch(/idx_sessions_ended_at/);
+  });
+});
+
 describe('migrate — reporter_pushed_sessions table (TASK-1)', () => {
   it('creates reporter_pushed_sessions on a fresh DB with the expected shape', () => {
     const db = openDatabase(':memory:');

@@ -168,6 +168,82 @@ describe('Hono server', () => {
       );
       expect([404, 405]).toContain(res.status);
     });
+
+    // -----------------------------------------------------------------
+    // redirect_uri allowlist — strict URL parsing + hostname allowlist
+    // (review-report-2026-05-14-fixes TASK-H1, TC-U-01..07f).
+    //
+    // Rationale: `uri.startsWith('http://localhost')` is bypassable by
+    // `http://localhost.evil.com/cb` (suffix-injection). The fix parses
+    // the URI with `new URL(...)` and enforces an exact hostname
+    // allowlist {`localhost`, `127.0.0.1`, `[::1]`} over `http:`, plus an
+    // exact-origin allowance against `deps.baseUrl` (covers same-origin
+    // calls regardless of port/scheme used by the stub itself).
+    // -----------------------------------------------------------------
+    describe('redirect_uri allowlist (TASK-H1)', () => {
+      it.each([
+        // TC-U-01..03: suffix-injection / wrong-scheme rejections.
+        ['TC-U-01: rejects http://localhost.evil.com/cb (suffix injection)', 'http://localhost.evil.com/cb'],
+        ['TC-U-02: rejects http://127.0.0.1.attacker.com/cb (suffix injection)', 'http://127.0.0.1.attacker.com/cb'],
+        ['TC-U-03: rejects https://localhost/cb (https not in allowlist)', 'https://localhost/cb'],
+        // TC-U-07b..07d: non-http schemes.
+        ['TC-U-07b: rejects javascript:alert(1)', 'javascript:alert(1)'],
+        ['TC-U-07c: rejects file:///etc/passwd', 'file:///etc/passwd'],
+        ['TC-U-07d: rejects data:text/html,<script>alert(1)</script>', 'data:text/html,<script>alert(1)</script>'],
+        // TC-U-07e: malformed URL.
+        ['TC-U-07e: rejects not-a-url (URL constructor throws)', 'not-a-url'],
+      ])('%s → 400', async (_label, badUri) => {
+        const { app } = await makeApp();
+        const url =
+          `/authorize?response_type=code&redirect_uri=${encodeURIComponent(badUri)}&state=ST`;
+        const res = await app.request(url);
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorResponse>(res);
+        expect(typeof body.error.message).toBe('string');
+        expect(body.error.message.length).toBeGreaterThan(0);
+      });
+
+      it.each([
+        // TC-U-04: loopback localhost with port.
+        ['TC-U-04: accepts http://localhost:3001/cb', 'http://localhost:3001/cb'],
+        // TC-U-05: loopback 127.0.0.1 with port.
+        ['TC-U-05: accepts http://127.0.0.1:3001/cb', 'http://127.0.0.1:3001/cb'],
+        // TC-U-07: IPv6 loopback.
+        ['TC-U-07: accepts http://[::1]:3001/cb', 'http://[::1]:3001/cb'],
+      ])('%s → 302', async (_label, goodUri) => {
+        const { app } = await makeApp();
+        const url =
+          `/authorize?response_type=code&redirect_uri=${encodeURIComponent(goodUri)}&state=ST`;
+        const res = await app.request(url);
+        expect(res.status).toBe(302);
+        const loc = res.headers.get('location') ?? '';
+        const parsed = new URL(loc);
+        expect(parsed.searchParams.get('state')).toBe('ST');
+        expect(parsed.searchParams.get('code')).toMatch(/^[0-9a-f-]{36}$/);
+      });
+
+      it('TC-U-06: accepts exact deps.baseUrl + "/cb" (same-origin path)', async () => {
+        // Use a non-loopback baseUrl to prove the "exact origin equality"
+        // branch is independent from the loopback allowlist branch.
+        const baseUrl = 'http://stub.internal:9876';
+        const { app } = await makeApp({ baseUrl });
+        const goodUri = `${baseUrl}/cb`;
+        const res = await app.request(
+          `/authorize?response_type=code&redirect_uri=${encodeURIComponent(goodUri)}&state=ST`,
+        );
+        expect(res.status).toBe(302);
+        const loc = res.headers.get('location') ?? '';
+        expect(loc.startsWith(`${baseUrl}/cb?`)).toBe(true);
+      });
+
+      it('TC-U-07f: rejects request with missing redirect_uri param (Zod boundary)', async () => {
+        const { app } = await makeApp();
+        const res = await app.request('/authorize?response_type=code&state=ST');
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorResponse>(res);
+        expect(body.error.message).toMatch(/redirect_uri/);
+      });
+    });
   });
 
   describe('POST /token', () => {

@@ -362,6 +362,113 @@ describe('reporter runner', () => {
     });
   });
 
+  describe('REQ-20 / TC-I-11a..f: WeakMap-memoize the 6 prepared statements', () => {
+    /**
+     * Wraps `db.prepare` in a counter keyed by a substring that uniquely
+     * identifies each of the 6 statements. After 5× consecutive
+     * `runReporter(db, ...)` invocations, every counter MUST equal 1
+     * (each statement prepared once, cached per-DB via WeakMap).
+     *
+     * Identifying substrings (chosen to be stable + unique against the
+     * SQL constants in runner.ts):
+     *  - candidates       : `FROM sessions s`
+     *  - modelBreakdowns  : `SUM(t.input_tokens)    AS input_tokens`
+     *  - toolCounts       : `FROM tool_calls tc`
+     *  - avgRatings       : `AVG(r.rating)`
+     *  - subagentRatios   : `subagent_type IS NOT NULL`
+     *  - upsertPushed     : `INSERT INTO reporter_pushed_sessions`
+     */
+    type Counts = {
+      candidates: number;
+      modelBreakdowns: number;
+      toolCounts: number;
+      avgRatings: number;
+      subagentRatios: number;
+      upsertPushed: number;
+    };
+    const wrapPrepareCounter = (
+      db: DatabaseType,
+    ): Counts => {
+      const counts: Counts = {
+        candidates: 0,
+        modelBreakdowns: 0,
+        toolCounts: 0,
+        avgRatings: 0,
+        subagentRatios: 0,
+        upsertPushed: 0,
+      };
+      const orig = db.prepare.bind(db);
+      // Re-typing: better-sqlite3 `prepare` is heavily overloaded; we
+      // only need to intercept and forward.
+      (db as unknown as { prepare: typeof orig }).prepare = ((sql: string) => {
+        if (sql.includes('FROM sessions s')) counts.candidates += 1;
+        else if (sql.includes('SUM(t.input_tokens)    AS input_tokens'))
+          counts.modelBreakdowns += 1;
+        else if (sql.includes('FROM tool_calls tc')) counts.toolCounts += 1;
+        else if (sql.includes('AVG(r.rating)')) counts.avgRatings += 1;
+        else if (sql.includes('subagent_type IS NOT NULL'))
+          counts.subagentRatios += 1;
+        else if (sql.includes('INSERT INTO reporter_pushed_sessions'))
+          counts.upsertPushed += 1;
+        // Forward to the real `prepare`. Cast keeps the overload alive.
+        return (orig as unknown as (s: string) => unknown)(sql);
+      }) as typeof orig;
+      return counts;
+    };
+
+    /**
+     * Shared driver for TC-I-11a..f: install the counter, run the reporter
+     * 5× against a populated DB, return the final counts so each TC asserts
+     * its own statement counter in isolation (clearer failure messages than
+     * one mega-it bundling 6 assertions).
+     */
+    const runAndCountPrepares = async (): Promise<{ counts: Counts; close: () => void }> => {
+      writeConfig(path.join(workDir, 'data'));
+      const { db, seed } = openSeededDb();
+      seed(3);
+
+      const { fn: fetchFn } = makeFetchStub(() =>
+        okResponse({ accepted: 3, skipped: 0, rejected: 0, errors: [] }),
+      );
+
+      // Install the counter AFTER seeding so the seed `INSERT`s don't
+      // pollute the counts.
+      const counts = wrapPrepareCounter(db);
+
+      for (let i = 0; i < 5; i++) {
+        // Bump a rating each iteration so the candidate set stays
+        // non-empty and every code path that uses one of the 6 statements
+        // executes on each run (otherwise the runner would short-circuit
+        // after the first push and the dynamic-IN statements would only
+        // run once anyway).
+        db.prepare(
+          'UPDATE ratings SET rating = ?, rated_at = ? WHERE turn_id = ?',
+        ).run((i % 2 === 0 ? 1 : -1), Date.now() + (i + 1) * 60_000, 'turn-0');
+
+        await runReporter({
+          db,
+          configPath: path.join(workDir, 'data/reporter-config.json'),
+          queuePath: ':memory:',
+          fetchFn,
+        });
+      }
+      return { counts, close: () => db.close() };
+    };
+
+    it.each<{ tc: string; key: keyof Counts; label: string }>([
+      { tc: 'TC-I-11a', key: 'candidates',      label: 'selectCandidates'      },
+      { tc: 'TC-I-11b', key: 'modelBreakdowns', label: 'selectModelBreakdowns' },
+      { tc: 'TC-I-11c', key: 'toolCounts',      label: 'selectToolCounts'      },
+      { tc: 'TC-I-11d', key: 'avgRatings',      label: 'selectAvgRatings'      },
+      { tc: 'TC-I-11e', key: 'subagentRatios',  label: 'selectSubagentRatios'  },
+      { tc: 'TC-I-11f', key: 'upsertPushed',    label: 'upsertPushed'          },
+    ])('$tc: $label prepared exactly once across 5 consecutive runs', async ({ key }) => {
+      const { counts, close } = await runAndCountPrepares();
+      expect(counts[key]).toBe(1);
+      close();
+    });
+  });
+
   describe('payload_hash is sha256 of canonical JSON', () => {
     it('computes hash matching sha256(canonicalJSON(payload))', async () => {
       writeConfig(path.join(workDir, 'data'));

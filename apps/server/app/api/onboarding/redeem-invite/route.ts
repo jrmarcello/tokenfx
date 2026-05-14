@@ -51,6 +51,7 @@ import { log as logger } from '@root/logger';
 import { getDb } from '@/lib/db/client';
 import { redeemInvite, type RedeemError } from '@/lib/queries/redeem';
 import { truncateIpForAudit } from '@/lib/util/ip';
+import { getTrustedClientIp } from '@/lib/util/ip-trust';
 import {
   checkRateLimits,
   __resetRateLimits,
@@ -100,16 +101,12 @@ const RL_WINDOW_MS = 60_000;
 const RAW_TOKEN_REGEX = /"token"\s*:\s*"([0-9a-f]{64})"/;
 
 const extractRequestIp = (req: NextRequest): string | null => {
-  // X-Forwarded-For wins (set by Vercel / Cloudflare / reverse proxies).
-  // Take the FIRST entry — that's the original client per RFC 7239 spirit.
-  const xff = req.headers.get('x-forwarded-for');
-  if (xff !== null) {
-    const first = xff.split(',')[0]?.trim();
-    if (first && first.length > 0) return first;
-  }
-  const xri = req.headers.get('x-real-ip')?.trim();
-  if (xri && xri.length > 0) return xri;
-  return null;
+  // Delegated to `getTrustedClientIp` (review M1). The prior inline impl
+  // trusted `X-Forwarded-For` unconditionally, which is exploitable when the
+  // deploy isn't behind a reverse proxy controlled by the operator. The
+  // central helper gates XFF on `TOKENFX_TRUSTED_PROXY=1` and otherwise
+  // falls back to `X-Real-IP`.
+  return getTrustedClientIp(req);
 };
 
 const getCentralUrl = (): string => {

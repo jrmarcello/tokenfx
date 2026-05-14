@@ -8,8 +8,11 @@
 --    paths. `ALTER TYPE ADD VALUE IF NOT EXISTS` is native PG 12+ and is the
 --    canonical idempotent form. Each value is its own statement (PG forbids
 --    multiple ADD VALUE in a single ALTER TYPE), and each must commit before
---    the value can be used downstream — `--> statement-breakpoint` separates
---    them from the rest of the migration.
+--    the value can be used downstream — the drizzle statement-separator
+--    marker (a comment line with `-->` then the word "statement-breakpoint")
+--    separates them from the rest of the migration. (The marker is NOT
+--    written literally here to avoid false-splits in drizzle's naive
+--    string-based parser.)
 -- ============================================================================
 ALTER TYPE onboarding_outcome ADD VALUE IF NOT EXISTS 'accepted-sso-auto';
 ALTER TYPE onboarding_outcome ADD VALUE IF NOT EXISTS 'rejected-public-domain';
@@ -274,19 +277,29 @@ CREATE INDEX IF NOT EXISTS idx_auth_event_log_iss_occurred
 --> statement-breakpoint
 
 -- ============================================================================
--- 9. REQ-6 — REVOKE UPDATE/DELETE on append-only audit tables from app_role.
---    Per Decisão #10: `:"app_role"` is a psql variable injected by the
---    migration runner via `--variable=app_role=<role>` (defaults to
---    `app_role` for testcontainers + local dev; production substitutes the
---    real least-privilege role). The double-quoted form `:"app_role"`
---    quotes the identifier safely.
+-- 9. REQ-6 — REVOKE UPDATE/DELETE on append-only audit tables from the
+--    application runtime role. INSERT + SELECT remain available (audit
+--    writers + dashboard readers need them). DDL (TRUNCATE, etc.) is
+--    implicitly denied by lack of ownership. This enforces the append-only
+--    invariant at the role boundary — the application code CANNOT rewrite
+--    history even with a compromised query path.
 --
---    INSERT + SELECT remain available (audit writers + dashboard readers
---    need them). DDL (TRUNCATE, etc.) is implicitly denied by lack of
---    ownership. This enforces the append-only invariant at the role
---    boundary — the application code CANNOT rewrite history even with a
---    compromised query path.
+--    Wrapped in a DO block + pg_roles existence check so the migration
+--    applies cleanly through drizzle's pg-node migrator (which cannot parse
+--    psql client-side variable substitution `:"app_role"`). Role name
+--    `app_runtime` matches the convention established in migration 0002.
+--    In environments using a different role name, alter the literal before
+--    deploy. In test/dev where the role doesn't exist, the block silently
+--    skips (RAISE NOTICE).
 -- ============================================================================
-REVOKE UPDATE, DELETE ON onboarding_redemption_log FROM :"app_role";
-REVOKE UPDATE, DELETE ON onboarding_audit_log FROM :"app_role";
-REVOKE UPDATE, DELETE ON auth_event_log FROM :"app_role";
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'app_runtime') THEN
+    REVOKE UPDATE, DELETE ON onboarding_redemption_log FROM app_runtime;
+    REVOKE UPDATE, DELETE ON onboarding_audit_log FROM app_runtime;
+    REVOKE UPDATE, DELETE ON auth_event_log FROM app_runtime;
+  ELSE
+    RAISE NOTICE 'REVOKE block skipped: app_runtime role missing (expected in test/dev)';
+  END IF;
+END;
+$$;

@@ -38,14 +38,35 @@ export type Deps = Readonly<{
   scenario: ScenarioStore;
 }>;
 
-const REDIRECT_URI_ALLOWED_PREFIXES = [
-  'http://localhost',
-  'http://127.0.0.1',
-];
+/**
+ * Strict allowlist for `redirect_uri` (review-report-2026-05-14-fixes
+ * TASK-H1, REQ-3/REQ-4). The previous `uri.startsWith(...)` check was
+ * bypassable by suffix-injection (`http://localhost.evil.com/cb`,
+ * `http://127.0.0.1.attacker.com/cb`). The fix:
+ *
+ * 1. Parse the URI via `new URL(...)` — invalid URIs and non-URLs throw
+ *    and are rejected.
+ * 2. Two acceptance paths (either one suffices):
+ *    - Exact origin equality with the stub's own `baseUrl` (covers
+ *      same-origin callbacks; scheme + host + port must all match).
+ *    - Loopback HTTP allowlist over an exact hostname set
+ *      (`localhost`, `127.0.0.1`, `[::1]`). HTTPS / `javascript:` /
+ *      `file:` / `data:` are rejected because they do not match `http:`.
+ */
+const LOOPBACK_HOSTS = new Set<string>(['localhost', '127.0.0.1', '[::1]']);
 
 const isAllowedRedirectUri = (uri: string, baseUrl: string): boolean => {
-  if (uri.startsWith(baseUrl)) return true;
-  return REDIRECT_URI_ALLOWED_PREFIXES.some((p) => uri.startsWith(p));
+  let parsed: URL;
+  try {
+    parsed = new URL(uri);
+  } catch {
+    return false;
+  }
+  // Path 1: exact origin equality with the stub's own baseUrl.
+  if (parsed.origin === new URL(baseUrl).origin) return true;
+  // Path 2: loopback HTTP allowlist (third-party local-only clients).
+  if (parsed.protocol !== 'http:') return false;
+  return LOOPBACK_HOSTS.has(parsed.hostname);
 };
 
 const badRequest = (message: string) =>

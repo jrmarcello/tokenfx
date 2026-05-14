@@ -35,6 +35,7 @@ import {
   teams,
   users,
 } from '@/lib/db/schema';
+import { extractExecRows } from '@/lib/db/exec';
 import type { getDb } from '@/lib/db/client';
 
 type Db = ReturnType<typeof getDb>;
@@ -258,19 +259,11 @@ export const getTeamDetail = async (
     userId: string;
     provisionedVia: ProvisionedVia;
     lastLoginAt: Date | null;
-  }> = Array.isArray(provisionResult)
-    ? (provisionResult as unknown as Array<{
-        userId: string;
-        provisionedVia: ProvisionedVia;
-        lastLoginAt: Date | null;
-      }>)
-    : ((provisionResult as unknown as {
-        rows: Array<{
-          userId: string;
-          provisionedVia: ProvisionedVia;
-          lastLoginAt: Date | null;
-        }>;
-      }).rows ?? []);
+  }> = extractExecRows<{
+    userId: string;
+    provisionedVia: ProvisionedVia;
+    lastLoginAt: Date | null;
+  }>(provisionResult);
 
   // Index by userId for O(1) lookup when materializing the alphabetical
   // member list below. Users excluded by `filter` are simply absent from
@@ -342,9 +335,7 @@ export const getTeamDetail = async (
     WHERE s.user_id IN (${idList})
       AND s.started_at >= NOW() - INTERVAL '30 days'
   `);
-  const sessionRows: SessionRow[] = Array.isArray(result)
-    ? (result as unknown as SessionRow[])
-    : ((result as unknown as { rows: SessionRow[] }).rows ?? []);
+  const sessionRows = extractExecRows<SessionRow>(result);
 
   // 4. Aggregate.
   const memberAgg = new Map<string, { sessions30d: number; spend30d: number }>();

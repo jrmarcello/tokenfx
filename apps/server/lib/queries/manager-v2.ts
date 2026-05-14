@@ -47,6 +47,7 @@ import {
   type NormalizedRadarTeam,
 } from '@/lib/analytics/radar-normalize';
 import { displayLabelFor } from '@/lib/util/user-display';
+import { extractExecRows } from '@/lib/db/exec';
 import type { getDb } from '@/lib/db/client';
 
 type Db = ReturnType<typeof getDb>;
@@ -243,9 +244,7 @@ export const getTeamToolMix30d = async (
     ORDER BY 1 ASC
   `);
 
-  const raw: Row[] = Array.isArray(result)
-    ? (result as unknown as Row[])
-    : ((result as unknown as { rows: Row[] }).rows ?? []);
+  const raw = extractExecRows<Row>(result);
 
   // Bucket per-day. Each day's accumulator starts as all-zero (the 5 closed
   // enum keys) so the chart layer never sees a missing key.
@@ -317,9 +316,7 @@ export const getTeamSubagentAdoption = async (
     ORDER BY 1 ASC
   `);
 
-  const raw: Row[] = Array.isArray(result)
-    ? (result as unknown as Row[])
-    : ((result as unknown as { rows: Row[] }).rows ?? []);
+  const raw = extractExecRows<Row>(result);
 
   // Aggregate single-number from the underlying sessions, NOT from the daily
   // rollup, to avoid Simpson's-paradox-style mis-weighting on uneven days.
@@ -333,12 +330,9 @@ export const getTeamSubagentAdoption = async (
       AND u.team_id = ${teamId}
       AND s.started_at >= NOW() - (${days}::int * INTERVAL '1 day')
   `);
-  const totalsRows: Array<{ total: number; withSubagent: number }> = Array.isArray(
+  const totalsRows = extractExecRows<{ total: number; withSubagent: number }>(
     totalsResult,
-  )
-    ? (totalsResult as unknown as Array<{ total: number; withSubagent: number }>)
-    : ((totalsResult as unknown as { rows: Array<{ total: number; withSubagent: number }> })
-        .rows ?? []);
+  );
   const totalsRow = totalsRows[0] ?? { total: 0, withSubagent: 0 };
   const total = Number(totalsRow.total ?? 0);
   const withSubagent = Number(totalsRow.withSubagent ?? 0);
@@ -410,9 +404,7 @@ export const getRadarComparison = async (
       AND tmd.day >= (CURRENT_DATE - (${days}::int - 1))
     GROUP BY tmd.team_id
   `);
-  const rollupRows: RollupRow[] = Array.isArray(rollupResult)
-    ? (rollupResult as unknown as RollupRow[])
-    : ((rollupResult as unknown as { rows: RollupRow[] }).rows ?? []);
+  const rollupRows = extractExecRows<RollupRow>(rollupResult);
 
   type SubagentRow = {
     teamId: string;
@@ -437,9 +429,7 @@ export const getRadarComparison = async (
       AND s.started_at >= NOW() - (${days}::int * INTERVAL '1 day')
     GROUP BY u.team_id
   `);
-  const subagentRows: SubagentRow[] = Array.isArray(subagentResult)
-    ? (subagentResult as unknown as SubagentRow[])
-    : ((subagentResult as unknown as { rows: SubagentRow[] }).rows ?? []);
+  const subagentRows = extractExecRows<SubagentRow>(subagentResult);
 
   type ToolShareRow = {
     teamId: string;
@@ -465,9 +455,7 @@ export const getRadarComparison = async (
       AND s.started_at >= NOW() - (${days}::int * INTERVAL '1 day')
     GROUP BY u.team_id
   `);
-  const toolShareRows: ToolShareRow[] = Array.isArray(toolShareResult)
-    ? (toolShareResult as unknown as ToolShareRow[])
-    : ((toolShareResult as unknown as { rows: ToolShareRow[] }).rows ?? []);
+  const toolShareRows = extractExecRows<ToolShareRow>(toolShareResult);
 
   const rollupByTeam = new Map(rollupRows.map((r) => [r.teamId, r]));
   const subagentByTeam = new Map(subagentRows.map((r) => [r.teamId, r]));
@@ -662,9 +650,7 @@ export const getCheckInOpportunities = async (
     INNER JOIN team_stats ts ON ts.team_id = pd.team_id
   `);
 
-  const rows: Row[] = Array.isArray(result)
-    ? (result as unknown as Row[])
-    : ((result as unknown as { rows: Row[] }).rows ?? []);
+  const rows = extractExecRows<Row>(result);
 
   const flagged: CheckInOpportunity[] = [];
   for (const r of rows) {
@@ -754,9 +740,7 @@ export const getDropOffCandidates = async (
     GROUP BY u.id, u.team_id, u.email, u.display_name
   `);
 
-  const rows: Row[] = Array.isArray(result)
-    ? (result as unknown as Row[])
-    : ((result as unknown as { rows: Row[] }).rows ?? []);
+  const rows = extractExecRows<Row>(result);
 
   const flagged: DropOffCandidate[] = [];
   for (const r of rows) {
@@ -842,9 +826,7 @@ export const getKnowledgeSharingOpportunities = async (
       AND s.started_at >= NOW() - INTERVAL '30 days'
     GROUP BY u.team_id
   `);
-  const subagentRows: SubRow[] = Array.isArray(subagentResult)
-    ? (subagentResult as unknown as SubRow[])
-    : ((subagentResult as unknown as { rows: SubRow[] }).rows ?? []);
+  const subagentRows = extractExecRows<SubRow>(subagentResult);
 
   type ToolRow = {
     teamId: string;
@@ -883,9 +865,7 @@ export const getKnowledgeSharingOpportunities = async (
     FROM team_tool tt
     INNER JOIN team_total tot ON tot.team_id = tt.team_id
   `);
-  const toolRows: ToolRow[] = Array.isArray(toolResult)
-    ? (toolResult as unknown as ToolRow[])
-    : ((toolResult as unknown as { rows: ToolRow[] }).rows ?? []);
+  const toolRows = extractExecRows<ToolRow>(toolResult);
 
   // Group tool-mix per (teamId, bucket) using the central bucketizer so legacy
   // `Task` collapses into `Agent`. Share = bucketCount / teamTotal.
@@ -1013,15 +993,11 @@ export const getTeamMembersForManager = async (
       AND users.team_id = ${teamId}
     ORDER BY COALESCE(users.display_name, split_part(users.email, '@', 1)) ASC
   `);
-  const rows = Array.isArray(result)
-    ? (result as unknown as Array<{
-        userId: string;
-        email: string;
-        displayName: string | null;
-      }>)
-    : ((result as unknown as {
-        rows: Array<{ userId: string; email: string; displayName: string | null }>;
-      }).rows ?? []);
+  const rows = extractExecRows<{
+    userId: string;
+    email: string;
+    displayName: string | null;
+  }>(result);
 
   return rows.map((r) => ({
     userId: r.userId,

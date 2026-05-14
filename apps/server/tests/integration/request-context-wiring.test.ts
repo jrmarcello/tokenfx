@@ -32,7 +32,16 @@
  *   - TC-I-41b — infra; `headers.get` throws → handler still runs with defaults,
  *                returns 200; warn fires once.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 import {
   getRequestContext,
@@ -44,6 +53,28 @@ import {
   extractRequestContext,
 } from '@/app/api/auth/[...nextauth]/request-context-extract';
 import { log as logger } from '@root/logger';
+
+// ---------------------------------------------------------------------------
+// XFF trust gate (review M1): `getTrustedClientIp` only honors `x-forwarded-for`
+// when `TOKENFX_TRUSTED_PROXY=1`. The contract under test here — XFF first-hop
+// → ctx.ip — describes the trusted-proxy branch, so we opt in for the file.
+// Untrusted-default behavior is covered by the dedicated `ip-trust.test.ts`.
+// ---------------------------------------------------------------------------
+const mutableEnv = process.env as Record<string, string | undefined>;
+let trustedProxySnapshot: string | undefined;
+
+beforeAll(() => {
+  trustedProxySnapshot = process.env.TOKENFX_TRUSTED_PROXY;
+  mutableEnv.TOKENFX_TRUSTED_PROXY = '1';
+});
+
+afterAll(() => {
+  if (trustedProxySnapshot === undefined) {
+    delete mutableEnv.TOKENFX_TRUSTED_PROXY;
+  } else {
+    mutableEnv.TOKENFX_TRUSTED_PROXY = trustedProxySnapshot;
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Local re-implementation of route.ts::csrfWrap, structurally identical to

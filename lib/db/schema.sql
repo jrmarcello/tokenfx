@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   ingested_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_ended_at ON sessions(ended_at);
 
 CREATE TABLE IF NOT EXISTS turns (
   id TEXT PRIMARY KEY,
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS turns (
   service_tier TEXT NOT NULL DEFAULT 'standard'
 );
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
 -- idx_turns_subagent is created in `backfillTurnsSubagentType` (migrate.ts)
 -- AFTER the ALTER TABLE so legacy DBs (no subagent_type column yet at schema
 -- replay time) don't fail on "no such column" during CREATE INDEX.

@@ -73,6 +73,7 @@ import {
   userMachines,
   users,
 } from '@/lib/db/schema';
+import { extractExecRows } from '@/lib/db/exec';
 import type { getDb } from '@/lib/db/client';
 import { BCRYPT_COST } from '@/lib/auth/bearer-auth';
 import { generateKeyId } from '@/lib/auth/tokens';
@@ -208,9 +209,7 @@ const lookupInviteForUpdate = async (
     WHERE token = ${token}
     FOR UPDATE
   `);
-  const rows = Array.isArray(result)
-    ? (result as unknown as InviteRowSql[])
-    : ((result as unknown as { rows: InviteRowSql[] }).rows ?? []);
+  const rows = extractExecRows<InviteRowSql>(result);
   if (rows.length === 0) return null;
   return normalizeInviteRow(rows[0]);
 };

@@ -37,6 +37,7 @@ import {
 } from '@/lib/auth/bearer-auth';
 import { checkRateLimits, __resetRateLimits } from '@/lib/queries/rate-limit';
 import { truncateIpForAudit } from '@/lib/util/ip';
+import { getTrustedClientIp } from '@/lib/util/ip-trust';
 
 // --- Rate limiter ------------------------------------------------------------
 // True sliding-window via the shared `checkRateLimits` helper from
@@ -95,10 +96,11 @@ export const GET = async (req: NextRequest): Promise<NextResponse> => {
   // Both authHeader and keyId are non-null at this point.
   // Apply rate limit BEFORE any auth work so a flood of bad requests can't
   // make us fan out bcrypt calls.
-  const ip =
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-    req.headers.get('x-real-ip')?.trim() ??
-    null;
+  // IP source delegated to `getTrustedClientIp` (review M1). XFF is only
+  // honored when the operator opts in via `TOKENFX_TRUSTED_PROXY=1`;
+  // otherwise we fall back to `X-Real-IP` to keep the rate-limit key honest
+  // against spoofing in deploys without a controlled reverse proxy.
+  const ip = getTrustedClientIp(req);
   const rlKey = (ip ? truncateIpForAudit(ip) : null) ?? 'unknown-ip';
   const rateLimitResult = checkRateLimits([
     {

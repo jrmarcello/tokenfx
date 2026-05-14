@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import type { Database as DatabaseType } from 'better-sqlite3';
+import type { Database as DatabaseType, Statement } from 'better-sqlite3';
 import { log } from '@/lib/logger';
 import { sanitizeSession, type SessionWithAggs } from './sanitizer';
 import type { IngestEnvelope, SanitizedSessionPayload } from './types';
@@ -97,58 +97,27 @@ type SessionRow = {
   outcome_status: string | null;
 };
 
+// Candidate set rationale (REQ-10):
+//   (a) it was never pushed, OR
+//   (b) `ingested_at > pushed_at` (re-ingested transcript / OTEL update), OR
+//   (c) `started_at >= cutoff` where cutoff = now - 1h (OTEL late-update
+//       overlap window — the spec's `last_pushed_at - 1h` is approximated
+//       with `now - 1h` because `last_pushed_at` is per-session and we
+//       want a single bounded candidate set), OR
+//   (d) any rating's `rated_at > pushed_at` (a rating added/changed AFTER
+//       the last push must trigger a re-push because `avg_rating` is
+//       part of the payload — TC-I-10).
+// The candidate set is bounded by branches (a)+(c)+(d); branch (b) is a
+// strict refinement when a re-ingest happened.
+// v3 (manager-dashboard-v3-outcomes spec REQ-7b): LEFT JOIN session_outcomes
+// — sessions without an outcome row still push (REQ-2 — `so.*` cols are
+// NULL in that case). Adds (e) `so.last_evaluated_at > r.pushed_at` so a
+// re-evaluation post-push triggers a re-push (e.g. merged_pr_count
+// populated after gh api call eventually succeeded).
 const selectCandidates = (
   db: DatabaseType,
   cutoff: number,
-): SessionRow[] => {
-  // A session is a candidate if (REQ-10):
-  //   (a) it was never pushed, OR
-  //   (b) `ingested_at > pushed_at` (re-ingested transcript / OTEL update), OR
-  //   (c) `started_at >= cutoff` where cutoff = now - 1h (OTEL late-update
-  //       overlap window — the spec's `last_pushed_at - 1h` is approximated
-  //       with `now - 1h` because `last_pushed_at` is per-session and we
-  //       want a single bounded candidate set), OR
-  //   (d) any rating's `rated_at > pushed_at` (a rating added/changed AFTER
-  //       the last push must trigger a re-push because `avg_rating` is
-  //       part of the payload — TC-I-10).
-  // The candidate set is bounded by branches (a)+(c)+(d); branch (b) is a
-  // strict refinement when a re-ingest happened.
-  // v3 (manager-dashboard-v3-outcomes spec REQ-7b): LEFT JOIN session_outcomes
-  // — sessions without an outcome row still push (REQ-2 — `so.*` cols are
-  // NULL in that case). Adds (e) `so.last_evaluated_at > r.pushed_at` so a
-  // re-evaluation post-push triggers a re-push (e.g. merged_pr_count
-  // populated after gh api call eventually succeeded).
-  const stmt = db.prepare<[number], SessionRow>(
-    `SELECT s.id, s.cwd, s.git_branch, s.cc_version,
-            s.started_at, s.ended_at,
-            s.total_input_tokens, s.total_output_tokens,
-            s.total_cache_read_tokens, s.total_cache_creation_tokens,
-            s.total_cost_usd, s.total_cost_usd_otel,
-            s.turn_count, s.tool_call_count,
-            s.ingested_at,
-            r.payload_hash AS pushed_hash,
-            so.commit_count, so.loc_added, so.loc_removed,
-            so.files_changed, so.reverts_within_7d, so.merged_pr_count,
-            so.status AS outcome_status
-       FROM sessions s
-       LEFT JOIN reporter_pushed_sessions r ON r.session_id = s.id
-       LEFT JOIN session_outcomes so ON so.session_id = s.id
-      WHERE r.session_id IS NULL
-         OR s.ingested_at > r.pushed_at
-         OR s.started_at >= ?
-         OR EXISTS (
-              SELECT 1
-                FROM ratings rt
-                JOIN turns tn ON tn.id = rt.turn_id
-               WHERE tn.session_id = s.id
-                 AND rt.rated_at > r.pushed_at
-            )
-         OR (so.last_evaluated_at IS NOT NULL
-             AND so.last_evaluated_at > r.pushed_at)
-      ORDER BY s.started_at ASC`,
-  );
-  return stmt.all(cutoff);
-};
+): SessionRow[] => getPrepared(db).candidates.all(cutoff);
 
 type ModelBreakdownRow = {
   session_id: string;
@@ -166,28 +135,126 @@ type RatingRow = { session_id: string; avg_rating: number };
 
 type SubagentRow = { session_id: string; ratio: number | null };
 
+// ---------- Prepared statements (REQ-20 / D-5) ----------
+//
+// All 6 statements used by the runner are prepared once per DatabaseType
+// handle and cached in a WeakMap. This mirrors the canonical pattern in
+// `lib/queries/overview.ts:getPrepared` and avoids re-preparing on every
+// `runReporter` invocation (the prior code re-prepared on every call,
+// burning CPU + better-sqlite3 cache slots).
+//
+// The four `IN (?, ?, ...)` queries (model breakdown, tool counts, avg
+// ratings, subagent ratios) are rewritten to use the `json_each(?)` pattern
+// from `lib/queries/effectiveness.ts:turnsForSessions` so the prepared SQL
+// is constant regardless of batch size. The bind value is
+// `JSON.stringify(sessionIds)`.
+
+const CANDIDATES_SQL = `SELECT s.id, s.cwd, s.git_branch, s.cc_version,
+        s.started_at, s.ended_at,
+        s.total_input_tokens, s.total_output_tokens,
+        s.total_cache_read_tokens, s.total_cache_creation_tokens,
+        s.total_cost_usd, s.total_cost_usd_otel,
+        s.turn_count, s.tool_call_count,
+        s.ingested_at,
+        r.payload_hash AS pushed_hash,
+        so.commit_count, so.loc_added, so.loc_removed,
+        so.files_changed, so.reverts_within_7d, so.merged_pr_count,
+        so.status AS outcome_status
+   FROM sessions s
+   LEFT JOIN reporter_pushed_sessions r ON r.session_id = s.id
+   LEFT JOIN session_outcomes so ON so.session_id = s.id
+  WHERE r.session_id IS NULL
+     OR s.ingested_at > r.pushed_at
+     OR s.started_at >= ?
+     OR EXISTS (
+          SELECT 1
+            FROM ratings rt
+            JOIN turns tn ON tn.id = rt.turn_id
+           WHERE tn.session_id = s.id
+             AND rt.rated_at > r.pushed_at
+        )
+     OR (so.last_evaluated_at IS NOT NULL
+         AND so.last_evaluated_at > r.pushed_at)
+  ORDER BY s.started_at ASC`;
+
+const MODEL_BREAKDOWNS_SQL = `SELECT t.session_id           AS session_id,
+        t.model                AS model,
+        SUM(t.input_tokens)    AS input_tokens,
+        SUM(t.output_tokens)   AS output_tokens,
+        SUM(t.cache_read_tokens) AS cache_read_tokens,
+        SUM(t.cache_creation_tokens) AS cache_creation_tokens,
+        SUM(t.cost_usd)        AS cost_usd
+   FROM turns t
+   JOIN json_each(?) j ON j.value = t.session_id
+  GROUP BY t.session_id, t.model
+  ORDER BY t.session_id, t.model`;
+
+const TOOL_COUNTS_SQL = `SELECT t.session_id    AS session_id,
+        tc.tool_name    AS tool_name,
+        COUNT(*)        AS count
+   FROM tool_calls tc
+   JOIN turns t ON t.id = tc.turn_id
+   JOIN json_each(?) j ON j.value = t.session_id
+  GROUP BY t.session_id, tc.tool_name`;
+
+const AVG_RATINGS_SQL = `SELECT t.session_id     AS session_id,
+        AVG(r.rating)    AS avg_rating
+   FROM ratings r
+   JOIN turns t ON t.id = r.turn_id
+   JOIN json_each(?) j ON j.value = t.session_id
+  GROUP BY t.session_id`;
+
+const SUBAGENT_RATIOS_SQL = `SELECT t.session_id AS session_id,
+        CASE WHEN COUNT(*) = 0 THEN NULL
+             ELSE CAST(SUM(CASE WHEN t.subagent_type IS NOT NULL THEN 1 ELSE 0 END) AS REAL) /
+                  CAST(COUNT(*) AS REAL)
+        END AS ratio
+   FROM turns t
+   JOIN json_each(?) j ON j.value = t.session_id
+  GROUP BY t.session_id`;
+
+const UPSERT_PUSHED_SQL = `INSERT INTO reporter_pushed_sessions (session_id, payload_hash, pushed_at)
+ VALUES (?, ?, ?)
+ ON CONFLICT(session_id) DO UPDATE
+   SET payload_hash = excluded.payload_hash,
+       pushed_at    = excluded.pushed_at`;
+
+type PreparedSet = Readonly<{
+  candidates: Statement<[number], SessionRow>;
+  modelBreakdowns: Statement<[string]>;
+  toolCounts: Statement<[string]>;
+  avgRatings: Statement<[string]>;
+  subagentRatios: Statement<[string]>;
+  upsertPushed: Statement<[string, string, number]>;
+}>;
+
+const preparedCache = new WeakMap<DatabaseType, PreparedSet>();
+
+const getPrepared = (db: DatabaseType): PreparedSet => {
+  let p = preparedCache.get(db);
+  if (!p) {
+    p = {
+      candidates: db.prepare<[number], SessionRow>(CANDIDATES_SQL),
+      modelBreakdowns: db.prepare<[string]>(MODEL_BREAKDOWNS_SQL),
+      toolCounts: db.prepare<[string]>(TOOL_COUNTS_SQL),
+      avgRatings: db.prepare<[string]>(AVG_RATINGS_SQL),
+      subagentRatios: db.prepare<[string]>(SUBAGENT_RATIOS_SQL),
+      upsertPushed: db.prepare<[string, string, number]>(UPSERT_PUSHED_SQL),
+    };
+    preparedCache.set(db, p);
+  }
+  return p;
+};
+
 const selectModelBreakdowns = (
   db: DatabaseType,
   sessionIds: string[],
 ): Map<string, SessionWithAggs['model_breakdown']> => {
   const out = new Map<string, SessionWithAggs['model_breakdown']>();
   if (sessionIds.length === 0) return out;
-  const placeholders = sessionIds.map(() => '?').join(',');
-  const rows = db
-    .prepare(
-      `SELECT t.session_id           AS session_id,
-              t.model                AS model,
-              SUM(t.input_tokens)    AS input_tokens,
-              SUM(t.output_tokens)   AS output_tokens,
-              SUM(t.cache_read_tokens) AS cache_read_tokens,
-              SUM(t.cache_creation_tokens) AS cache_creation_tokens,
-              SUM(t.cost_usd)        AS cost_usd
-         FROM turns t
-        WHERE t.session_id IN (${placeholders})
-        GROUP BY t.session_id, t.model
-        ORDER BY t.session_id, t.model`,
-    )
-    .all(...sessionIds) as ModelBreakdownRow[];
+  const rows = getPrepared(db).modelBreakdowns.all(
+    JSON.stringify(sessionIds),
+  ) as ModelBreakdownRow[];
   for (const r of rows) {
     const list = out.get(r.session_id) ?? [];
     list.push({
@@ -209,18 +276,9 @@ const selectToolCounts = (
 ): Map<string, Record<string, number>> => {
   const out = new Map<string, Record<string, number>>();
   if (sessionIds.length === 0) return out;
-  const placeholders = sessionIds.map(() => '?').join(',');
-  const rows = db
-    .prepare(
-      `SELECT t.session_id    AS session_id,
-              tc.tool_name    AS tool_name,
-              COUNT(*)        AS count
-         FROM tool_calls tc
-         JOIN turns t ON t.id = tc.turn_id
-        WHERE t.session_id IN (${placeholders})
-        GROUP BY t.session_id, tc.tool_name`,
-    )
-    .all(...sessionIds) as ToolCountRow[];
+  const rows = getPrepared(db).toolCounts.all(
+    JSON.stringify(sessionIds),
+  ) as ToolCountRow[];
   for (const r of rows) {
     const map = out.get(r.session_id) ?? {};
     map[r.tool_name] = r.count;
@@ -235,17 +293,9 @@ const selectAvgRatings = (
 ): Map<string, number> => {
   const out = new Map<string, number>();
   if (sessionIds.length === 0) return out;
-  const placeholders = sessionIds.map(() => '?').join(',');
-  const rows = db
-    .prepare(
-      `SELECT t.session_id     AS session_id,
-              AVG(r.rating)    AS avg_rating
-         FROM ratings r
-         JOIN turns t ON t.id = r.turn_id
-        WHERE t.session_id IN (${placeholders})
-        GROUP BY t.session_id`,
-    )
-    .all(...sessionIds) as RatingRow[];
+  const rows = getPrepared(db).avgRatings.all(
+    JSON.stringify(sessionIds),
+  ) as RatingRow[];
   for (const r of rows) {
     out.set(r.session_id, r.avg_rating);
   }
@@ -258,19 +308,9 @@ const selectSubagentRatios = (
 ): Map<string, number> => {
   const out = new Map<string, number>();
   if (sessionIds.length === 0) return out;
-  const placeholders = sessionIds.map(() => '?').join(',');
-  const rows = db
-    .prepare(
-      `SELECT session_id,
-              CASE WHEN COUNT(*) = 0 THEN NULL
-                   ELSE CAST(SUM(CASE WHEN subagent_type IS NOT NULL THEN 1 ELSE 0 END) AS REAL) /
-                        CAST(COUNT(*) AS REAL)
-              END AS ratio
-         FROM turns
-        WHERE session_id IN (${placeholders})
-        GROUP BY session_id`,
-    )
-    .all(...sessionIds) as SubagentRow[];
+  const rows = getPrepared(db).subagentRatios.all(
+    JSON.stringify(sessionIds),
+  ) as SubagentRow[];
   for (const r of rows) {
     if (r.ratio !== null) out.set(r.session_id, r.ratio);
   }
@@ -439,13 +479,7 @@ export const runReporter = async (
     }
 
     // 4. Batch ≤ BATCH_SIZE; push each batch sequentially.
-    const upsertPushed = db.prepare(
-      `INSERT INTO reporter_pushed_sessions (session_id, payload_hash, pushed_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(session_id) DO UPDATE
-         SET payload_hash = excluded.payload_hash,
-             pushed_at    = excluded.pushed_at`,
-    );
+    const { upsertPushed } = getPrepared(db);
     const markBatchPushed = db.transaction((entries: Prepared[]) => {
       const now = Date.now();
       for (const e of entries) {

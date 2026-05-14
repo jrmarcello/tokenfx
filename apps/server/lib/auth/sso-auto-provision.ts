@@ -401,10 +401,10 @@ export const buildDefaultDeps = (): AutoProvisionDeps => ({
 const SENTINEL_TOKEN_PREFIX = '00000000';
 
 /** Audit-log write fan-out — both tables (REQ-9). */
-const writeAuditRowsForRejection = async (
+export const writeAuditRowsForRejection = async (
   deps: AutoProvisionDeps,
   args: {
-    outcome: Exclude<AuthEventOutcome, never>;
+    outcome: Exclude<AuthEventOutcome, 'accepted-sso-auto'>;
     tokenPrefix: string;
     ssoProvider: string;
     ssoIssuer: string;

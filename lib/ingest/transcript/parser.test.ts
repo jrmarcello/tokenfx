@@ -183,6 +183,79 @@ describe('parseTranscriptString', () => {
     expect(turn.toolCalls[0].resultIsError).toBe(false);
   });
 
+  it('TC-U-24: REQ-15 happy — extracts text from block.type === "text" (no cast)', () => {
+    const content = [
+      userLine('u1', null, 'ping', '2026-04-18T10:00:00.000Z'),
+      assistantLine('a1', 'u1', {
+        text: 'hello from text block',
+        ts: '2026-04-18T10:00:05.000Z',
+        inputTokens: 1,
+        outputTokens: 1,
+      }),
+    ].join('\n');
+    const res = parseTranscriptString(content);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.turns).toHaveLength(1);
+    expect(res.value.turns[0].assistantText).toBe('hello from text block');
+  });
+
+  it('TC-U-25: REQ-15 happy — extracts id/name/input from block.type === "tool_use" (no cast)', () => {
+    const content = [
+      userLine('u1', null, 'run it', '2026-04-18T10:00:00.000Z'),
+      assistantLine('a1', 'u1', {
+        text: 'sure',
+        ts: '2026-04-18T10:00:05.000Z',
+        inputTokens: 1,
+        outputTokens: 1,
+        toolUses: [{ id: 'tu_42', name: 'bash', input: { cmd: 'ls' } }],
+      }),
+    ].join('\n');
+    const res = parseTranscriptString(content);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const turn = res.value.turns[0];
+    expect(turn.toolCalls).toHaveLength(1);
+    expect(turn.toolCalls[0].id).toBe('tu_42');
+    expect(turn.toolCalls[0].toolName).toBe('bash');
+    expect(turn.toolCalls[0].inputJson).toBe(JSON.stringify({ cmd: 'ls' }));
+  });
+
+  it('TC-U-26: REQ-15 happy — preserves usage.service_tier string (no cast)', () => {
+    const content = [
+      userLine('u1', null, 'go', '2026-04-18T10:00:00.000Z'),
+      line({
+        type: 'assistant',
+        uuid: 'a1',
+        parentUuid: 'u1',
+        sessionId: SESSION_ID,
+        timestamp: '2026-04-18T10:00:05.000Z',
+        cwd: CWD,
+        version: '1.2.3',
+        gitBranch: 'main',
+        message: {
+          id: 'msg-a1',
+          role: 'assistant',
+          model: 'claude-opus-4',
+          stop_reason: 'end_turn',
+          content: [{ type: 'text', text: 'ok' }],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+            service_tier: 'priority',
+          },
+        },
+      }),
+    ].join('\n');
+    const res = parseTranscriptString(content);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.turns).toHaveLength(1);
+    expect(res.value.turns[0].serviceTier).toBe('priority');
+  });
+
   it('returns error for inconsistent sessionId', () => {
     const a = userLine('u1', null, 'hi', '2026-04-18T10:00:00.000Z');
     const bad = line({

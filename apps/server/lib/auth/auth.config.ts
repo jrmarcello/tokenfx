@@ -23,16 +23,43 @@ import { isRole } from './roles';
  * orgId are persisted on the JWT by `auth.ts:jwt()` so this callback can
  * read them without a DB hit (Edge-safe).
  */
-export const authConfig = {
+/**
+ * Builds the Edge-safe NextAuth config from a given env snapshot.
+ *
+ * Extracted as a factory so env-driven security toggles (notably
+ * `cookies.*.options.secure = NODE_ENV === 'production'`) are testable
+ * without mutating `process.env`. The named `authConfig` export below
+ * pins the default-env build for runtime consumers (`auth.ts`,
+ * middleware). Tests can call `buildAuthConfig({ ...process.env,
+ * NODE_ENV: 'production' })` to assert prod-only flags.
+ *
+ * review-report-2026-05-14-fixes REQ-24 (TASK-L1).
+ */
+export const buildAuthConfig = (env: NodeJS.ProcessEnv) => {
+  const isProd = env.NODE_ENV === 'production';
+  // review-report-2026-05-14 REQ-24 (TASK-L1): explicit cookie hardening
+  // for `sessionToken`, `state`, `pkceCodeVerifier`, `nonce`. NextAuth
+  // ships sane defaults but they are not contractually frozen; pinning
+  // here locks the security posture against silent upstream regressions.
+  // `csrfToken` is intentionally NOT pinned — managed by NextAuth
+  // internals (see TC-U-32 / TC-U-33 in the spec).
+  const cookieOptions = {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: isProd,
+    path: '/',
+  } as const;
+
+  return {
   providers: [
     Google({
-      clientId: process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      clientId: env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
     }),
     Okta({
-      clientId: process.env.OKTA_CLIENT_ID,
-      clientSecret: process.env.OKTA_CLIENT_SECRET,
-      issuer: process.env.OKTA_ISSUER,
+      clientId: env.OKTA_CLIENT_ID,
+      clientSecret: env.OKTA_CLIENT_SECRET,
+      issuer: env.OKTA_ISSUER,
       // sso-nonce-replay REQ-1: Auth.js v5's Okta provider defaults to
       // `checks: ['pkce', 'state']` (verified at
       // `@auth/core@0.37.2/src/providers/okta.ts:108`). Adding `'nonce'`
@@ -120,4 +147,18 @@ export const authConfig = {
       return true;
     },
   },
+  cookies: {
+    sessionToken: { options: cookieOptions },
+    state: { options: cookieOptions },
+    pkceCodeVerifier: { options: cookieOptions },
+    nonce: { options: cookieOptions },
+  },
 } satisfies NextAuthConfig;
+};
+
+/**
+ * Default-env build of the Edge-safe NextAuth config. Consumers
+ * (`auth.ts`, middleware) keep importing `authConfig` directly; the
+ * factory above exists for env-driven tests (TC-U-32b / TC-U-32c).
+ */
+export const authConfig = buildAuthConfig(process.env);

@@ -177,15 +177,25 @@ export function parseTranscriptString(
     const textParts: string[] = [];
     const toolCalls: ParsedToolCall[] = [];
     for (const block of msg.data.content) {
-      if (block.type === 'text' && 'text' in block) {
-        textParts.push(block.text as string);
-      } else if (block.type === 'tool_use' && 'id' in block && 'name' in block) {
-        const tu = block as { id: string; name: string; input: unknown };
-        const linked = toolResultMap.get(tu.id);
+      // The AssistantContentBlock union includes a `z.object({ type: z.string() }).passthrough()`
+      // fallback arm whose extra fields are typed `unknown`, so TS can't narrow purely on
+      // `block.type === 'text'` / `'tool_use'`. Re-narrowing with explicit `typeof` guards
+      // on each field gives us typed access without an `as` cast.
+      if (block.type === 'text' && 'text' in block && typeof block.text === 'string') {
+        textParts.push(block.text);
+      } else if (
+        block.type === 'tool_use' &&
+        'id' in block &&
+        'name' in block &&
+        typeof block.id === 'string' &&
+        typeof block.name === 'string'
+      ) {
+        const input = 'input' in block ? block.input : undefined;
+        const linked = toolResultMap.get(block.id);
         toolCalls.push({
-          id: tu.id,
-          toolName: tu.name,
-          inputJson: JSON.stringify(tu.input ?? null),
+          id: block.id,
+          toolName: block.name,
+          inputJson: JSON.stringify(input ?? null),
           resultJson: linked ? JSON.stringify(linked.content ?? null) : null,
           resultIsError: linked ? linked.isError : false,
         });
@@ -228,7 +238,7 @@ export function parseTranscriptString(
       | undefined;
     const legacyAggregate =
       typeof usage.cache_creation_input_tokens === 'number'
-        ? (usage.cache_creation_input_tokens as number)
+        ? usage.cache_creation_input_tokens
         : undefined;
     let cacheCreation5mTokens = 0;
     let cacheCreation1hTokens = 0;
@@ -242,7 +252,7 @@ export function parseTranscriptString(
       cacheCreationAggregate = legacyAggregate;
     }
     const serviceTier =
-      typeof usage.service_tier === 'string' ? (usage.service_tier as string) : 'standard';
+      typeof usage.service_tier === 'string' ? usage.service_tier : 'standard';
     turns.push({
       id: e.uuid,
       parentUuid: e.parentUuid ?? null,
@@ -250,12 +260,12 @@ export function parseTranscriptString(
       timestamp: Date.parse(e.timestamp),
       model: msg.data.model,
       inputTokens:
-        typeof usage.input_tokens === 'number' ? (usage.input_tokens as number) : 0,
+        typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
       outputTokens:
-        typeof usage.output_tokens === 'number' ? (usage.output_tokens as number) : 0,
+        typeof usage.output_tokens === 'number' ? usage.output_tokens : 0,
       cacheReadTokens:
         typeof usage.cache_read_input_tokens === 'number'
-          ? (usage.cache_read_input_tokens as number)
+          ? usage.cache_read_input_tokens
           : 0,
       cacheCreationTokens: cacheCreationAggregate,
       cacheCreation5mTokens,

@@ -528,6 +528,49 @@ export async function ingestAll(options?: {
 }
 
 /**
+ * Outcome-sweep SQL variants. Hoisted to module-level so the strings are
+ * not re-allocated per call, and prepared lazily via `getSweepPrepared`
+ * (REQ-16, C-7). Both variants share the same column projection; only the
+ * WHERE clause's date guard differs.
+ */
+const OUTCOME_SWEEP_FORCE_SQL = `SELECT s.id AS id, s.cwd AS cwd, s.started_at AS started_at, s.ended_at AS ended_at
+       FROM sessions s
+       LEFT JOIN session_outcomes so ON so.session_id = s.id
+       WHERE so.last_evaluated_at IS NULL OR so.last_evaluated_at < s.ended_at`;
+
+const OUTCOME_SWEEP_WITH_CUTOFF_SQL = `SELECT s.id AS id, s.cwd AS cwd, s.started_at AS started_at, s.ended_at AS ended_at
+       FROM sessions s
+       LEFT JOIN session_outcomes so ON so.session_id = s.id
+       WHERE (so.last_evaluated_at IS NULL OR so.last_evaluated_at < s.ended_at)
+         AND s.ended_at >= ?`;
+
+type OutcomeSweepPrepared = Readonly<{
+  force: Statement;
+  withCutoff: Statement<[number]>;
+}>;
+
+const outcomeSweepCache = new WeakMap<Database, OutcomeSweepPrepared>();
+
+const getOutcomeSweepPrepared = (db: Database): OutcomeSweepPrepared => {
+  let cached = outcomeSweepCache.get(db);
+  if (cached) return cached;
+  cached = {
+    force: db.prepare(OUTCOME_SWEEP_FORCE_SQL),
+    withCutoff: db.prepare(OUTCOME_SWEEP_WITH_CUTOFF_SQL),
+  };
+  outcomeSweepCache.set(db, cached);
+  return cached;
+};
+
+/**
+ * Test-only probe: returns 2 once the outcome-sweep cache holds both
+ * prepared statements for `db`, 0 otherwise. The `__` prefix marks this as
+ * internal — production code must not depend on it. See TC-I-13 (REQ-16).
+ */
+export const __getOutcomeSweepPrepareCount = (db: Database): number =>
+  outcomeSweepCache.has(db) ? 2 : 0;
+
+/**
  * Execute the outcome sweep at the end of `ingestAll` (REQ-12). Selects
  * sessions whose outcome row is stale or missing and runs the git evaluator
  * for each. Failures are isolated per-session: an exception inside
@@ -541,26 +584,18 @@ export async function ingestAll(options?: {
  *   `session_outcomes.last_evaluated_at IS NULL OR
  *    session_outcomes.last_evaluated_at < sessions.ended_at`
  * (a missing row is implicitly stale via the LEFT JOIN).
+ *
+ * Prepared statements are cached per-DB in a module-level WeakMap so
+ * repeated calls don't re-prepare the SQL (REQ-16, C-7).
  */
 const runOutcomeSweep = (
   db: Database,
   opts: { forceOutcomes: boolean },
 ): void => {
   const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const sql = opts.forceOutcomes
-    ? `SELECT s.id AS id, s.cwd AS cwd, s.started_at AS started_at, s.ended_at AS ended_at
-       FROM sessions s
-       LEFT JOIN session_outcomes so ON so.session_id = s.id
-       WHERE so.last_evaluated_at IS NULL OR so.last_evaluated_at < s.ended_at`
-    : `SELECT s.id AS id, s.cwd AS cwd, s.started_at AS started_at, s.ended_at AS ended_at
-       FROM sessions s
-       LEFT JOIN session_outcomes so ON so.session_id = s.id
-       WHERE (so.last_evaluated_at IS NULL OR so.last_evaluated_at < s.ended_at)
-         AND s.ended_at >= ?`;
-
-  const stmt = db.prepare(sql);
+  const prep = getOutcomeSweepPrepared(db);
   const rows = (
-    opts.forceOutcomes ? stmt.all() : stmt.all(cutoff)
+    opts.forceOutcomes ? prep.force.all() : prep.withCutoff.all(cutoff)
   ) as ReadonlyArray<EvaluatorSession>;
 
   let evaluated = 0;
@@ -586,3 +621,10 @@ const runOutcomeSweep = (
     }`,
   );
 };
+
+/**
+ * Test-only alias for `runOutcomeSweep`. The `__` prefix signals internal
+ * usage — production callers go through `ingestAll`. Exposed so TC-I-13
+ * (REQ-16) can drive the sweep directly without spinning up a full ingest.
+ */
+export const __runOutcomeSweep = runOutcomeSweep;

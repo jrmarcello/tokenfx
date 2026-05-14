@@ -1,6 +1,6 @@
 /**
  * CSRF Origin/Referer validation for /api/auth/signin initiation
- * (T12 M12.1 + spec b §Decisão #19).
+ * (T12 M12.1 + spec b §Decisão #19 + review-report-2026-05-14-fixes M4).
  *
  * NextAuth v5 does NOT expose a pre-handler hook for the signIn flow, so
  * this guard runs in `apps/server/middleware.ts` BEFORE the route
@@ -31,20 +31,30 @@ export type HasHeaderGetter = {
  *
  * Decision matrix:
  *
- *   Origin = baseUrl prefix       → ok
+ *   Origin === baseUrl origin     → ok
  *   Origin = "null"               → null-origin (sandboxed iframe / data: URI)
- *   Origin missing AND Referer    → fall back to Referer's prefix check
+ *   Origin missing AND Referer    → fall back to Referer's origin check
  *     missing                     → missing-origin
- *   Origin/Referer ≠ baseUrl      → cross-origin
+ *   Origin/Referer origin ≠       → cross-origin
+ *     baseUrl origin
+ *   Origin/Referer unparseable    → cross-origin (safer default)
  *
- * Why prefix-match (not exact equality): callers may pass `Origin` headers
- * with no trailing path (browser standard) but some user-agents append one;
- * `startsWith(baseUrl)` accepts both. `baseUrl` itself should NEVER contain
- * a trailing path — pass `request.nextUrl.origin` or the configured app URL.
+ * Comparison strategy: both `baseUrl` and the candidate header value are
+ * parsed via `new URL(...).origin`, which yields a canonical
+ * `<scheme>://<host>[:<non-default-port>]` string. We then compare with
+ * strict equality (`===`).
+ *
+ * Why origin-equality (NOT `startsWith`): a prefix check on
+ * `https://app.tokenfx.io` admits `https://app.tokenfx.io.evil.com` —
+ * a different origin with the baseUrl as a prefix of its host. WHATWG
+ * URL normalization is the only safe way to compare two origins:
+ * - Default ports collapse: `new URL('https://x:443').origin === 'https://x'`.
+ * - Path/query/fragment stripped: `new URL('https://x/y?z').origin === 'https://x'`.
+ * - Case-folded host: `new URL('https://X').origin === 'https://x'`.
  *
  * @param request — NextAuth signin initiation request (anything with `headers.get`).
  * @param baseUrl — configured app base URL (e.g., `https://app.tokenfx.io`).
- *   Must match `Origin` for same-origin classification.
+ *   Must be a parseable absolute URL; its `.origin` is what we compare against.
  */
 export const checkSigninOrigin = (
   request: HasHeaderGetter,
@@ -67,11 +77,21 @@ export const checkSigninOrigin = (
     return { ok: false, reason: 'missing-origin' };
   }
 
-  // Prefer Origin; fall back to Referer (which may include a path — that's
-  // fine, the prefix check still works because baseUrl has no trailing
-  // path, so any value starting with baseUrl is same-origin).
+  // Prefer Origin; fall back to Referer (may include path/query — the
+  // `.origin` projection strips those).
   const candidate = origin ?? referer ?? '';
-  if (!candidate.startsWith(baseUrl)) {
+
+  const baseOrigin = new URL(baseUrl).origin;
+  let candidateOrigin: string;
+  try {
+    candidateOrigin = new URL(candidate).origin;
+  } catch {
+    // Unparseable header value — treat as cross-origin (safer than
+    // letting a malformed value bypass the check).
+    return { ok: false, reason: 'cross-origin' };
+  }
+
+  if (candidateOrigin !== baseOrigin) {
     return { ok: false, reason: 'cross-origin' };
   }
 
