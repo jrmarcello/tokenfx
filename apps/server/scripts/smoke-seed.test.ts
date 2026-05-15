@@ -206,9 +206,10 @@ skipDescribe('smoke-seed (apps/server) — TC-U-08 security: .env.smoke shape', 
 
     // REPORTER_KEY_ID + REPORTER_TARGET_URL also present (Design §4 invariants).
     expect(content).toMatch(/^REPORTER_KEY_ID=key-smoke-001$/m);
-    expect(content).toMatch(
-      /^REPORTER_TARGET_URL=http:\/\/localhost:3232\/api\/ingest$/m,
-    );
+    // REPORTER_TARGET_URL is the BASE URL only (no /api/ingest suffix);
+    // the reporter client appends the path itself. Changed in c1d37ef
+    // (smoke gap-fix) — the previous form with the suffix double-pathed.
+    expect(content).toMatch(/^REPORTER_TARGET_URL=http:\/\/localhost:3232$/m);
   });
 });
 

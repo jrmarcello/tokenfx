@@ -271,42 +271,84 @@ describe('isLocalhostHost (exported for re-use)', () => {
 });
 
 describe('assertNotProductionWithBypass (boot guard, called from auth.ts)', () => {
-  it('throws when NODE_ENV=production AND E2E_AUTH_BYPASS=1', () => {
+  it('TC-U-19: throws when NODE_ENV=production AND E2E_AUTH_BYPASS=1 AND TOKENFX_AUTH_BYPASS_ALLOWED unset', () => {
     expect(() =>
       assertNotProductionWithBypass({
         NODE_ENV: 'production',
         E2E_AUTH_BYPASS: '1',
       } as NodeJS.ProcessEnv),
-    ).toThrow(/must be unset outside development\/test/);
+    ).toThrow(/requires TOKENFX_AUTH_BYPASS_ALLOWED=1/);
+  });
+
+  it('TC-U-20: throws when TOKENFX_AUTH_BYPASS_ALLOWED=0 (literal "1" required)', () => {
+    expect(() =>
+      assertNotProductionWithBypass({
+        NODE_ENV: 'production',
+        E2E_AUTH_BYPASS: '1',
+        TOKENFX_AUTH_BYPASS_ALLOWED: '0',
+      } as NodeJS.ProcessEnv),
+    ).toThrow(/requires TOKENFX_AUTH_BYPASS_ALLOWED=1/);
+  });
+
+  it('TC-U-18: no throw when production + bypass=1 + ALLOWED=1 (smoke profile pattern)', () => {
+    expect(() =>
+      assertNotProductionWithBypass({
+        NODE_ENV: 'production',
+        E2E_AUTH_BYPASS: '1',
+        TOKENFX_AUTH_BYPASS_ALLOWED: '1',
+      } as NodeJS.ProcessEnv),
+    ).not.toThrow();
   });
 
   it.each([
-    ['production with bypass unset', { NODE_ENV: 'production' }],
-    ['production with bypass=0', { NODE_ENV: 'production', E2E_AUTH_BYPASS: '0' }],
+    ['TC-U-23a: production with bypass unset (guard inert)', { NODE_ENV: 'production' }],
+    ['TC-U-23b: production with bypass=0', { NODE_ENV: 'production', E2E_AUTH_BYPASS: '0' }],
     ['production with bypass="true" (not literal "1")', { NODE_ENV: 'production', E2E_AUTH_BYPASS: 'true' }],
-    ['test with bypass=1 (allowed)', { NODE_ENV: 'test', E2E_AUTH_BYPASS: '1' }],
-    ['development with bypass=1 (allowed)', { NODE_ENV: 'development', E2E_AUTH_BYPASS: '1' }],
+    ['TC-U-22: test with bypass=1 (legacy path — no ALLOWED needed)', { NODE_ENV: 'test', E2E_AUTH_BYPASS: '1' }],
+    ['TC-U-21: development with bypass=1 (legacy path — no ALLOWED needed)', { NODE_ENV: 'development', E2E_AUTH_BYPASS: '1' }],
   ])('does not throw for %s', (_label, env) => {
     expect(() =>
       assertNotProductionWithBypass(env as NodeJS.ProcessEnv),
     ).not.toThrow();
   });
 
-  // Security review H1: production drift / misconfig — anything that isn't
-  // `test` or `development` counts as production-like and must throw when
-  // paired with the bypass flag.
+  // Security review H1 (still in effect for non-dev/test, no-ALLOWED cases):
+  // production drift / misconfig with bypass=1 and no explicit ALLOWED → throw.
   it.each([
     ['NODE_ENV=prod', { NODE_ENV: 'prod' }],
     ['NODE_ENV=production-staging', { NODE_ENV: 'production-staging' }],
     ['NODE_ENV="" (empty)', { NODE_ENV: '' }],
     ['NODE_ENV unset', {}],
     ['NODE_ENV=staging', { NODE_ENV: 'staging' }],
-  ])('throws when E2E_AUTH_BYPASS=1 AND %s (non-dev/test variants)', (_label, base) => {
-    expect(() =>
-      assertNotProductionWithBypass({
-        ...base,
-        E2E_AUTH_BYPASS: '1',
-      } as NodeJS.ProcessEnv),
-    ).toThrow(/must be unset outside development\/test/);
-  });
+  ])(
+    'throws when E2E_AUTH_BYPASS=1 AND %s AND TOKENFX_AUTH_BYPASS_ALLOWED unset',
+    (_label, base) => {
+      expect(() =>
+        assertNotProductionWithBypass({
+          ...base,
+          E2E_AUTH_BYPASS: '1',
+        } as NodeJS.ProcessEnv),
+      ).toThrow(/requires TOKENFX_AUTH_BYPASS_ALLOWED=1/);
+    },
+  );
+
+  // New: drift-variant production-like NODE_ENVs are allowed when the
+  // explicit dual opt-in flag is present. This preserves the smoke
+  // profile's needs without weakening the production safety net.
+  it.each([
+    ['NODE_ENV=prod', { NODE_ENV: 'prod' }],
+    ['NODE_ENV=production-staging', { NODE_ENV: 'production-staging' }],
+    ['NODE_ENV unset', {}],
+  ])(
+    'does NOT throw when E2E_AUTH_BYPASS=1 AND %s AND TOKENFX_AUTH_BYPASS_ALLOWED=1 (dual opt-in)',
+    (_label, base) => {
+      expect(() =>
+        assertNotProductionWithBypass({
+          ...base,
+          E2E_AUTH_BYPASS: '1',
+          TOKENFX_AUTH_BYPASS_ALLOWED: '1',
+        } as NodeJS.ProcessEnv),
+      ).not.toThrow();
+    },
+  );
 });

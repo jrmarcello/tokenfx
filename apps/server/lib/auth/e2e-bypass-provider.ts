@@ -85,8 +85,20 @@ export const isLocalhostHost = (host: string | null | undefined): boolean => {
 const isDevOrTest = (env: NodeJS.ProcessEnv): boolean =>
   env.NODE_ENV === 'test' || env.NODE_ENV === 'development';
 
+// fix-sso-issuer-host-bridge bug #1 fix: Next.js standalone's server.js
+// hardcodes `process.env.NODE_ENV = 'production'` at startup
+// (see `apps/server/.next/standalone/server.js:5` after build). So the
+// runtime NODE_ENV check alone is insufficient for any Docker-deployed
+// smoke profile that needs the bypass. This second flag is the explicit
+// escape hatch: it must be paired with `E2E_AUTH_BYPASS=1` in environments
+// where the apparent NODE_ENV is 'production' but the operator deliberately
+// wants the bypass (smoke / staging). Production deployments set neither.
+const isBypassExplicitlyAllowed = (env: NodeJS.ProcessEnv): boolean =>
+  env.TOKENFX_AUTH_BYPASS_ALLOWED === '1';
+
 const isAuthorizeOn = (env: NodeJS.ProcessEnv): boolean =>
-  env.E2E_AUTH_BYPASS === '1' && isDevOrTest(env);
+  env.E2E_AUTH_BYPASS === '1' &&
+  (isDevOrTest(env) || isBypassExplicitlyAllowed(env));
 
 /**
  * Module-scope boot guard, factored out so `auth.ts` can invoke it (where
@@ -95,18 +107,27 @@ const isAuthorizeOn = (env: NodeJS.ProcessEnv): boolean =>
  * importing the full NextAuth/Drizzle module graph.
  *
  * Polarity: refuses to boot whenever `E2E_AUTH_BYPASS='1'` is paired with
- * anything other than `NODE_ENV=test` or `NODE_ENV=development`. Drift
- * cases like `NODE_ENV=prod`, `production-staging`, unset, or `""` all
- * trigger the throw (security review H1).
+ *
+ *   - a `NODE_ENV` that is NOT `'test'` or `'development'` (legacy guard,
+ *     unchanged from review H1), AND
+ *   - `TOKENFX_AUTH_BYPASS_ALLOWED` that is NOT `'1'` (new dual opt-in
+ *     for Next.js standalone where NODE_ENV is hardcoded production).
+ *
+ * Both conditions must hold for the throw. Either escape hatch permits
+ * the bypass.
+ *
+ * Drift cases like `NODE_ENV=prod`, `production-staging`, unset, or `""`
+ * still throw when `TOKENFX_AUTH_BYPASS_ALLOWED` is also missing.
  */
 export const assertNotProductionWithBypass = (
   env: NodeJS.ProcessEnv = process.env,
 ): void => {
-  if (env.E2E_AUTH_BYPASS === '1' && !isDevOrTest(env)) {
-    throw new Error(
-      'E2E_AUTH_BYPASS must be unset outside development/test. Refusing to boot.',
-    );
-  }
+  if (env.E2E_AUTH_BYPASS !== '1') return; // guard inert when bypass off
+  if (isDevOrTest(env)) return; // legacy dev/test path
+  if (isBypassExplicitlyAllowed(env)) return; // new explicit opt-in
+  throw new Error(
+    'E2E_AUTH_BYPASS=1 in production requires TOKENFX_AUTH_BYPASS_ALLOWED=1. Refusing to boot.',
+  );
 };
 
 /**

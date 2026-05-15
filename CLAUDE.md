@@ -67,6 +67,19 @@ Layered, but deliberately flat — this is a single-user local tool, not a distr
 - **Zod** at every external/ingestion boundary.
 - **Commit messages**: `type(scope): description` (feat, fix, refactor, docs, test, chore).
 
+### Auth config (apps/server)
+
+Two modes, gated by env vars. Spec: `.specs/auth-optional-mode-and-sso-bugfixes.md`.
+
+| Env var | Default | Effect |
+| --- | --- | --- |
+| `AUTH_REQUIRED` | unset / anything ≠ `"false"` | Full NextAuth SSO. Manager dashboards gated by Okta/Google login. **Production must be in this mode.** |
+| `AUTH_REQUIRED="false"` | — | **Localhost-only open-access mode.** No login. Synthetic admin session (`role:'admin'`, `orgId:LOCAL_ORG_ID`). Middleware enforces the `Host` header is `localhost`/`127.0.0.1`/`[::1]` — non-localhost requests return 403. The boot warning surfaces in stdout. **Initial-release default in this codebase.** |
+| `TOKENFX_AUTH_BYPASS_ALLOWED="1"` | unset | Required alongside `E2E_AUTH_BYPASS="1"` in any environment where `NODE_ENV` looks production-like (e.g., Next.js standalone in smoke). Without this, the boot guard refuses to wire the bypass provider. Production deploys set neither variable. |
+| `E2E_AUTH_BYPASS="1"` | unset | Enables the test-only Credentials provider (`/api/auth/signin/credentials`). Must be paired with either `NODE_ENV ∈ {test, development}` OR `TOKENFX_AUTH_BYPASS_ALLOWED=1`. |
+
+**Security note — `AUTH_REQUIRED=false` and reverse proxies:** the `Host`-header check uses ONLY the raw `Host` header; `X-Forwarded-Host` is NOT honored. Do NOT put `apps/server` behind a public-facing reverse proxy with `AUTH_REQUIRED=false` — the proxy can forward `Host: localhost` from public clients, defeating the guard. Localhost-mode is for dev/single-machine deployment only.
+
 ## Claude Code Resources
 
 ### Skills (slash commands)

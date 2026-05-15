@@ -134,4 +134,45 @@ describe('checkSigninOrigin', () => {
     const req = stubRequest({ origin: 'https://app.tokenfx.io:443' });
     expect(checkSigninOrigin(req, BASE)).toEqual({ ok: true });
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // auth-optional-mode-and-sso-bugfixes (bug #3): regression guards
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('TC-U-24: accepts same-origin localhost (smoke profile baseline)', () => {
+    const req = stubRequest({ origin: 'http://localhost:3232' });
+    expect(checkSigninOrigin(req, 'http://localhost:3232')).toEqual({
+      ok: true,
+    });
+  });
+
+  it('TC-U-25: rejects cross-origin (guard still catches real attacks)', () => {
+    const req = stubRequest({ origin: 'http://evil.example.com' });
+    expect(checkSigninOrigin(req, 'http://localhost:3232')).toEqual({
+      ok: false,
+      reason: 'cross-origin',
+    });
+  });
+
+  it('TC-U-26: regression — baseUrl built from raw Host header matches Origin', () => {
+    // Bug #3 manifests when baseUrl is built from `new URL(request.url).host`
+    // and `request.url` carries the bind address (e.g. `http://0.0.0.0:3232/...`).
+    // With the post-fix baseUrl sourced from `request.headers.get('host')`,
+    // the canonical form matches the Origin header exactly.
+    const req = stubRequest({ origin: 'http://localhost:3232' });
+    const baseUrlFromHostHeader = 'http://localhost:3232'; // what the fix produces
+    expect(checkSigninOrigin(req, baseUrlFromHostHeader)).toEqual({ ok: true });
+  });
+
+  it('TC-U-26b: captures the bug — baseUrl from `url.host` of 0.0.0.0 mismatches Origin', () => {
+    // Documents the shape of the bug: a baseUrl built from the bind
+    // address (what the pre-fix code did) rejects a legitimate
+    // same-origin request as cross-origin.
+    const req = stubRequest({ origin: 'http://localhost:3232' });
+    const baseUrlFromUrlHost = 'http://0.0.0.0:3232'; // what the pre-fix bug produced
+    expect(checkSigninOrigin(req, baseUrlFromUrlHost)).toEqual({
+      ok: false,
+      reason: 'cross-origin',
+    });
+  });
 });

@@ -5,6 +5,10 @@ import 'next-auth/jwt';
 import { asc, eq } from 'drizzle-orm';
 import { authConfig } from './auth.config';
 import {
+  buildLocalDevSession,
+  isAuthRequired,
+} from './auth-required';
+import {
   assertNotProductionWithBypass,
   buildE2eBypassProvider,
 } from './e2e-bypass-provider';
@@ -114,7 +118,7 @@ export {
  * - `session`: re-attach id/role/orgId to `session.user` for Server
  *   Components reading `auth()` directly.
  */
-export const { handlers, auth, signIn, signOut } = NextAuth({
+const nextAuthExports = NextAuth({
   ...authConfig,
   providers: [
     ...authConfig.providers,
@@ -438,6 +442,31 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     },
   },
 });
+
+export const { handlers, signIn, signOut } = nextAuthExports;
+
+/**
+ * `auth()` shim — when `AUTH_REQUIRED=false` (localhost open-access mode),
+ * returns the synthetic demo session WITHOUT invoking NextAuth. This means
+ * no NextAuth machinery runs in localhost mode — zero cookies issued, zero
+ * audit-log rows written, zero JWT mint. The middleware
+ * (apps/server/middleware.ts) enforces localhost-host before this is called,
+ * so reaching here in open-access mode means the request was already gated.
+ *
+ * When `AUTH_REQUIRED=true` (or unset), the call delegates to NextAuth's
+ * own `auth()` — full SSO behavior preserved.
+ *
+ * Type-cast to preserve NextAuth's overloaded signature for Server
+ * Components, route handlers, and middleware-style callers. In localhost
+ * mode we only return a Session-shaped object — the `Handler`-wrap overload
+ * is never relevant (those calls go through NextAuth's own `handlers`).
+ */
+export const auth = ((...args: Parameters<typeof nextAuthExports.auth>) => {
+  if (!isAuthRequired(process.env)) {
+    return Promise.resolve(buildLocalDevSession());
+  }
+  return (nextAuthExports.auth as (...a: typeof args) => unknown)(...args);
+}) as typeof nextAuthExports.auth;
 
 declare module 'next-auth' {
   interface Session {

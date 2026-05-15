@@ -43,6 +43,13 @@
       "when": 1778400000000,
       "tag": "0005_manager_alert_acks",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1778600000000,
+      "tag": "0006_local_org_seed",
+      "breakpoints": true
     }
   ]
 }

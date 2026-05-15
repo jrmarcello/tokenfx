@@ -194,15 +194,21 @@ services:
       # check returns `role-missing` → no throw. In production, replace
       # with the real least-privilege role created out-of-band.
       TOKENFX_APP_RUNTIME_ROLE: app_runtime
-      # E2E_AUTH_BYPASS removed from smoke 2026-05-15: Next.js standalone's
-      # server.js hardcodes `process.env.NODE_ENV = 'production'` at startup,
-      # which makes the `assertNotProductionWithBypass` guard throw on every
-      # /api/auth/* request. The bypass cookie was never actually exercised
-      # in the prior smoke run anyway (Step 9 used direct route checks, which
-      # 307'd at the auth gate — see docs/smoke-runbook.md item 11 of the
-      # gap analysis). Real SSO via the idp-stub is the canonical path for
-      # smoke now. Follow-up to fix the bypass-in-standalone interaction is
-      # tracked separately if needed.
+      # auth-optional-mode-and-sso-bugfixes: smoke profile explicitly opts
+      # IN to SSO. The codebase default is AUTH_REQUIRED=false (localhost
+      # open-access for initial release); smoke profile flips it to actually
+      # exercise the SSO path against the IdP stub.
+      AUTH_REQUIRED: "true"
+      # E2E_AUTH_BYPASS=1 + TOKENFX_AUTH_BYPASS_ALLOWED=1 is the dual-opt-in
+      # required by `assertNotProductionWithBypass` after the bug #1 fix.
+      # Why both: Next.js standalone's `server.js:5` hardcodes
+      # `process.env.NODE_ENV = 'production'` at boot, so the legacy
+      # NODE_ENV='development' check is insufficient. The explicit
+      # TOKENFX_AUTH_BYPASS_ALLOWED=1 is the operator's "yes, I know I'm
+      # opting into bypass even though NODE_ENV looks production-ish"
+      # signal. Production deploys set NEITHER variable.
+      E2E_AUTH_BYPASS: "1"
+      TOKENFX_AUTH_BYPASS_ALLOWED: "1"
       ONBOARDING_EMAIL_HASH_PEPPER: smoke-email-hash-pepper
     healthcheck:
       test:

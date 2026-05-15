@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import type { NextAuthConfig } from 'next-auth';
 import Google from 'next-auth/providers/google';
 import Okta from 'next-auth/providers/okta';
+import { isAuthRequired } from './auth-required';
 import { isRole } from './roles';
 
 /**
@@ -72,7 +73,14 @@ export const buildAuthConfig = (env: NodeJS.ProcessEnv) => {
     }),
   ],
   pages: {
-    signIn: '/api/auth/signin',
+    // `signIn` deliberately NOT set: pointing it at `/api/auth/signin`
+    // creates a self-redirect loop because that IS NextAuth's own
+    // handler URL. With this omitted, NextAuth renders its built-in
+    // signin page at the same URL. See bug #2 in
+    // `.specs/auth-optional-mode-and-sso-bugfixes.md`. A custom signin
+    // page can be re-introduced by setting `signIn: '/auth/signin'` (a
+    // DIFFERENT route) and writing the corresponding page.tsx.
+    //
     // sso-replay-audit-row spec REQ-3: NextAuth redirects browsers here
     // on OAuth callback failures (incl. state-replay). The page itself is
     // pure presentational UI — the `auth_event_log` row for replay attempts
@@ -124,6 +132,13 @@ export const buildAuthConfig = (env: NodeJS.ProcessEnv) => {
     // JWT, which `auth.ts:jwt()` keeps fresh against the DB on every Node
     // request).
     authorized({ request, auth }) {
+      // auth-optional-mode-and-sso-bugfixes (REQ-2): when AUTH_REQUIRED=false
+      // is set in env, all routes are open-access. The middleware
+      // (apps/server/middleware.ts) separately enforces the localhost-host
+      // requirement before this callback runs, so reaching here in
+      // localhost mode means the request already passed the host gate.
+      if (!isAuthRequired(env)) return true;
+
       const path = request.nextUrl.pathname;
 
       // manager-dashboard-v2 (REQ-17): `/me/*` is for any authenticated user

@@ -87,7 +87,18 @@ const csrfWrap = (handler: Handler): Handler => {
     if (request.method === 'POST') {
       const url = new URL(request.url);
       if (url.pathname.startsWith(SIGNIN_PATH_PREFIX)) {
-        const baseUrl = `${url.protocol}//${url.host}`;
+        // fix-sso-issuer-host-bridge bug #3: under Next.js standalone
+        // server, `request.url` carries the SERVER bind address (e.g.
+        // `http://0.0.0.0:3232/...`), NOT the host the client addressed.
+        // `new URL(request.url).host` then returns `0.0.0.0:3232` while
+        // the Origin header (correctly) carries `localhost:3232`, and
+        // checkSigninOrigin compares the two as cross-origin → 403 on
+        // legitimate same-origin POSTs. Use the raw `Host` header (what
+        // the client actually addressed) as the authoritative source.
+        const hostHeader = request.headers.get('host');
+        const baseUrl = hostHeader
+          ? `${url.protocol}//${hostHeader}`
+          : `${url.protocol}//${url.host}`;
         const csrf = checkSigninOrigin(request, baseUrl);
         if (!csrf.ok) {
           await writeCsrfAuditRow(request, csrf.reason);

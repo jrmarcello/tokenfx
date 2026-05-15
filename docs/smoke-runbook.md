@@ -203,14 +203,25 @@ spec's scope).
     Initial migrate runs at server boot (ENTRYPOINT); TRUNCATE doesn't
     change schema.
 
-### Deferred to follow-up specs (non-trivial — 2 items)
+### Deferred → resolved (both items shipped)
 
 1. **NextAuth `/api/auth/signin` returns 500 in the smoke stack** —
-   likely caused by issuer-mismatch between `NEXTAUTH_URL=http://localhost:3232`
+   issuer-mismatch between `NEXTAUTH_URL=http://localhost:3232`
    (host-facing) and `OKTA_ISSUER=http://tokenfx-idp-stub:3001`
-   (Docker DNS, not reachable from host browser). Workaround in
-   troubleshooting; full fix requires NextAuth trustHost or custom
-   issuer mapping. **Follow-up:** `fix-sso-issuer-host-bridge.md`.
+   (Docker DNS, not reachable from host browser).
+   **Resolved by `fix-sso-issuer-host-bridge.md`:** moved both URLs +
+   `IDP_STUB_BASE_URL` + `TOKENFX_SSO_ISSUERS_OKTA` to
+   `http://host.docker.internal:3001` in lockstep; added
+   `extra_hosts: ["host.docker.internal:host-gateway"]` to
+   `tokenfx-server`; `AUTH_TRUST_HOST=1` paired with `NEXTAUTH_URL`.
+   **Subsequent bugs surfaced + resolved by
+   `auth-optional-mode-and-sso-bugfixes.md`:** (a) Next.js standalone
+   NODE_ENV hardcode broke the `E2E_AUTH_BYPASS` boot guard → introduced
+   `TOKENFX_AUTH_BYPASS_ALLOWED=1` as the explicit dual opt-in; (b)
+   `pages.signIn` self-loop → line deleted, NextAuth renders default;
+   (c) CSRF Origin guard rejecting same-origin POST under the standalone
+   server because `request.url` carries the bind address — switched
+   baseUrl source to the raw `Host` header.
 2. **Root `tokenfx` Dockerfile (`/Dockerfile`) failed under pnpm v11**
    with `ERR_PNPM_IGNORED_BUILDS`. Root cause: corepack inside the
    Docker base image picked pnpm@11.1.2 by default; pnpm v11's strict

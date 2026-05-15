@@ -214,6 +214,11 @@ skipDescribe('aggregateTeamOutcomes — TC-I-04b (infra: DB error path)', () => 
 
   it('TC-I-04b: when the aggregation INSERT throws, cron_runs row is updated to status=failed with error_message', async () => {
     const db = getDb();
+    // Seed minimal org+team+user so the probe returns ≥1 org and the
+    // aggregation path is reached (without this, `runAggregation`
+    // early-returns when `windowsByOrg.size === 0` and the stub's
+    // throw never fires — test would pass-by-accident with status=ok).
+    await seedOrgWithTeam('OrgErrPath', 'TeamErrPath');
     let aggExecuteCount = 0;
     const stub: StubDb = {
       insert: (table) => db.insert(table as never) as never,

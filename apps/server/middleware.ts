@@ -1,19 +1,62 @@
 import NextAuth from 'next-auth';
+import { NextResponse, type NextRequest } from 'next/server';
 import { authConfig } from '@/lib/auth/auth.config';
+import { isAuthRequired, isLocalhostHost } from '@/lib/auth/auth-required';
 
 /**
- * Next.js root middleware — gates `/manager/*`.
+ * Next.js root middleware — gates `/manager/*` and `/me/*`.
  *
- * REQ-16 + REQ-17: gating logic lives in `auth.config.ts:authorized()`
- * (Edge-safe — reads role/orgId from JWT, NOT from the DB). The DB-backed
- * jwt callback in `auth.ts` keeps the JWT fresh; this middleware then
- * runs in Next.js Edge runtime without pulling `pg`/`bcrypt`/`node:crypto`.
+ * Two modes:
  *
- * Auth.js v5 split per their docs: middleware uses ONLY the Edge-safe
- * `authConfig`. The full `auth()` (with DB callbacks) is exported from
- * `lib/auth/auth.ts` for Server Components and Route Handlers.
+ *   1. AUTH_REQUIRED=false (localhost-only open-access mode for the
+ *      initial release). The middleware enforces a Host-header allow-list
+ *      (`localhost` / `127.0.0.1` / `[::1]`, with or without port). Non-
+ *      localhost hosts get 403 `localhost-only`. Localhost hosts pass
+ *      through to the route with no auth check (open access). See
+ *      `.specs/auth-optional-mode-and-sso-bugfixes.md` (REQ-2 + REQ-3)
+ *      for the threat model — request-time Host check is the actual
+ *      enforcement mechanism of the "localhost-only" promise; relying on
+ *      `process.env.HOSTNAME` is insufficient because Next.js standalone
+ *      hardcodes it and operators can pass `--hostname 0.0.0.0` without
+ *      changing it.
+ *
+ *   2. AUTH_REQUIRED=true (or unset — fail-safe default). The full
+ *      NextAuth middleware runs, gating via `authConfig.authorized()`.
+ *      DB callbacks live in `auth.ts` (Node-only) — middleware uses
+ *      ONLY the Edge-safe `authConfig` per Auth.js v5 docs.
+ *
+ * `X-Forwarded-Host` is NOT honored — only the raw `Host` header is
+ * checked. Documented in CLAUDE.md as: never put apps/server behind a
+ * public reverse proxy with AUTH_REQUIRED=false.
  */
-export const { auth: middleware } = NextAuth(authConfig);
+
+const ssoMiddleware = NextAuth(authConfig).auth;
+
+const localhostMiddleware = (request: NextRequest): NextResponse => {
+  const host = request.headers.get('host');
+  if (!isLocalhostHost(host)) {
+    return NextResponse.json(
+      { error: 'forbidden', code: 'localhost-only' },
+      { status: 403 },
+    );
+  }
+  return NextResponse.next();
+};
+
+const middleware = ((request: NextRequest, ...rest: unknown[]) => {
+  if (!isAuthRequired(process.env)) {
+    return localhostMiddleware(request);
+  }
+  // Delegate to NextAuth's middleware for the SSO path. The `as never`
+  // cast bridges the overloaded NextAuth `auth` signature; the call site
+  // here only invokes the `(req, ctx?) => response` form.
+  return (ssoMiddleware as (req: NextRequest, ...r: unknown[]) => unknown)(
+    request,
+    ...rest,
+  );
+}) as typeof ssoMiddleware;
+
+export { middleware };
 
 export default middleware;
 
