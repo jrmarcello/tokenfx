@@ -128,6 +128,12 @@ export type WatcherOptions = {
   root?: string; // defaults to claudeProjectsRoot()
   db?: Database; // defaults to getDb()
   backfill?: boolean; // defaults to true; runs ingestAll() in background
+  // chokidar awaitWriteFinish tuning. Defaults match chokidar's
+  // production-safe behavior (500ms stability, 100ms poll) — enough to
+  // dedupe partial writes during ingestion. Tests override with much
+  // smaller values to avoid pool-contention timing flakes (see
+  // watcher.test.ts).
+  awaitWriteFinish?: { stabilityThreshold?: number; pollInterval?: number };
 };
 
 /**
@@ -218,8 +224,8 @@ export async function startWatcher(
     followSymlinks: false,
     ignored: /(^|[/\\])\../, // dotfiles
     awaitWriteFinish: {
-      stabilityThreshold: 500,
-      pollInterval: 100,
+      stabilityThreshold: opts.awaitWriteFinish?.stabilityThreshold ?? 500,
+      pollInterval: opts.awaitWriteFinish?.pollInterval ?? 100,
     },
   });
 

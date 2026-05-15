@@ -114,9 +114,11 @@ describe('smokeReset', () => {
           'smoke',
           'exec',
           '-T',
+          '--workdir',
+          '/app/apps/server',
           'tokenfx-server',
           'node',
-          'dist/scripts/smoke-reset.js',
+          '/app/dist/scripts/smoke-reset.js',
         ]);
         // idp-stub reset POST was sent
         expect(fetchCalls).toHaveLength(1);

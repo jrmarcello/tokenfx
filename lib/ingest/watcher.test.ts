@@ -19,6 +19,16 @@ const FIXTURE_SRC = path.resolve(
   'tests/fixtures/sample.jsonl',
 );
 
+// chokidar awaitWriteFinish tuning for tests: cut stabilityThreshold from
+// the production default 500ms → 25ms and pollInterval 100ms → 10ms. The
+// production defaults exist to dedupe partial writes during live
+// ingestion (editors saving in chunks); tests use single atomic
+// `writeFileSync` calls so the safety margin is unnecessary. Combined
+// with parallel-pool event-loop contention (~72 test files running
+// together), the 500ms threshold can push event latency past the
+// `waitFor` budget. Tighter values eliminate that headroom.
+const TEST_AWAIT = { stabilityThreshold: 25, pollInterval: 10 };
+
 describe('shouldStart', () => {
   it.each<{ name: string; env: WatcherEnv; expected: boolean; tc: string }>([
     {
@@ -244,7 +254,7 @@ describe('startWatcher + handleFileEvent', () => {
   it(
     'TC-I-01: ingests a new .jsonl after add event',
     async () => {
-      watcher = await startWatcher({ root: tmp, db, backfill: false });
+      watcher = await startWatcher({ root: tmp, db, backfill: false, awaitWriteFinish: TEST_AWAIT });
       expect(watcher.running).toBe(true);
 
       const target = path.join(tmp, 'fresh.jsonl');
@@ -275,7 +285,7 @@ describe('startWatcher + handleFileEvent', () => {
     const target = path.join(tmp, 'grow.jsonl');
     fs.writeFileSync(target, fixtureJsonl());
 
-    watcher = await startWatcher({ root: tmp, db, backfill: false });
+    watcher = await startWatcher({ root: tmp, db, backfill: false, awaitWriteFinish: TEST_AWAIT });
 
     // Prime the DB with the initial content through the `add` pathway:
     await handleFileEvent(db, 'add', target, tmp);
@@ -295,7 +305,7 @@ describe('startWatcher + handleFileEvent', () => {
 
   // TC-I-03: unlink → log emitted, DB row retained
   it('TC-I-03: unlink does not delete DB rows', async () => {
-    watcher = await startWatcher({ root: tmp, db, backfill: false });
+    watcher = await startWatcher({ root: tmp, db, backfill: false, awaitWriteFinish: TEST_AWAIT });
 
     const target = path.join(tmp, 'doomed.jsonl');
     fs.writeFileSync(target, fixtureJsonl());
@@ -320,7 +330,7 @@ describe('startWatcher + handleFileEvent', () => {
 
   // TC-I-04: invalid JSONL → warn, watcher survives
   it('TC-I-04: invalid JSONL does not crash the watcher', async () => {
-    watcher = await startWatcher({ root: tmp, db, backfill: false });
+    watcher = await startWatcher({ root: tmp, db, backfill: false, awaitWriteFinish: TEST_AWAIT });
 
     const target = path.join(tmp, 'broken.jsonl');
     fs.writeFileSync(target, '{ this is not: valid json\n');
@@ -358,7 +368,7 @@ describe('startWatcher + handleFileEvent', () => {
     const target = path.join(tmp, 'hammer.jsonl');
     fs.writeFileSync(target, fixtureJsonl());
 
-    watcher = await startWatcher({ root: tmp, db, backfill: false });
+    watcher = await startWatcher({ root: tmp, db, backfill: false, awaitWriteFinish: TEST_AWAIT });
 
     // Dispatch 10 handler calls directly (bypass chokidar timing) — the
     // queue is the mechanism under test, not the event loop.
@@ -379,7 +389,7 @@ describe('startWatcher + handleFileEvent', () => {
 
   // TC-I-07: stop() stops processing
   it('TC-I-07: files created after stop() are NOT ingested', async () => {
-    watcher = await startWatcher({ root: tmp, db, backfill: false });
+    watcher = await startWatcher({ root: tmp, db, backfill: false, awaitWriteFinish: TEST_AWAIT });
     await watcher.stop();
     expect(watcher.running).toBe(false);
 
@@ -399,11 +409,11 @@ describe('startWatcher + handleFileEvent', () => {
     // startWatcherIfEnabled closes + recreates. Tested via
     // startWatcherIfEnabled in a separate module; here we just validate
     // the double-start-returns-existing invariant.
-    const first = await startWatcher({ root: tmp, db, backfill: false });
+    const first = await startWatcher({ root: tmp, db, backfill: false, awaitWriteFinish: TEST_AWAIT });
     watcher = first;
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const second = await startWatcher({ root: tmp, db, backfill: false });
+      const second = await startWatcher({ root: tmp, db, backfill: false, awaitWriteFinish: TEST_AWAIT });
       expect(second).toBe(first);
     } finally {
       warnSpy.mockRestore();
@@ -412,11 +422,11 @@ describe('startWatcher + handleFileEvent', () => {
 
   // TC-I-09: singleton guard emits warn on double-register
   it('TC-I-09: double-register emits warn and returns existing singleton', async () => {
-    const first = await startWatcher({ root: tmp, db, backfill: false });
+    const first = await startWatcher({ root: tmp, db, backfill: false, awaitWriteFinish: TEST_AWAIT });
     watcher = first;
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const second = await startWatcher({ root: tmp, db, backfill: false });
+      const second = await startWatcher({ root: tmp, db, backfill: false, awaitWriteFinish: TEST_AWAIT });
       expect(second).toBe(first);
       expect(warnSpy).toHaveBeenCalled();
     } finally {
@@ -430,7 +440,7 @@ describe('startWatcher + handleFileEvent', () => {
   it(
     'TC-I-10: ingests a .jsonl created in a subdirectory',
     async () => {
-      watcher = await startWatcher({ root: tmp, db, backfill: false });
+      watcher = await startWatcher({ root: tmp, db, backfill: false, awaitWriteFinish: TEST_AWAIT });
 
       const sub = path.join(tmp, 'project-x');
       fs.mkdirSync(sub);
@@ -459,7 +469,7 @@ describe('startWatcher + handleFileEvent', () => {
 
   // TC-I-11: chokidar error event is logged, watcher survives
   it('TC-I-11: chokidar error event is logged without crashing', async () => {
-    watcher = await startWatcher({ root: tmp, db, backfill: false });
+    watcher = await startWatcher({ root: tmp, db, backfill: false, awaitWriteFinish: TEST_AWAIT });
     // Injecting a chokidar error via the internal emitter keeps the test
     // self-contained: we verify the handler swallows + survives.
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -475,7 +485,7 @@ describe('startWatcher + handleFileEvent', () => {
 
   // TC-I-12b: writeSession throw → error logged, watcher survives
   it('TC-I-12b: writeSession throw does not crash the watcher', async () => {
-    watcher = await startWatcher({ root: tmp, db, backfill: false });
+    watcher = await startWatcher({ root: tmp, db, backfill: false, awaitWriteFinish: TEST_AWAIT });
 
     // Close the DB to force `writeSession` to throw on next event.
     db.close();
