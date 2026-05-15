@@ -1,1 +1,5 @@
 - [Project state after batch-4](project_state.md) — Known architectural debt and issues discovered in the 2026-04-18 full review
+- [sso-nonce-replay review (2026-05-13)](project_sso_nonce_replay_review.md) — Findings from sso-nonce-replay spec implementation review
+- [sso-e2e-live-execution review (2026-05-14)](project_sso_e2e_live_execution_review.md) — Findings: duplicate InviteRow/InviteRowMeta types, non-null assertion in TC-E2E-06, orphan-migration port consistency
+- [review-report-2026-05-14-fixes implementation review](project_review_report_fixes_review.md) — Residual: 4 redundant `as number` casts in parser.ts (C-6 incomplete); getTrustedClientIp reads env inline (vs factory pattern)
+- [cross-stack-smoke-validation spec review (2026-05-14)](project_cross_stack_smoke_review.md) — MUST FIX: seedPg omits NOT NULL sso_provider/sso_subject; local Result re-declarations in smoke scripts vs importing from lib/result

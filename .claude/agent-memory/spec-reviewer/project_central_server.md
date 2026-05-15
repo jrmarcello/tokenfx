@@ -1,41 +1,46 @@
 ---
 name: project context — central server specs
-description: Key facts about what central-reporter-server (spec 3) + central-server-onboarding actually shipped, for downstream spec reviews
+description: Key facts about what central-reporter-server (spec 3) + central-server-onboarding + manager-dashboard-v2 actually shipped, for downstream spec reviews
 type: project
 ---
 
 Spec 3 (central-reporter-server.md) shipped at commit 1ded383, status DONE.
 central-server-onboarding shipped at commit 0594e39, status DONE. It absorbed the HMAC→bcrypt switch.
+manager-dashboard-v2 shipped at commit 95c0f43, status DONE. Per-org cron probe, per-team rollups, /me/visibility, anti-surveillance audit.
 
-## Schema facts (confirmed from apps/server/lib/db/schema.ts)
+## Schema facts (confirmed from apps/server/lib/db/schema.ts, post manager-dashboard-v2)
 
-**users table — NO `display_name` column.** Only: id, org_id, team_id (nullable), email (UNIQUE), sso_provider (nullable), sso_subject (nullable), role (CHECK in ('member','manager','admin')), created_at. Any spec that references `users.display_name` in ORDER BY or UI copy will fail at query time.
+**users table — HAS `display_name` column (nullable).** Added by manager-dashboard-v2 (REQ-18). COALESCE(display_name, split_part(email,'@',1)) used everywhere.
 
-**users.team_id:** nullable FK to teams.id (ON DELETE SET NULL). Manager scope = org-wide via users.org_id, team resolution via users.team_id JOIN. Confirmed.
+**users.team_id:** nullable FK to teams.id (ON DELETE SET NULL). Confirmed.
 
 **users.role enum:** text CHECK IN ('member','manager','admin'). Confirmed.
 
-**sessions_agg — NO `team_id` column.** Per-session keyed on (user_id, session_id). Team join path is: sessions_agg.user_id → users.user_id → users.team_id. REQ-21 GROUP BY team_id must JOIN through users.
+**sessions_agg — NO `team_id` column.** Per-session keyed on (user_id, session_id). Team join path: sessions_agg.user_id → users.user_id → users.team_id.
 
-**sessions_agg has `subagent_usage_ratio` (numeric 4,3):** already a pre-computed ratio per session — the reporter sends it as `subagent_usage_ratio`. No raw `subagent_count` integer column. REQ-4 and TASK-CRON-AGG must use this ratio, not a raw count.
+**sessions_agg has `subagent_usage_ratio` (numeric 4,3):** pre-computed ratio per session. No raw `subagent_count` integer.
 
-**NO `org_settings` table exists.** Not created by spec 3 or onboarding spec. DDL ALTER TABLE in v2 spec will fail unless preceded by CREATE TABLE IF NOT EXISTS.
+**`org_settings` table EXISTS** (created by manager-dashboard-v2): (org_id PK FK orgs.id, drilldown_notification_enabled bool, created_at, updated_at).
 
-**NO `cron_runs` table exists.** Not created by spec 3 or onboarding spec. Spec v2 must create it unconditionally.
+**`cron_runs` table EXISTS** (created by manager-dashboard-v2): (id bigserial PK, job_name text, started_at, finished_at, status CHECK IN ('running','ok','failed'), rows_written, error_message).
 
-**NO notifications infrastructure exists.** Neither spec 3 nor onboarding created an email/Slack/in-app notification channel, templates registry, or any `lib/notifications/` module. `apps/server/lib/notifications/templates.ts` does not exist.
+**`team_metrics_daily` table EXISTS** (created by manager-dashboard-v2): PK (org_id, team_id, day). Columns: cache_hit_ratio_avg, good_session_pct, subagent_adoption_pct, composite_avg, total_sessions, total_devs, tool_mix_json, computed_at. NO outcome columns.
 
-**tool_count_agg shape:** (user_id, session_id, tool_name text, count integer). Per-session × tool. No pre-aggregated daily rollup. Tool names are raw strings (e.g. 'Read', 'Edit', 'Bash', 'Grep', 'Write') matching SUBAGENT_TOOL_NAME constant in local analytics.
+**`manager_drilldown_audit` table EXISTS** (manager-dashboard-v2): append-only, UNIQUE on (manager_user_id, target_user_id, viewed_on, reason).
 
-**auth.ts — session.user.id IS populated:** jwt() callback sets token.userId from loadUserByEmail(); session() callback mirrors it to session.user.id. v2 routes can read session.user.id reliably.
+**`manager_anomalies`, `manager_dismissed_anomalies`, `manager_notifications` tables EXIST** (manager-dashboard-v2).
 
-**middleware.ts:** lives at apps/server/middleware.ts (root). Matcher: ['/manager/:path*'] only. Files to Modify in v2 says "apps/server/lib/auth/middleware.ts" — that path does NOT exist. The correct file is apps/server/middleware.ts.
+**Cross-package Zod sharing:** `SanitizedSessionPayload` is defined in `lib/reporter/types.ts` (root). The server re-exports it via `apps/server/lib/ingest/sanitizer-shared.ts` using the `@root/*` path alias. The ingest route imports from `@/lib/ingest/sanitizer-shared`. Path alias `@root/*` → `../../lib/*` is defined in `apps/server/tsconfig.json`. The file `lib/reporter/types.ts` is explicitly included in tsconfig. This cross-package sharing IS clean and works — no duplication needed.
 
-**secret_hash now uses bcrypt:** onboarding spec fixed the HMAC→bcrypt gap. BCRYPT_COST=10 exported from apps/server/lib/auth/bearer-auth.ts.
+**lib/reporter/runner.ts** (root) — does NOT include session_outcomes in `selectCandidates`. The SessionRow type and SQL query must be extended by manager-dashboard-v3-outcomes spec.
 
-**sso_provider + sso_subject are now NULLABLE** (onboarding spec relaxed the NOT NULL constraint for invite-provisioned users). The schema comment at schema.ts:43 confirms this.
+**tool_count_agg shape:** (user_id, session_id, tool_name text, count integer).
 
-**Existing E2E seed (seed-server.ts --e2e):** 2 orgs × 2 teams × 2-3 users. 30 sessions, last 7 days only. v2 E2E seed must EXTEND (additive, .onConflictDoNothing()) this, not replace it.
+**auth.ts — session.user.id IS populated.** jwt() callback sets token.userId; session() mirrors to session.user.id.
+
+**middleware.ts:** lives at apps/server/middleware.ts (root matcher). Matcher covers /manager/:path* and /me/:path*.
+
+**bcrypt auth:** BCRYPT_COST=10, bearer-auth.ts with 60s plaintext cache. Confirmed.
 
 ## Why
 
@@ -43,4 +48,4 @@ Accurate knowledge of what shipped prevents spec reviewers from approving specs 
 
 ## How to apply
 
-When reviewing specs that depend on central-reporter-server or central-server-onboarding, verify column names, unique constraints, and file paths against the actual shipped code before approving.
+When reviewing specs that depend on central-reporter-server or manager-dashboard-v2, verify column names, unique constraints, and file paths against the actual shipped code before approving.
