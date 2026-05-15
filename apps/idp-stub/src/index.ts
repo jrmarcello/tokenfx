@@ -36,9 +36,16 @@ const main = (): void => {
   // Loopback-bind defense (security review MEDIUM-1): even though localhost is
   // the intended deployment, we explicitly pin to 127.0.0.1 so the listener
   // cannot be reached from a colocated LAN attacker on the same host.
-  serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {
+  //
+  // Container override (cross-stack smoke): when running inside a container
+  // (docker-compose smoke profile), the listener must bind to 0.0.0.0 so the
+  // container DNS name is reachable from sibling services on the docker
+  // network. The override is opt-in via `IDP_STUB_HOSTNAME=0.0.0.0` env —
+  // default remains 127.0.0.1 for any non-container invocation.
+  const hostname = process.env.IDP_STUB_HOSTNAME ?? '127.0.0.1';
+  serve({ fetch: app.fetch, port, hostname }, (info) => {
     process.stdout.write(
-      `[idp-stub] listening on http://127.0.0.1:${info.port} (baseUrl=${baseUrl})\n`,
+      `[idp-stub] listening on http://${hostname}:${info.port} (baseUrl=${baseUrl})\n`,
     );
   });
 

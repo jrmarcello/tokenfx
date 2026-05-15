@@ -60,6 +60,130 @@ services:
       # non-warm process + compiled better-sqlite3 = up to ~20s observed.
       start_period: 30s
     restart: unless-stopped
+    networks:
+      - default
+      - smoke-net
+
+  # ==========================================================================
+  # SMOKE PROFILE — DEV/TEST FIXTURE ONLY. NEVER PRODUCTION.
+  #
+  # All credentials in this section are PUBLIC STUB VALUES committed to git
+  # and indexable by anyone reading the repo. They are NOT secrets:
+  #   - smoke-pg-password
+  #   - smoke-dev-secret-do-not-use-in-prod-…
+  #   - smoke-okta-client-secret-stub
+  #   - smoke-google-client-secret-stub
+  #   - smoke-cron-secret
+  #   - smoke-email-hash-pepper
+  #
+  # The `profiles: ["smoke"]` gate ensures `docker compose up` (no profile)
+  # does NOT start these services. Only `docker compose --profile smoke up`
+  # activates them. Defense layers:
+  #   1. Profile gate (above) — services don't exist unless `--profile smoke`.
+  #   2. apps/server Dockerfile defaults to NODE_ENV=production; this profile
+  #      overrides to `development` only via the env: block below — paired
+  #      with E2E_AUTH_BYPASS=1, which the boot guard refuses outside dev.
+  #   3. apps/idp-stub `checkBootEnv` refuses NODE_ENV=production at boot.
+  #   4. Published ports are `127.0.0.1`-bound (host loopback only); no LAN
+  #      exposure even when the smoke profile is up.
+  #
+  # If you are copying this file as a baseline for a real deployment, REMOVE
+  # the entire smoke profile section below and replace all `smoke-*` env
+  # values with real secrets sourced from your secret manager.
+  # ==========================================================================
+  postgres-smoke:
+    image: postgres:16-alpine
+    container_name: tokenfx-postgres-smoke
+    profiles: ["smoke"]
+    environment:
+      POSTGRES_USER: tokenfx
+      POSTGRES_PASSWORD: smoke-pg-password
+      POSTGRES_DB: tokenfx_smoke
+    volumes:
+      - tokenfx-pg-smoke-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "tokenfx", "-d", "tokenfx_smoke"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - smoke-net
+
+  tokenfx-idp-stub:
+    build:
+      context: ./apps/idp-stub
+      dockerfile: Dockerfile
+    image: tokenfx-idp-stub:local
+    container_name: tokenfx-idp-stub
+    profiles: ["smoke"]
+    ports:
+      - "127.0.0.1:3001:3001"
+    environment:
+      NODE_ENV: development
+      IDP_STUB_HOSTNAME: 0.0.0.0
+      IDP_STUB_PORT: "3001"
+      IDP_STUB_BASE_URL: http://tokenfx-idp-stub:3001
+    # Healthcheck probes `localhost` (the container's own loopback) — the
+    # stub binds to `0.0.0.0:3001` via IDP_STUB_HOSTNAME, so loopback hits
+    # the same listener as the Docker bridge IP. Consistent with the
+    # Dockerfile healthcheck.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          require('http').get('http://localhost:3001/.well-known/openid-configuration', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+    networks:
+      - smoke-net
+
+  tokenfx-server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    image: tokenfx-server:local
+    container_name: tokenfx-server
+    profiles: ["smoke"]
+    depends_on:
+      postgres-smoke: { condition: service_healthy }
+      tokenfx-idp-stub: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:3232:3232"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://tokenfx:smoke-pg-password@postgres-smoke:5432/tokenfx_smoke
+      AUTH_SECRET: smoke-dev-secret-do-not-use-in-prod-0123456789abcdef
+      OKTA_ISSUER: http://tokenfx-idp-stub:3001
+      OKTA_CLIENT_ID: smoke-okta-client-id
+      OKTA_CLIENT_SECRET: smoke-okta-client-secret-stub
+      GOOGLE_CLIENT_ID: smoke-google-client-id
+      GOOGLE_CLIENT_SECRET: smoke-google-client-secret-stub
+      NEXTAUTH_URL: http://localhost:3232
+      INTERNAL_CRON_SECRET: smoke-cron-secret
+      TOKENFX_APP_RUNTIME_ROLE: tokenfx
+      E2E_AUTH_BYPASS: "1"
+      ONBOARDING_EMAIL_HASH_PEPPER: smoke-email-hash-pepper
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          require('http').get('http://localhost:3232/api/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+    networks:
+      - smoke-net
 
 volumes:
   tokenfx-data:
+  tokenfx-pg-smoke-data:
+
+networks:
+  default:
+  smoke-net:
+    driver: bridge

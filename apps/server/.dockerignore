@@ -1,0 +1,34 @@
+# Note: build context is the repo root (so docker-compose builds with `dockerfile: apps/server/Dockerfile`).
+# This .dockerignore is consulted when context = apps/server (e.g. local `docker build apps/server`).
+# For the canonical compose build the root .dockerignore wins.
+
+# Build artifacts
+.next
+node_modules
+dist
+
+# Runtime data
+data
+
+# VCS / tooling
+.git
+.gitignore
+.claude
+.specs
+.ralph
+
+# Tests / e2e tooling
+tests
+playwright.config.ts
+playwright-report
+test-results
+
+# Editor / OS cruft
+.vscode
+.idea
+.DS_Store
+
+# Env files — must NEVER end up in the image
+.env
+.env.*
+!.env.example

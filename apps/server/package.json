@@ -11,7 +11,9 @@
     "test": "vitest --run",
     "test:e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx lib/db/migrate.ts"
+    "db:migrate": "tsx lib/db/migrate.ts",
+    "smoke:reset": "tsx scripts/smoke-reset.ts",
+    "smoke:seed": "tsx scripts/smoke-seed.ts"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

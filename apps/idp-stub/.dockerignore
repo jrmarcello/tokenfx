@@ -1,0 +1,36 @@
+# Build artifacts / installed deps
+node_modules
+dist
+
+# VCS
+.git
+.gitignore
+
+# Dev-only tooling / specs
+.claude
+.specs
+.ralph
+
+# Tests (run on host, not in image) — colocated *.test.ts stay because tsx
+# resolves them only when explicitly invoked; they are not loaded by
+# `tsx src/index.ts`. Listing them here would force a separate test layout.
+playwright.config.ts
+playwright-report
+test-results
+
+# Editor / OS cruft
+.vscode
+.idea
+.DS_Store
+
+# Env files — must NEVER end up in the image.
+.env
+.env.*
+!.env.example
+
+# Logs / temp
+*.log
+tmp
+
+# Docs / README — fine to omit from runtime image
+README.md
