@@ -211,12 +211,27 @@ spec's scope).
    (Docker DNS, not reachable from host browser). Workaround in
    troubleshooting; full fix requires NextAuth trustHost or custom
    issuer mapping. **Follow-up:** `fix-sso-issuer-host-bridge.md`.
-2. **Root `tokenfx` Dockerfile (`/Dockerfile`) fails under pnpm v11**
-   with `ERR_PNPM_IGNORED_BUILDS` (better-sqlite3 + transitive native
-   builds not in workspace `onlyBuiltDependencies` allow-list).
-   Bypassed in smoke via host-side `pnpm dev`. **Follow-up:**
-   `fix-root-dockerfile-pnpm-v11.md` (add `--ignore-scripts` +
-   explicit `pnpm rebuild better-sqlite3`).
+2. **Root `tokenfx` Dockerfile (`/Dockerfile`) failed under pnpm v11**
+   with `ERR_PNPM_IGNORED_BUILDS`. Root cause: corepack inside the
+   Docker base image picked pnpm@11.1.2 by default; pnpm v11's strict
+   `runDepsStatusCheck` aborts install if any native dep with a build
+   script isn't explicitly allow-listed AND the host repo's
+   `pnpm-workspace.yaml` allow-list isn't visible inside Docker the
+   way pnpm v11 expects in workspace mode (the workspace references
+   `apps/*` packages that aren't in the Docker build context, putting
+   pnpm into a degraded state where it doesn't honor the allow-list).
+   Tried-and-rejected: consolidating `onlyBuiltDependencies` into
+   root `package.json` (not respected by pnpm v11 in workspace mode);
+   adding all 7 surfaced deps to the allow-list (still flagged
+   `better-sqlite3`, `esbuild`, `sharp`, `unrs-resolver` despite
+   being listed). **Resolved (commit pending):** pinned
+   `"packageManager": "pnpm@9.15.9"` in root `package.json` — matches
+   the asdf-managed host version, so corepack inside Docker uses
+   pnpm@9 (which lacks the strict v11 check). Secondary fix: changed
+   `tsconfig.json` `"exclude"` from `["apps/server/**"]` to
+   `["apps/**"]` — the install fix surfaced a pre-existing oversight
+   where Next.js TypeScript-checked `apps/idp-stub/src/*` and failed
+   on `jose` (a dep only in idp-stub's package.json, not root).
 
 ### REQ-by-REQ smoke result
 
