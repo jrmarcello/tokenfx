@@ -1,7 +1,12 @@
-# Build artifacts
-.next
-node_modules
-dist
+# Build artifacts — `**` matches at any depth. Required because root-level
+# patterns (`node_modules`) only match the build-context root, NOT nested
+# ones like `apps/server/node_modules` or `apps/idp-stub/node_modules`,
+# which on the host would otherwise be baked into the COPY layer and
+# corrupt `pnpm install` inside the image (silently reusing partial host
+# node_modules instead of installing fresh).
+**/.next
+**/node_modules
+**/dist
 
 # Runtime data (mounted as volume — never baked into image)
 data

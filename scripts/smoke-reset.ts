@@ -52,9 +52,14 @@ const SERVER_RESET_ARGS = [
   'smoke',
   'exec',
   '-T',
+  // `--workdir /app/apps/server` so the bundled smoke-reset.js can resolve
+  // `migrationsFolder: './lib/db/migrations'` (relative path → CWD-anchored).
+  // Migrations live at /app/apps/server/lib/db/migrations per the Dockerfile.
+  '--workdir',
+  '/app/apps/server',
   'tokenfx-server',
   'node',
-  'dist/scripts/smoke-reset.js',
+  '/app/dist/scripts/smoke-reset.js',
 ] as const;
 
 const defaultExecutor: Executor = (cmd, args) =>

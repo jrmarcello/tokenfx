@@ -163,7 +163,12 @@ services:
       GOOGLE_CLIENT_SECRET: smoke-google-client-secret-stub
       NEXTAUTH_URL: http://localhost:3232
       INTERNAL_CRON_SECRET: smoke-cron-secret
-      TOKENFX_APP_RUNTIME_ROLE: tokenfx
+      # `app_runtime` matches migration 0004's hard-coded REVOKE target.
+      # The role isn't provisioned in the smoke compose (Postgres is created
+      # with POSTGRES_USER=tokenfx as superuser); the boot-time invariant
+      # check returns `role-missing` → no throw. In production, replace
+      # with the real least-privilege role created out-of-band.
+      TOKENFX_APP_RUNTIME_ROLE: app_runtime
       E2E_AUTH_BYPASS: "1"
       ONBOARDING_EMAIL_HASH_PEPPER: smoke-email-hash-pepper
     healthcheck:

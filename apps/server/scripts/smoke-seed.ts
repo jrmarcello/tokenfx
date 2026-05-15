@@ -25,7 +25,7 @@
  *   REPORTER_BEARER_SECRET=<plaintext 64 hex chars>
  *   REPORTER_PROJECT_SECRET=<64 hex chars>
  *   REPORTER_KEY_ID=key-smoke-001
- *   REPORTER_TARGET_URL=http://localhost:3232/api/ingest
+ *   REPORTER_TARGET_URL=http://localhost:3232
  *   ```
  *
  * The plaintext bearer secret is leaked to disk INTENTIONALLY here (smoke
@@ -241,7 +241,7 @@ export const runSmokeSeed = async (
         `REPORTER_BEARER_SECRET=${bearerPlaintext}`,
         `REPORTER_PROJECT_SECRET=${projectSecret}`,
         `REPORTER_KEY_ID=${KEY_ID}`,
-        `REPORTER_TARGET_URL=http://localhost:3232/api/ingest`,
+        `REPORTER_TARGET_URL=http://localhost:3232`,
         '',
       ].join('\n');
     writeFileSync(envPath, envContent, { mode: 0o600 });
@@ -273,11 +273,16 @@ export const runSmokeSeed = async (
 // --- CLI entrypoint ---------------------------------------------------------
 
 const isCli = (() => {
-  // Detect direct invocation via tsx. Uses `fileURLToPath(import.meta.url) ===
-  // process.argv[1]` for exact-match — endsWith() was ambiguous (any file
-  // named smoke-seed.* would match). Mirror of the pattern in
-  // `scripts/smoke-reset.ts`. Caught: errors if `import.meta.url` is
-  // unavailable (older Node, unexpected runtime) → false (safe default).
+  // Two-path detection: tsx (ESM) and esbuild-bundled CJS.
+  //  - tsx runs the file as ESM → `import.meta.url` is the file URL.
+  //  - esbuild --format=cjs strips import.meta; in CJS `require.main` is
+  //    the entry module. We check BOTH so the same script works in
+  //    `pnpm tsx scripts/smoke-seed.ts` and `node dist/scripts/smoke-seed.js`.
+  try {
+    if (typeof require !== 'undefined' && require.main === module) return true;
+  } catch {
+    /* require/module not in scope (pure ESM) */
+  }
   try {
     return fileURLToPath(import.meta.url) === process.argv[1];
   } catch {

@@ -222,9 +222,16 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
           continue;
         }
 
-        // Convert numeric epoch seconds to Date for timestamptz columns.
-        const startedAt = new Date(p.started_at * 1000);
-        const endedAt = new Date(p.ended_at * 1000);
+        // Convert epoch to Date for timestamptz columns. Reporter sends ms
+        // (sourced from root SQLite `sessions.started_at` which is INTEGER
+        // ms-since-epoch per `lib/db/schema.sql`). Heuristic: values >
+        // 10^11 are ms (any year > 1973); values <= 10^11 are seconds
+        // (Claude Code / Unix CLI convention). Either way produces a valid
+        // Date in [1970, 2286] without overflowing `timestamptz`.
+        const toMs = (n: number): number =>
+          n > 100_000_000_000 ? n : n * 1000;
+        const startedAt = new Date(toMs(p.started_at));
+        const endedAt = new Date(toMs(p.ended_at));
 
         const baseValues = {
           userId: machine.userId,

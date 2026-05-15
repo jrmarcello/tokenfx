@@ -184,41 +184,25 @@ export const smokeReset = async (
     await pool.end();
   }
 
-  // Re-run migrate post-truncate. Idempotent (Drizzle journal short-circuits
-  // already-applied migrations; hand-crafted SQL uses IF NOT EXISTS). This
-  // guarantees the post-reset schema is identical to a fresh deploy even if
-  // the migrate pipeline grew new statements between resets.
-  try {
-    const remigrate = options.remigrate ?? defaultRemigrate;
-    await remigrate(databaseUrl);
-  } catch (e: unknown) {
-    const cause = e instanceof Error ? e : new Error(String(e));
-    return {
-      ok: false,
-      error: new Error(`smoke-reset: re-migrate failed: ${cause.message}`, { cause }),
-    };
+  // Re-run migrate post-truncate is OPT-IN (default off). TRUNCATE doesn't
+  // change schema, and re-running drizzle migrate against an already-migrated
+  // DB can trigger `tuple concurrently updated` when ALTER TYPE ADD VALUE
+  // statements (migration 0004) replay against pg_type. Pass
+  // `options.remigrate` explicitly when you genuinely need schema re-application
+  // (e.g. tests that drop tables before reset).
+  if (options.remigrate) {
+    try {
+      await options.remigrate(databaseUrl);
+    } catch (e: unknown) {
+      const cause = e instanceof Error ? e : new Error(String(e));
+      return {
+        ok: false,
+        error: new Error(`smoke-reset: re-migrate failed: ${cause.message}`, { cause }),
+      };
+    }
   }
 
   return { ok: true, value: undefined };
-};
-
-/**
- * Default re-migrate hook — dynamic-imports `lib/db/migrate.ts` so the
- * compiled `dist/scripts/smoke-reset.js` lazily resolves the migrate module
- * at runtime (the Dockerfile builder stage compiles both files; the
- * resulting `dist/lib/db/migrate.js` sits alongside this script).
- *
- * Dynamic import keeps the unit test fast — the test passes a stub
- * `remigrate` and never loads the real migrator (which would try to read
- * `./lib/db/migrations/` relative to cwd).
- */
-const defaultRemigrate = async (databaseUrl: string): Promise<void> => {
-  // Resolved at runtime so the test path can skip this branch entirely.
-  // The compiled JS path is `../lib/db/migrate` relative to `dist/scripts/`.
-  const migrateModule = (await import('../lib/db/migrate')) as {
-    runMigrations: (url?: string) => Promise<void>;
-  };
-  await migrateModule.runMigrations(databaseUrl);
 };
 
 // CLI entry — exercised by `docker exec tokenfx-server node dist/scripts/smoke-reset.js`

@@ -90,17 +90,39 @@ ENV NEXT_TELEMETRY_DISABLED=1 \
 # Next.js production build (writes .next/standalone via next.config.ts output: 'standalone').
 RUN pnpm build
 
-# Standalone-compile migrate.ts → dist/migrate.js so the runner stage runs
-# pure Node (no tsx). drizzle-orm + pg are resolved via the standalone
-# node_modules tree that Next emits at runtime.
-RUN pnpm exec tsc lib/db/migrate.ts \
-      --module commonjs \
-      --target es2022 \
-      --moduleResolution node \
-      --esModuleInterop \
-      --skipLibCheck \
-      --strict \
-      --outDir dist
+# Bundle migrate.ts → dist/migrate.js as a SELF-CONTAINED CJS file via
+# esbuild. Includes all runtime deps (drizzle-orm + pg + transitive)
+# inlined; only `pg-native` is externalized because it's an OPTIONAL
+# native dep we never use (pg's pure-JS path is the default). Single
+# file means the runner stage doesn't need to copy node_modules trees
+# — significantly slimmer image + no resolution fragility.
+RUN pnpm dlx esbuild@0.24 lib/db/migrate.ts \
+      --bundle \
+      --platform=node \
+      --target=node22 \
+      --format=cjs \
+      --external:pg-native \
+      --outfile=dist/migrate.js
+
+# Also bundle smoke-reset.ts AND smoke-seed.ts (called via docker exec
+# from the host-side orchestrators). Same self-contained bundle pattern.
+# bcrypt is externalized — its native binding must resolve at runtime;
+# we add it via npm install in the runner stage below.
+RUN pnpm dlx esbuild@0.24 scripts/smoke-reset.ts \
+      --bundle \
+      --platform=node \
+      --target=node22 \
+      --format=cjs \
+      --external:pg-native \
+      --outfile=dist/scripts/smoke-reset.js \
+ && pnpm dlx esbuild@0.24 scripts/smoke-seed.ts \
+      --bundle \
+      --platform=node \
+      --target=node22 \
+      --format=cjs \
+      --external:pg-native \
+      --external:bcrypt \
+      --outfile=dist/scripts/smoke-seed.js
 
 # ---------------------------------------------------------------------------
 # Stage 2 — runner: minimal runtime. Standalone bundle + compiled migrate
@@ -139,10 +161,22 @@ COPY --from=builder --chown=tokenfx-server:tokenfx-server \
 COPY --from=builder --chown=tokenfx-server:tokenfx-server \
      /repo/apps/server/lib/db/migrations ./apps/server/lib/db/migrations
 
-# Compiled migrate entrypoint. Placed at /app/dist/migrate.js so the
-# ENTRYPOINT can invoke it without relative-path ambiguity.
+# Compiled migrate + smoke-reset + smoke-seed — self-contained CJS bundles
+# via esbuild (built in stage 1). No node_modules trees needed at runtime
+# EXCEPT for bcrypt (native binding) which the smoke-seed needs.
 COPY --from=builder --chown=tokenfx-server:tokenfx-server \
      /repo/apps/server/dist/migrate.js ./dist/migrate.js
+COPY --from=builder --chown=tokenfx-server:tokenfx-server \
+     /repo/apps/server/dist/scripts/smoke-reset.js ./dist/scripts/smoke-reset.js
+COPY --from=builder --chown=tokenfx-server:tokenfx-server \
+     /repo/apps/server/dist/scripts/smoke-seed.js ./dist/scripts/smoke-seed.js
+
+# bcrypt native binding for smoke-seed.js (externalized in the esbuild
+# bundle because the napi-v3 .node file can't be inlined). Copy from
+# builder where it was rebuilt against the slim runtime's glibc/abi.
+COPY --from=builder --chown=tokenfx-server:tokenfx-server \
+     /repo/apps/server/node_modules/.pnpm/bcrypt@5.1.1/node_modules/bcrypt \
+     ./node_modules/bcrypt
 
 # Healthcheck against /api/health (Next.js route inside the standalone bundle).
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
@@ -151,6 +185,10 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
 USER tokenfx-server
 EXPOSE 3232
 
-# Migrate fails fast if Postgres is unreachable; on success Next.js boots.
-# `cd apps/server` aligns CWD with where the standalone server.js lives.
-ENTRYPOINT ["sh", "-c", "node /app/dist/migrate.js && cd /app/apps/server && node server.js"]
+# ENTRYPOINT — migrate then serve. Two CWDs:
+#  1. migrate.js uses `migrationsFolder: './lib/db/migrations'` (relative).
+#     The migrations live at /app/apps/server/lib/db/migrations.
+#  2. server.js (Next.js standalone) lives at /app/server.js — the
+#     standalone trimmed node_modules + .next are sibling to it.
+# So: cd into apps/server for migrate, then cd back to /app for serve.
+ENTRYPOINT ["sh", "-c", "cd /app/apps/server && node /app/dist/migrate.js && cd /app && node server.js"]

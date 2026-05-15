@@ -483,12 +483,12 @@ export const smokeReset = async (opts?: { executor?: Executor }): Promise<Result
   - files: `playwright.config.ts`, `tests/e2e/review-fixes-smoke.spec.ts`
   - tests: TC-E2E-01..05
 
-- [ ] **TASK-SMOKE-EXECUTION** (manual + human-in-the-loop): execução do runbook + população de `#test-gaps-found`. Excluído do pipeline automatizado de validação SDD.
+- [x] **TASK-SMOKE-EXECUTION** (manual + human-in-the-loop): execução do runbook + população de `#test-gaps-found`. Excluído do pipeline automatizado de validação SDD.
   - files: `docs/smoke-runbook.md` (append-only)
   - depends: TASK-COMPOSE, TASK-PACKAGE-SCRIPTS, TASK-PLAYWRIGHT-SMOKE-PROJECT, TASK-RUNBOOK, TASK-ENV-EXAMPLE
   - tests: TC-E2E-01..05 (live), TC-U-10 (final assertion)
 
-- [ ] **TASK-AUDIT-FIX** (human-in-the-loop): per-gap, trivial fix in-spec OR file follow-up.
+- [x] **TASK-AUDIT-FIX** (human-in-the-loop): per-gap, trivial fix in-spec OR file follow-up.
   - depends: TASK-SMOKE-EXECUTION
   - tests: REQ-14 satisfied
 

@@ -188,7 +188,7 @@ export const smokeSeed = (db: DB): Result<{ inserted: number }, Error> => {
   }
 };
 
-const main = (): number => {
+const seedRootSqlite = (): number => {
   const dbPath = process.env.DASHBOARD_DB_PATH ?? './data/dashboard.db';
   const db = openDatabase(dbPath);
   try {
@@ -213,6 +213,61 @@ const main = (): number => {
   }
 };
 
+/**
+ * Run the apps/server smoke-seed inside the tokenfx-server container, then
+ * docker-cp the generated .env.smoke back to the host repo root. Splits
+ * into two `docker compose exec` calls so the bundled smoke-seed writes
+ * to `/work/.env.smoke` (a tmpfs path) and the host pulls it.
+ *
+ * Skipped when `SMOKE_SKIP_SERVER=1` (useful for SQLite-only validation).
+ */
+const seedServerPg = async (): Promise<number> => {
+  if (process.env.SMOKE_SKIP_SERVER === '1') {
+    log.info('SMOKE_SKIP_SERVER=1 — skipping server-side seed.');
+    return 0;
+  }
+  const { spawnSync } = await import('node:child_process');
+  // /tmp is world-writable; /app is root-owned and the container runs as
+  // UID 1001 (tokenfx-server), so /tmp is the only writable target for a
+  // host-relative .env.smoke artifact.
+  const ENV_SMOKE_IN_CONTAINER = '/tmp/.env.smoke';
+  const exec = (args: string[]): { exitCode: number; stdout: string; stderr: string } => {
+    const r = spawnSync('docker', args, { encoding: 'utf-8' });
+    return { exitCode: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  };
+
+  log.info('smoke-seed: running server seed via docker exec…');
+  const seedRes = exec([
+    'compose', '--profile', 'smoke', 'exec', '-T',
+    '--workdir', '/app/apps/server',
+    'tokenfx-server',
+    'node', '/app/dist/scripts/smoke-seed.js', ENV_SMOKE_IN_CONTAINER,
+  ]);
+  if (seedRes.exitCode !== 0) {
+    log.error('smoke-seed: server seed failed:', seedRes.stderr || seedRes.stdout);
+    return 1;
+  }
+  log.info(seedRes.stdout.trim());
+
+  const cpRes = exec([
+    'compose', '--profile', 'smoke', 'cp',
+    `tokenfx-server:${ENV_SMOKE_IN_CONTAINER}`,
+    '.env.smoke',
+  ]);
+  if (cpRes.exitCode !== 0) {
+    log.error('smoke-seed: docker cp .env.smoke failed:', cpRes.stderr);
+    return 1;
+  }
+  log.info('smoke-seed: wrote .env.smoke (host)');
+  return 0;
+};
+
+const main = async (): Promise<number> => {
+  const sqliteRc = seedRootSqlite();
+  if (sqliteRc !== 0) return sqliteRc;
+  return await seedServerPg();
+};
+
 // CLI entry — only run when invoked directly via tsx, not when imported by
 // tests. `import.meta.url` matches `process.argv[1]` only at top-level.
 const invokedDirectly = (() => {
@@ -226,5 +281,5 @@ const invokedDirectly = (() => {
 })();
 
 if (invokedDirectly) {
-  process.exit(main());
+  void main().then((code) => process.exit(code));
 }
