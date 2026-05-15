@@ -122,7 +122,16 @@ services:
       NODE_ENV: development
       IDP_STUB_HOSTNAME: 0.0.0.0
       IDP_STUB_PORT: "3001"
-      IDP_STUB_BASE_URL: http://tokenfx-idp-stub:3001
+      # fix-sso-issuer-host-bridge: the stub advertises this URL as the
+       # `issuer` field in /.well-known/openid-configuration AND as the `iss`
+       # claim in every signed ID token AND as the origin allowlist for
+       # `redirect_uri`. Set to `host.docker.internal` so that BOTH the
+       # browser (via Docker Desktop's host alias on macOS/Windows; via the
+       # one-time /etc/hosts entry documented in the runbook on Linux) AND
+       # the `tokenfx-server` container (via `extra_hosts: host-gateway`
+       # below) resolve it to the published port on the host. Mirrors the
+       # existing OTEL pattern (docker-compose.yaml:39-45).
+      IDP_STUB_BASE_URL: http://host.docker.internal:3001
     # Healthcheck probes `localhost` (the container's own loopback) — the
     # stub binds to `0.0.0.0:3001` via IDP_STUB_HOSTNAME, so loopback hits
     # the same listener as the Docker bridge IP. Consistent with the
@@ -156,12 +165,28 @@ services:
       NODE_ENV: development
       DATABASE_URL: postgres://tokenfx:smoke-pg-password@postgres-smoke:5432/tokenfx_smoke
       AUTH_SECRET: smoke-dev-secret-do-not-use-in-prod-0123456789abcdef
-      OKTA_ISSUER: http://tokenfx-idp-stub:3001
+      # fix-sso-issuer-host-bridge: must equal `IDP_STUB_BASE_URL` of the
+      # tokenfx-idp-stub service AND must be reachable from inside this
+      # container (via the `host.docker.internal` extra_hosts entry below).
+      OKTA_ISSUER: http://host.docker.internal:3001
       OKTA_CLIENT_ID: smoke-okta-client-id
       OKTA_CLIENT_SECRET: smoke-okta-client-secret-stub
       GOOGLE_CLIENT_ID: smoke-google-client-id
       GOOGLE_CLIENT_SECRET: smoke-google-client-secret-stub
       NEXTAUTH_URL: http://localhost:3232
+      # SMOKE-ONLY. AUTH_TRUST_HOST=1 lets NextAuth accept any Host header
+      # on incoming requests — dangerous in production (Host-header
+      # spoofing → callback-URL hijack), safe here because NEXTAUTH_URL is
+      # explicitly pinned to localhost:3232 (the callback origin stays
+      # fixed regardless of incoming Host). The pair AUTH_TRUST_HOST=1 +
+      # NEXTAUTH_URL=http://localhost:3232 ships together as a coherent
+      # unit; never split. The production image (apps/server/Dockerfile)
+      # sets neither, by design.
+      AUTH_TRUST_HOST: "1"
+      # SSO auto-provision whitelist: tokens with this `iss` are accepted
+      # by evaluateAutoProvision. Defaults to Google's public issuer only;
+      # smoke adds host.docker.internal:3001 to allow stub-minted tokens.
+      TOKENFX_SSO_ISSUERS_OKTA: http://host.docker.internal:3001
       INTERNAL_CRON_SECRET: smoke-cron-secret
       # `app_runtime` matches migration 0004's hard-coded REVOKE target.
       # The role isn't provisioned in the smoke compose (Postgres is created
@@ -169,7 +194,15 @@ services:
       # check returns `role-missing` → no throw. In production, replace
       # with the real least-privilege role created out-of-band.
       TOKENFX_APP_RUNTIME_ROLE: app_runtime
-      E2E_AUTH_BYPASS: "1"
+      # E2E_AUTH_BYPASS removed from smoke 2026-05-15: Next.js standalone's
+      # server.js hardcodes `process.env.NODE_ENV = 'production'` at startup,
+      # which makes the `assertNotProductionWithBypass` guard throw on every
+      # /api/auth/* request. The bypass cookie was never actually exercised
+      # in the prior smoke run anyway (Step 9 used direct route checks, which
+      # 307'd at the auth gate — see docs/smoke-runbook.md item 11 of the
+      # gap analysis). Real SSO via the idp-stub is the canonical path for
+      # smoke now. Follow-up to fix the bypass-in-standalone interaction is
+      # tracked separately if needed.
       ONBOARDING_EMAIL_HASH_PEPPER: smoke-email-hash-pepper
     healthcheck:
       test:
@@ -181,6 +214,12 @@ services:
       interval: 30s
       timeout: 5s
       start_period: 45s
+    # fix-sso-issuer-host-bridge: route `host.docker.internal` from inside
+    # the container to the host gateway so OKTA_ISSUER (and the stub's
+    # advertised endpoints) resolve to the published port `127.0.0.1:3001`
+    # on the host. Same pattern as the `app` service for OTEL.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - smoke-net
 
