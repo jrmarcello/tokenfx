@@ -259,6 +259,36 @@ const seedServerPg = async (): Promise<number> => {
     return 1;
   }
   log.info('smoke-seed: wrote .env.smoke (host)');
+
+  // ALSO write `data/reporter-config.json` with the same secrets — that's
+  // what `runReporter()` actually reads (config.ts:DEFAULT_CONFIG_PATH).
+  // Without this step the runbook's `pnpm reporter:once` 401s because the
+  // reporter sends the OLD secret from the pre-existing config file while
+  // the server-side hash was rotated by this seed. The .env.smoke artifact
+  // is what the user copies / sources for manual debugging; the JSON file
+  // is what the reporter actually consumes.
+  const { readFileSync, writeFileSync, mkdirSync } = await import('node:fs');
+  const envContents = readFileSync('.env.smoke', 'utf-8');
+  const envMap: Record<string, string> = {};
+  for (const line of envContents.split(/\r?\n/)) {
+    const m = line.match(/^([A-Z_]+)=(.+)$/);
+    if (m && m[1] && m[2]) envMap[m[1]] = m[2];
+  }
+  const reporterConfig = {
+    key_id: envMap.REPORTER_KEY_ID,
+    secret: envMap.REPORTER_BEARER_SECRET,
+    machine_id: '00000000-0000-4000-8000-aaaa0000aaaa',
+    user_email: 'smoke-user-1@example.com',
+    central_url: envMap.REPORTER_TARGET_URL,
+    project_secret: envMap.REPORTER_PROJECT_SECRET,
+  };
+  mkdirSync('data', { recursive: true });
+  writeFileSync(
+    'data/reporter-config.json',
+    JSON.stringify(reporterConfig),
+    { mode: 0o600 },
+  );
+  log.info('smoke-seed: wrote data/reporter-config.json (host)');
   return 0;
 };
 

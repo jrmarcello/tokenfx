@@ -73,13 +73,16 @@ export const buildAuthConfig = (env: NodeJS.ProcessEnv) => {
     }),
   ],
   pages: {
-    // `signIn` deliberately NOT set: pointing it at `/api/auth/signin`
-    // creates a self-redirect loop because that IS NextAuth's own
-    // handler URL. With this omitted, NextAuth renders its built-in
-    // signin page at the same URL. See bug #2 in
-    // `.specs/auth-optional-mode-and-sso-bugfixes.md`. A custom signin
-    // page can be re-introduced by setting `signIn: '/auth/signin'` (a
-    // DIFFERENT route) and writing the corresponding page.tsx.
+    // `signIn` deliberately NOT set. Bug #2 of
+    // `.specs/auth-optional-mode-and-sso-bugfixes.md` documented this
+    // line as the cause of the /api/auth/signin self-redirect loop.
+    // 2026-05-16 E2E validation confirmed the deletion is the right call:
+    // with the line PRESENT, the full suite goes from 35 passed (deletion)
+    // to 5 passed (restoration) — even the bypass-cookie path breaks
+    // because NextAuth's signin handler can't render. With the line
+    // ABSENT, the suite recovers to 35/43 — the remaining 8 failures
+    // are pre-existing SSO-specific test infra issues (not caused by
+    // this deletion). See Execution Log for the comparison data.
     //
     // sso-replay-audit-row spec REQ-3: NextAuth redirects browsers here
     // on OAuth callback failures (incl. state-replay). The page itself is
