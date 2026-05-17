@@ -170,6 +170,33 @@ export const createApp = (deps: Deps): Hono => {
     });
   });
 
+  // --- Userinfo --------------------------------------------------------
+  // Auth.js v5 / openid-client v6 REQUIRES a `userinfo_endpoint` in the
+  // discovery doc even when the ID token alone carries all the needed
+  // claims (sub, email, email_verified, etc.). Without this route the
+  // OAuth callback throws "TypeError: TODO: Authorization server did not
+  // provide a userinfo endpoint." See spec auth-optional-mode-and-sso-
+  // bugfixes follow-up + the discovery doc field in fixtures.ts.
+  //
+  // Echoes the same claims the ID token carries — pulled from the current
+  // scenario so tampered-claim tests (e.g. email_verified=false) see the
+  // same value via either route Auth.js elects to follow. NextAuth v5
+  // tolerates a 400/empty response when the ID token has everything, but
+  // returning the full claim shape is the most faithful production-Okta
+  // emulation.
+  app.get('/userinfo', (c) => {
+    const auth = c.req.header('authorization') ?? '';
+    if (!auth.toLowerCase().startsWith('bearer ')) {
+      return c.json({ error: 'invalid_token' }, 401);
+    }
+    const scenario = deps.scenario.get();
+    return c.json({
+      sub: scenario.sub,
+      email: scenario.email,
+      email_verified: scenario.email_verified,
+    });
+  });
+
   // Defense-in-depth (security review MEDIUM-1): the stub is loopback-only
   // (bound to 127.0.0.1 in index.ts), but we also gate /admin/* on Origin to
   // close the DNS-rebinding attack vector where a malicious page in the

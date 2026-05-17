@@ -29,11 +29,15 @@ import {
 } from '../../lib/auth/replay-detector';
 import { waitForReplayRow } from './helpers/audit-log-probe';
 import { resetStubScenario, setStubScenario } from './helpers/idp-stub-control';
+import { initiateOktaSignin } from './helpers/initiate-okta-signin';
 
 const BASE_URL = 'http://localhost:3232';
 const STUB_BASE_URL = process.env.IDP_STUB_BASE_URL ?? 'http://localhost:3001';
 
-const NONCE_COOKIE_RE = /__Secure-(authjs|next-auth)\.nonce/;
+// The `__Secure-` prefix is only emitted when cookies carry `Secure;`
+// (HTTPS-only). The Playwright dev server is HTTP, so cookies omit the
+// prefix. Match both shapes.
+const NONCE_COOKIE_RE = /(?:__Secure-)?(authjs|next-auth)\.nonce/;
 
 test.describe('SSO nonce-validation → audit row', () => {
   test.beforeEach(async () => {
@@ -43,9 +47,7 @@ test.describe('SSO nonce-validation → audit row', () => {
   test('TC-E2E-01: /api/auth/signin/okta redirects to stub /authorize with a nonce query param + sets a sealed nonce cookie', async ({
     request,
   }) => {
-    const res = await request.get(`${BASE_URL}/api/auth/signin/okta`, {
-      maxRedirects: 0,
-    });
+    const res = await initiateOktaSignin(request, BASE_URL, { maxRedirects: 0 });
     expect([302, 303, 307]).toContain(res.status());
     const location = res.headers().location ?? '';
     expect(location).toMatch(/\/authorize/);
@@ -63,9 +65,7 @@ test.describe('SSO nonce-validation → audit row', () => {
   }) => {
     const testStartMs = Date.now();
 
-    const res = await request.get(`${BASE_URL}/api/auth/signin/okta`, {
-      maxRedirects: 5,
-    });
+    const res = await initiateOktaSignin(request, BASE_URL, { maxRedirects: 5 });
     expect(res.url()).not.toContain('/auth/error');
 
     // Positive assertion: a session cookie must be set. Without this,
@@ -91,9 +91,7 @@ test.describe('SSO nonce-validation → audit row', () => {
       { baseUrl: STUB_BASE_URL },
     );
 
-    const res = await request.get(`${BASE_URL}/api/auth/signin/okta`, {
-      maxRedirects: 10,
-    });
+    const res = await initiateOktaSignin(request, BASE_URL, { maxRedirects: 10 });
     expect(res.url()).toContain('/auth/error');
 
     const rows = await waitForReplayRow(testStartMs - 1_000, 3_000);
@@ -131,9 +129,7 @@ test.describe('SSO nonce-validation → audit row', () => {
     // maxRedirects:0 so we can read the Location header before
     // following). NextAuth has already sealed this nonce into a cookie
     // that the followed request will carry through to the callback.
-    const signinRes = await request.get(`${BASE_URL}/api/auth/signin/okta`, {
-      maxRedirects: 0,
-    });
+    const signinRes = await initiateOktaSignin(request, BASE_URL, { maxRedirects: 0 });
     const location = signinRes.headers().location ?? '';
     const generatedNonce = new URL(location).searchParams.get('nonce') ?? '';
     expect(generatedNonce.length).toBeGreaterThan(16);

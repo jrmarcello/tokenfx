@@ -13,6 +13,11 @@ export type DiscoveryDoc = Readonly<{
   jwks_uri: string;
   authorization_endpoint: string;
   token_endpoint: string;
+  // Required by Auth.js v5 / openid-client v6 — without this field the
+  // OAuth callback path throws "TypeError: TODO: Authorization server did
+  // not provide a userinfo endpoint." even though the OIDC ID token alone
+  // is sufficient for sign-in. See `src/server.ts` `/userinfo` handler.
+  userinfo_endpoint: string;
   response_types_supported: readonly ['code'];
   subject_types_supported: readonly ['public'];
   id_token_signing_alg_values_supported: readonly ['RS256'];
@@ -28,6 +33,7 @@ export const buildDiscoveryDoc = (baseUrl: string): DiscoveryDoc => {
     jwks_uri: `${base}/jwks`,
     authorization_endpoint: `${base}/authorize`,
     token_endpoint: `${base}/token`,
+    userinfo_endpoint: `${base}/userinfo`,
     response_types_supported: ['code'] as const,
     subject_types_supported: ['public'] as const,
     id_token_signing_alg_values_supported: ['RS256'] as const,

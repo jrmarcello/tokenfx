@@ -28,6 +28,7 @@ import {
 } from '../../lib/auth/replay-detector';
 import { waitForReplayRow } from './helpers/audit-log-probe';
 import { resetStubScenario, setStubScenario } from './helpers/idp-stub-control';
+import { initiateOktaSignin } from './helpers/initiate-okta-signin';
 import { signInAs } from './helpers/sign-in-as';
 
 const BASE_URL = 'http://localhost:3232';
@@ -51,16 +52,16 @@ test.describe('SSO state-replay → audit row', () => {
       { baseUrl: STUB_BASE_URL },
     );
 
-    // Drive a /api/auth/signin/okta initiation. NextAuth responds with
-    // a redirect to the stub /authorize. We follow redirects manually
-    // so we can keep the cookie jar and re-issue the callback URL.
-    const initResp = await request.get(`${BASE_URL}/api/auth/signin/okta`, {
+    // Drive a /api/auth/signin/okta initiation via the Auth.js v5
+    // POST-with-CSRF idiom (Auth.js v5 rejects the GET form with
+    // `UnknownAction`; see `helpers/initiate-okta-signin.ts`).
+    // NextAuth responds with a redirect to the stub /authorize. We
+    // don't follow it — the load-bearing assertion is the FINAL
+    // audit-row probe below.
+    const initResp = await initiateOktaSignin(request, BASE_URL, {
       maxRedirects: 0,
     });
-    // NextAuth typically renders a signin page or 302s to /authorize.
-    // Either is acceptable here — the load-bearing assertion is the
-    // FINAL audit-row probe below.
-    expect([200, 302, 303, 307]).toContain(initResp.status());
+    expect([302, 303, 307]).toContain(initResp.status());
 
     // To trigger a replay, we hit /api/auth/callback/okta with a known-
     // bad / empty state cookie. NextAuth's `InvalidCheck` throws,

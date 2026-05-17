@@ -32,7 +32,6 @@ test.describe('SSO sign-in flow via idp-stub', () => {
   test('TC-E2E-01: full Okta sign-in → callback → session → gated page', async ({
     page,
     context,
-    request,
   }) => {
     const email = seedEmail('happy');
     await setStubScenario(
@@ -40,30 +39,37 @@ test.describe('SSO sign-in flow via idp-stub', () => {
       { baseUrl: STUB_BASE_URL },
     );
 
-    // Initiate the OAuth flow. NextAuth will redirect to the stub's
-    // /authorize, which 302s back to /api/auth/callback/okta with a code.
-    const response = await page.goto(`${BASE_URL}/api/auth/signin/okta`);
+    // Auth.js v5 rejects GET /api/auth/signin/[provider] with
+    // `UnknownAction` (lib/pages/index.js:signin throws when any
+    // providerId is passed). The supported initiation is a POST with a
+    // CSRF token. We render the built-in NextAuth signin page first
+    // (which lists the providers as form buttons), then click the Okta
+    // button — that submits the CSRF-tokened form to /signin/okta and
+    // initiates the OAuth roundtrip end-to-end in the browser context.
+    await page.goto(`${BASE_URL}/api/auth/signin`);
 
-    // We don't pin the exact landing URL — NextAuth's signin page renders
-    // the provider button first. Click it to actually start the redirect
-    // chain. Fallback path: if /api/auth/signin already auto-submits, we
-    // wait for the post-callback URL directly.
-    if (response && response.url().includes('/api/auth/signin')) {
-      const okta = page.getByRole('button', { name: /okta/i });
-      if (await okta.count()) {
-        await okta.click();
-      }
-    }
+    // The NextAuth-rendered signin page has one `<button>Sign in with
+    // Okta</button>` per registered provider. Click it to submit the
+    // form; the browser follows the redirect chain to /authorize, the
+    // stub auto-redirects to /callback/okta, and NextAuth's callback
+    // handler exchanges the code + sets the session cookie.
+    const okta = page.getByRole('button', { name: /okta/i });
+    await expect(okta).toBeVisible();
+    await okta.click();
 
-    // After the round-trip the session cookie should be set.
+    // Wait for the post-callback URL — the redirect chain lands on the
+    // page configured as the post-signin destination (default = home).
     await page.waitForLoadState('networkidle');
+
     const cookies = await context.cookies();
     const sessionCookie = cookies.find((c) => c.name.endsWith('session-token'));
     expect(sessionCookie, 'NextAuth session cookie should be set').toBeDefined();
 
-    // Probe a gated route — /me requires an authenticated session.
-    const meResp = await request.get(`${BASE_URL}/me`);
-    expect(meResp.status()).toBeLessThan(400);
+    // Probe a gated route — /me requires an authenticated session. Use
+    // the page (already cookied) rather than a fresh request fixture so
+    // the session cookie travels with the request.
+    const meResp = await page.goto(`${BASE_URL}/me`);
+    expect(meResp?.status() ?? 0).toBeLessThan(400);
   });
 
   test('TC-E2E-02: cross-origin signin initiation is rejected with 403', async ({
