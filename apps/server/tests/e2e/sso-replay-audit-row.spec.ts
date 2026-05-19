@@ -26,7 +26,7 @@ import {
   REPLAY_EMAIL_HASH_SENTINEL,
   REPLAY_ISS_SENTINEL,
 } from '../../lib/auth/replay-detector';
-import { waitForReplayRow } from './helpers/audit-log-probe';
+import { truncateReplayRows, waitForReplayRow } from './helpers/audit-log-probe';
 import { resetStubScenario, setStubScenario } from './helpers/idp-stub-control';
 import { initiateOktaSignin } from './helpers/initiate-okta-signin';
 import { signInAs } from './helpers/sign-in-as';
@@ -37,6 +37,9 @@ const STUB_BASE_URL = process.env.IDP_STUB_BASE_URL ?? 'http://localhost:3001';
 test.describe('SSO state-replay → audit row', () => {
   test.beforeEach(async () => {
     await resetStubScenario({ baseUrl: STUB_BASE_URL });
+    // fix-sso-e2e-remaining-5 TASK-4: scrub leftover replay rows so
+    // count-based assertions (TC-E2E-09) start from a clean slate.
+    await truncateReplayRows();
   });
 
   test('TC-E2E-09: replayed callback writes a rejected-replay audit row with sentinels', async ({
@@ -45,7 +48,7 @@ test.describe('SSO state-replay → audit row', () => {
     const testStartMs = Date.now();
     await setStubScenario(
       {
-        email: `e2e-stub-replay-${testStartMs}@alpha.test`,
+        email: `e2e-stub-replay-${testStartMs}@e2e-sso.test`,
         sub: `stub-sub-replay-${testStartMs}`,
         email_verified: true,
       },
@@ -80,7 +83,13 @@ test.describe('SSO state-replay → audit row', () => {
     const replayLocation = replayResp.headers().location ?? '';
     expect(replayLocation).toMatch(/\/auth\/error/);
 
-    const rows = await waitForReplayRow(testStartMs - 1_000);
+    // fix-sso-e2e-remaining-5 TASK-4: bump poll from default 3s → 10s.
+    // The `logger.error` hook fires the audit write as a microtask
+    // (Promise.resolve().then), which under cold-start dev-server load
+    // can lag a few seconds behind the 302 response that ends the test
+    // request. 10s is generous but bounded — production has no such
+    // dependency.
+    const rows = await waitForReplayRow(testStartMs - 1_000, 10_000);
     expect(rows.length).toBeGreaterThanOrEqual(1);
     const row = rows[0];
     expect(row.outcome).toBe('rejected-replay');
@@ -151,8 +160,15 @@ test.describe('SSO state-replay → audit row', () => {
     expect(renderedHtml).not.toContain(REPLAY_EMAIL_HASH_SENTINEL);
     expect(renderedHtml).not.toContain(REPLAY_ISS_SENTINEL);
 
+    // fix-sso-e2e-remaining-5 TASK-4B: the `/manager/audit-log/export`
+    // route runs `csv-export csrf blocked` checks that reject requests
+    // with no Origin / Sec-Fetch-Site header (mirrors the dashboard's
+    // server-action CSRF guard). Playwright's `context.request.get`
+    // omits Origin by default; supply it so the test mimics a real
+    // same-origin browser export.
     const exportResp = await context.request.get(
       `${BASE_URL}/manager/audit-log/export`,
+      { headers: { origin: BASE_URL } },
     );
     expect(exportResp.ok()).toBe(true);
     const csvBody = await exportResp.text();

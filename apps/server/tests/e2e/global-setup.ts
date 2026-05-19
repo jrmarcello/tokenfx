@@ -27,6 +27,15 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 
+import { buildSpawnOptions, pipeChildToFile } from './helpers/spawn-with-log';
+
+// fix-sso-e2e-remaining-5 TASK-0: capture dev-server + idp-stub stdio to
+// `tests/e2e/.logs/*.log`. Without this, next-auth error lines emitted via
+// `console.error` (e.g. `[next-auth][error] { error_type: 'Configuration',
+// error_message: '...' }`) vanish after the test run — Playwright's
+// reporter does not persist child-process stderr.
+const LOGS_DIR = path.resolve(__dirname, '.logs');
+
 let container: StartedPostgreSqlContainer | null = null;
 let devServer: ChildProcess | null = null;
 let idpStub: ChildProcess | null = null;
@@ -95,24 +104,52 @@ const waitForUrlReady = async (
  * Wait for the dev server to respond on `/` (or any 2xx/3xx/4xx — anything
  * but `ECONNREFUSED`). We don't care about the body, just that the listener
  * is up. Polls every 250ms up to `DEV_BOOT_TIMEOUT_MS`.
+ *
+ * fix-sso-e2e-remaining-5 TASK-1: races against `child.once('exit', ...)`
+ * so an early dev-server crash (e.g. `EADDRINUSE` when a previous run left
+ * port 3232 in use) rejects FAST with the exit code instead of timing out
+ * after 60s. Without this, a hanging dev-server made every subsequent
+ * test fail with the opaque NextAuth `?error=Configuration` because the
+ * Credentials callback's POST hit nothing — the previous session's
+ * "30-test regression" misdiagnosed this as an invite-seeding fixture
+ * pollution issue.
  */
-const waitForDevServerReady = async (port: number): Promise<void> => {
+const waitForDevServerReady = async (
+  port: number,
+  child: ChildProcess,
+): Promise<void> => {
   const deadline = Date.now() + DEV_BOOT_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`http://localhost:${port}`, {
-        method: 'HEAD',
-        signal: AbortSignal.timeout(1_000),
-      });
-      if (res.status >= 100) return;
-    } catch {
-      // ECONNREFUSED / abort — keep polling.
+  type ExitInfo = { code: number | null; signal: NodeJS.Signals | null };
+  const exitRef: { current: ExitInfo | null } = { current: null };
+  const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+    exitRef.current = { code, signal };
+  };
+  child.once('exit', onExit);
+  try {
+    while (Date.now() < deadline) {
+      const exited = exitRef.current;
+      if (exited !== null) {
+        throw new Error(
+          `[e2e setup] dev server exited prematurely (code=${exited.code} signal=${exited.signal}). Check tests/e2e/.logs/dev-server.log for the cause — common: port ${port} already in use (lsof -ti:${port} | xargs kill).`,
+        );
+      }
+      try {
+        const res = await fetch(`http://localhost:${port}`, {
+          method: 'HEAD',
+          signal: AbortSignal.timeout(1_000),
+        });
+        if (res.status >= 100) return;
+      } catch {
+        // ECONNREFUSED / abort — keep polling.
+      }
+      await new Promise((r) => setTimeout(r, 250));
     }
-    await new Promise((r) => setTimeout(r, 250));
+    throw new Error(
+      `[e2e setup] dev server did not respond on :${port} within ${DEV_BOOT_TIMEOUT_MS}ms`,
+    );
+  } finally {
+    child.off('exit', onExit);
   }
-  throw new Error(
-    `[e2e setup] dev server did not respond on :${port} within ${DEV_BOOT_TIMEOUT_MS}ms`,
-  );
 };
 
 const setup = async (): Promise<void> => {
@@ -195,15 +232,20 @@ const setup = async (): Promise<void> => {
   // Spawn the idp-stub BEFORE the dev server so the OKTA_* env vars below
   // point at a live discovery endpoint that NextAuth can reach as soon as
   // it boots.
+  //
+  // TASK-0: piped stdio (NOT 'inherit') so stderr lands in
+  // tests/e2e/.logs/idp-stub.log via the readline + redaction pipeline.
+  const idpStubSpawn = buildSpawnOptions('idp-stub', LOGS_DIR);
   idpStub = spawn('pnpm', ['--filter', '@tokenfx/idp-stub', 'start'], {
     cwd: repoRoot,
-    stdio: 'inherit',
+    stdio: idpStubSpawn.stdio,
     env: {
       ...process.env,
       IDP_STUB_PORT: String(IDP_STUB_PORT),
       IDP_STUB_BASE_URL,
     },
   });
+  await pipeChildToFile(idpStub, 'idp-stub', LOGS_DIR);
   idpStub.on('exit', (code) => {
     if (code !== null && code !== 0) {
       process.stderr.write(`[e2e setup] idp-stub exited with code ${code}\n`);
@@ -216,9 +258,13 @@ const setup = async (): Promise<void> => {
   );
 
   const e2eSecret = process.env.NEXTAUTH_SECRET ?? 'tokenfx-e2e-secret';
+  // TASK-0: piped stdio for dev-server stderr capture. Without this the
+  // next-auth `[next-auth][error]` lines (which surface Configuration /
+  // InvalidCheck failures) are unreachable after a test run ends.
+  const devServerSpawn = buildSpawnOptions('dev-server', LOGS_DIR);
   devServer = spawn('pnpm', ['dev'], {
     cwd,
-    stdio: 'inherit',
+    stdio: devServerSpawn.stdio,
     env: {
       ...process.env,
       DATABASE_URL: databaseUrl,
@@ -237,18 +283,26 @@ const setup = async (): Promise<void> => {
       // Extend the orchestrator's issuer whitelist via the existing env hook
       // (sso-auto-provision.ts:DEFAULT_ISSUER_WHITELIST).
       TOKENFX_SSO_ISSUERS_OKTA: IDP_STUB_BASE_URL,
+      // fix-sso-e2e-remaining-5 TASK-2 root-cause: sso-auto-provision.ts
+      // sources `clientId` from `TOKENFX_NEXTAUTH_CLIENT_ID` for the
+      // `audience !== clientId` CSRF guard. Without this env, every
+      // Okta callback short-circuited to `rejected-csrf` → CallbackRouteError
+      // → /auth/error?error=Configuration. Setting it to match the
+      // OKTA_CLIENT_ID above unblocks TC-E2E-01 / TC-E2E-02 / TC-E2E-04.
+      TOKENFX_NEXTAUTH_CLIENT_ID: 'test-client',
       // fix-e2e-auth-bypass: test-only Credentials provider gate.
       E2E_AUTH_BYPASS: '1',
       HOSTNAME: '127.0.0.1',
     },
   });
+  await pipeChildToFile(devServer, 'dev-server', LOGS_DIR);
   devServer.on('exit', (code) => {
     if (code !== null && code !== 0) {
       process.stderr.write(`[e2e setup] dev server exited with code ${code}\n`);
     }
   });
 
-  await waitForDevServerReady(DEV_PORT);
+  await waitForDevServerReady(DEV_PORT, devServer);
 
   // Unified teardown via stopAll() — every handler defers to the same
   // shared helper, then exits with the appropriate code. Prevents the

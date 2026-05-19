@@ -26,6 +26,7 @@ import { evaluateAutoProvision } from './sso-auto-provision';
 import { log as logger } from '@root/logger';
 import {
   createInvalidCheckHandler,
+  extractAudience,
   extractEmailVerified,
   extractIssuer,
 } from './auth-helpers';
@@ -294,9 +295,14 @@ const nextAuthExports = NextAuth({
             // claims directly; cast to Record<string, unknown> so the extract*
             // helpers can probe them safely without `any`. Each access is
             // narrowed via typeof checks (no unchecked dereference).
+            //
+            // fix-sso-e2e-remaining-5 TASK-3: `extractAudience` decodes the
+            // id_token (NOT `account.audience` — that's undefined for OIDC
+            // providers in Auth.js v5). Before this fix, every Okta callback
+            // was rejected as `rejected-csrf` because `audience = ''` never
+            // matched the configured clientId.
             const acctRecord = account as unknown as Record<string, unknown>;
-            const audienceRaw = acctRecord.audience;
-            const audience = typeof audienceRaw === 'string' ? audienceRaw : '';
+            const audience = extractAudience(acctRecord);
             const { ip, userAgent } = getRequestContext();
             const decision = await evaluateAutoProvision({
               email: user.email,

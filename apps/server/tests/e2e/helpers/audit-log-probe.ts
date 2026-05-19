@@ -59,6 +59,33 @@ export const queryReplayRowsSince = async (
 };
 
 /**
+ * Delete every `rejected-replay` row tagged with the replay sentinels.
+ *
+ * fix-sso-e2e-remaining-5 TASK-4: used in `beforeEach` of SSO E2E specs
+ * that assert row-count invariants (`.toBe(0)` for healthy flows or
+ * `.toBe(1)` for exactly-one-replay flows). Without this, leftover
+ * rows from earlier tests in the same Playwright run leak into the
+ * `occurred_at > testStartMs - 1_000` poll window and flip the count.
+ *
+ * The DELETE is scoped to the sentinel `email_hash` so we cannot
+ * accidentally wipe a real audit row.
+ */
+export const truncateReplayRows = async (): Promise<void> => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query(
+      `DELETE FROM auth_event_log
+        WHERE outcome = 'rejected-replay'
+          AND email_hash = $1`,
+      [REPLAY_EMAIL_HASH_SENTINEL],
+    );
+  } finally {
+    await client.end();
+  }
+};
+
+/**
  * Poll until at least one row matches OR `timeoutMs` elapses.
  *
  * The replay-write happens in a fire-and-forget microtask after the

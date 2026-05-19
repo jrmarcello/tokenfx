@@ -63,7 +63,7 @@ export type Scenario = Readonly<{
  * (Context §5) — do not change without updating the spec.
  */
 export const DEFAULT_SCENARIO: Scenario = {
-  email: 'e2e-sso-new@alpha.test',
+  email: 'e2e-sso-new@e2e-sso.test',
   email_verified: true,
   sub: 'e2e-sso-test-sub-001',
   aud: 'test-client',

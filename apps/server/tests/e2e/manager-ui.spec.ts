@@ -166,15 +166,19 @@ test.describe('Manager UI: SSO-driven E2E flows', () => {
     await ensureManager(context);
     await page.goto(`${BASE_URL}/manager/invites/create`);
 
-    // -2000ms matches the established margin in
-    // `tests/integration/team-roster-csv.test.ts`. CI testcontainer startup
-    // + clock drift routinely exceeds 500ms; 2s is safe and serial-test
-    // execution guarantees no cross-test invite-insert in this window.
-    const beforeMs = Date.now() - 2000;
-
     // Uncheck `google` (the only default). All four boxes now empty.
     await page.locator('input[name="allowed_sso_providers"][value="google"]').uncheck();
 
+    // fix-sso-e2e-remaining-5: capture `beforeMs` RIGHT BEFORE the
+    // submit click so the "no new invite was written" assertion only
+    // sees rows inserted by THIS test. The previous version used
+    // `Date.now() - 2000` which (in the combined Playwright run) caught
+    // the invite created by the immediately-preceding test
+    // (`invite-create persists allowed_sso_providers`) within the 2s
+    // margin. -200ms is still enough to absorb clock drift between
+    // Node and the testcontainer Postgres while excluding cross-test
+    // rows.
+    const beforeMs = Date.now() - 200;
     await page.getByTestId('invite-create-submit').click();
 
     // Form does NOT redirect to /created.

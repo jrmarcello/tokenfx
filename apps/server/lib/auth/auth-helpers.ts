@@ -106,6 +106,65 @@ export const extractIssuer = (account: Record<string, unknown> | null): string =
 };
 
 /**
+ * SECURITY note (mirrors `extractIssuer` above): this helper extracts
+ * the `aud` claim from a JWT WITHOUT verifying the token signature.
+ * Intentional — NextAuth v5 signature-verifies the `id_token` upstream
+ * of `signIn` (against the provider's JWKS) before this code path runs.
+ * If a future regression bypasses upstream verification, an attacker
+ * could forge any `aud`. Defense-in-depth: the orchestrator's
+ * `audience !== clientId` check (`sso-auto-provision.ts:589-596`) only
+ * GRANTS access on exact match — a forged audience can only cause
+ * `rejected-csrf` (a DENY), never an unauthorized accept. Treat this
+ * helper purely as a claim-extraction utility, never as an
+ * authentication primitive.
+ *
+ * Extract the OIDC `aud` claim from a NextAuth Account.
+ *
+ * Mirrors `extractIssuer` — NextAuth v5's `Account` type does NOT expose
+ * `audience` as a top-level field for OIDC providers (verified against
+ * `@auth/core@0.37.2`). The audience lives inside the id_token claims.
+ *
+ * Returns the FIRST element when `aud` is an array (a valid OIDC shape
+ * per RFC 7519 §4.1.3). Returns empty string when neither path resolves.
+ * The downstream decision engine treats empty audience as `rejected-csrf`
+ * via the `audience !== clientId` check.
+ *
+ * Spec: `.specs/fix-sso-e2e-remaining-5.md` TASK-3. Before this helper
+ * existed, the in-`auth.ts` extraction probed `account.audience` directly
+ * — always undefined → `''` → every Okta callback rejected as `rejected-csrf`.
+ */
+export const extractAudience = (account: Record<string, unknown> | null): string => {
+  if (!account) return '';
+  // Direct probe — for providers that DO surface aud directly (rare but
+  // contractually permitted). Truncated like iss for symmetry / DoS bound.
+  const direct = account.aud;
+  if (typeof direct === 'string' && direct.length > 0) {
+    return direct.slice(0, ISS_MAX_LEN);
+  }
+  const idToken = account.id_token;
+  if (typeof idToken !== 'string') return '';
+  if (idToken.length > 16 * 1024) return '';
+  const segments = idToken.split('.');
+  if (segments.length < 2) return '';
+  if (segments[1].length > 16 * 1024) return '';
+  try {
+    const payloadJson = Buffer.from(segments[1], 'base64url').toString('utf-8');
+    const payload = JSON.parse(payloadJson) as { aud?: unknown };
+    const claim = payload.aud;
+    if (typeof claim === 'string') return claim.slice(0, ISS_MAX_LEN);
+    // RFC 7519 §4.1.3: aud MAY be an array. Pick the first string element.
+    if (Array.isArray(claim)) {
+      for (const v of claim) {
+        if (typeof v === 'string' && v.length > 0) return v.slice(0, ISS_MAX_LEN);
+      }
+    }
+  } catch {
+    logger.warn('extractAudience: malformed id_token payload (skipped)');
+  }
+  return '';
+};
+
+/**
  * Extract `email_verified` from a NextAuth Account/User pair.
  *
  * Mirrors `extractIssuer` — checks `account.id_token` claims first, falls

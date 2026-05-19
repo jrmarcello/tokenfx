@@ -27,9 +27,12 @@ import {
   REPLAY_EMAIL_HASH_SENTINEL,
   REPLAY_ISS_SENTINEL,
 } from '../../lib/auth/replay-detector';
-import { waitForReplayRow } from './helpers/audit-log-probe';
+import { e2eOrgId } from '../../lib/e2e/seed-ids';
+
+import { truncateReplayRows, waitForReplayRow } from './helpers/audit-log-probe';
 import { resetStubScenario, setStubScenario } from './helpers/idp-stub-control';
 import { initiateOktaSignin } from './helpers/initiate-okta-signin';
+import { resetSsoInvitesIsolated } from './helpers/sso-invite-isolation';
 
 const BASE_URL = 'http://localhost:3232';
 const STUB_BASE_URL = process.env.IDP_STUB_BASE_URL ?? 'http://localhost:3001';
@@ -40,8 +43,20 @@ const STUB_BASE_URL = process.env.IDP_STUB_BASE_URL ?? 'http://localhost:3001';
 const NONCE_COOKIE_RE = /(?:__Secure-)?(authjs|next-auth)\.nonce/;
 
 test.describe('SSO nonce-validation → audit row', () => {
+  test.beforeAll(async () => {
+    // fix-sso-e2e-remaining-5 TASK-3 isolation: see sso-flow.spec.ts
+    // for rationale — wipe + re-seed the wildcard invite so NULL-pattern
+    // invites left by earlier specs don't cause rejected-multiple-matches.
+    await resetSsoInvitesIsolated(e2eOrgId('org-alpha'));
+  });
+
   test.beforeEach(async () => {
     await resetStubScenario({ baseUrl: STUB_BASE_URL });
+    // fix-sso-e2e-remaining-5 TASK-4: scrub the sentinel `rejected-replay`
+    // rows so prior tests in the same Playwright run (e.g. sso-flow's
+    // TC-E2E-08) don't leak into this spec's `.toBe(0)` / `.toBe(1)` row
+    // counts via the `occurred_at > testStartMs - 1_000` poll window.
+    await truncateReplayRows();
   });
 
   test('TC-E2E-01: /api/auth/signin/okta redirects to stub /authorize with a nonce query param + sets a sealed nonce cookie', async ({
@@ -68,13 +83,21 @@ test.describe('SSO nonce-validation → audit row', () => {
     const res = await initiateOktaSignin(request, BASE_URL, { maxRedirects: 5 });
     expect(res.url()).not.toContain('/auth/error');
 
-    // Positive assertion: a session cookie must be set. Without this,
-    // the test would pass on a partial flow that never establishes
-    // auth state (e.g. token exchange silently failing).
-    const setCookieHeader = res.headers()['set-cookie'] ?? '';
-    expect(setCookieHeader).toMatch(
-      /(authjs|next-auth)\.session-token/,
+    // Positive assertion: a session cookie must land in the Playwright
+    // request context's cookie jar. Without this, the test would pass
+    // on a partial flow that never establishes auth state.
+    //
+    // fix-sso-e2e-remaining-5 TASK-3: original assertion probed
+    // `res.headers()['set-cookie']` after `maxRedirects:5` — but on a
+    // redirect chain Playwright surfaces ONLY the final response's
+    // Set-Cookie headers. The session-token is set by the intermediate
+    // /api/auth/callback/okta 302 and consumed (cookie jar updated)
+    // before the chain lands. Probe the cookie jar directly instead.
+    const state = await request.storageState();
+    const sessionCookie = state.cookies.find((c) =>
+      /(authjs|next-auth)\.session-token/.test(c.name),
     );
+    expect(sessionCookie, 'session-token cookie should be in the request context cookie jar').toBeDefined();
 
     // waitForReplayRow polls internally — no external sleep needed.
     const rows = await waitForReplayRow(testStartMs - 1_000, 500);
@@ -94,7 +117,9 @@ test.describe('SSO nonce-validation → audit row', () => {
     const res = await initiateOktaSignin(request, BASE_URL, { maxRedirects: 10 });
     expect(res.url()).toContain('/auth/error');
 
-    const rows = await waitForReplayRow(testStartMs - 1_000, 3_000);
+    // fix-sso-e2e-remaining-5 TASK-4: poll bumped 3s → 10s for the same
+    // microtask-vs-cold-start-compile reason documented at TC-E2E-09.
+    const rows = await waitForReplayRow(testStartMs - 1_000, 10_000);
     // Exactly one row — proves the logger.error hook is idempotent and
     // not invoked twice (e.g. by Auth.js middleware retry).
     expect(rows.length).toBe(1);
@@ -144,7 +169,8 @@ test.describe('SSO nonce-validation → audit row', () => {
     expect(followRes.url()).toContain('/auth/error');
 
     // Step 3: assert the audit row never persisted the captured nonce.
-    const rows = await waitForReplayRow(testStartMs - 1_000, 3_000);
+    // fix-sso-e2e-remaining-5 TASK-4: 10s poll (microtask-vs-cold-start).
+    const rows = await waitForReplayRow(testStartMs - 1_000, 10_000);
     expect(rows.length).toBeGreaterThanOrEqual(1);
     const row = rows[0];
     const blob = [

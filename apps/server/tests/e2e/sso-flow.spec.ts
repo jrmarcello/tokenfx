@@ -17,14 +17,25 @@
  */
 import { test, expect } from '@playwright/test';
 
+import { e2eOrgId } from '../../lib/e2e/seed-ids';
+
 import { resetStubScenario, setStubScenario } from './helpers/idp-stub-control';
+import { resetSsoInvitesIsolated } from './helpers/sso-invite-isolation';
 
 const BASE_URL = 'http://localhost:3232';
 const STUB_BASE_URL = process.env.IDP_STUB_BASE_URL ?? 'http://localhost:3001';
 
-const seedEmail = (suffix: string) => `e2e-stub-${suffix}@alpha.test`;
+const seedEmail = (suffix: string) => `e2e-stub-${suffix}@e2e-sso.test`;
 
 test.describe('SSO sign-in flow via idp-stub', () => {
+  test.beforeAll(async () => {
+    // fix-sso-e2e-remaining-5 TASK-3 isolation: onboarding.spec.ts +
+    // manager-ui invite-create tests leave NULL-pattern invites in the
+    // DB. Those match every email, so by the time SSO tests run we hit
+    // `rejected-multiple-matches`. Wipe + re-seed exactly the wildcard.
+    await resetSsoInvitesIsolated(e2eOrgId('org-alpha'));
+  });
+
   test.beforeEach(async () => {
     await resetStubScenario({ baseUrl: STUB_BASE_URL });
   });
@@ -65,10 +76,16 @@ test.describe('SSO sign-in flow via idp-stub', () => {
     const sessionCookie = cookies.find((c) => c.name.endsWith('session-token'));
     expect(sessionCookie, 'NextAuth session cookie should be set').toBeDefined();
 
-    // Probe a gated route — /me requires an authenticated session. Use
-    // the page (already cookied) rather than a fresh request fixture so
-    // the session cookie travels with the request.
-    const meResp = await page.goto(`${BASE_URL}/me`);
+    // Probe a gated route — /me/visibility requires an authenticated
+    // session. Use the page (already cookied) rather than a fresh
+    // request fixture so the session cookie travels with the request.
+    //
+    // fix-sso-e2e-remaining-5 TASK-3: original test pointed at `/me`,
+    // which has no `page.tsx` (only `/me/visibility/page.tsx` does), so
+    // the assertion `< 400` failed against the not-found page's 404.
+    // The auth gate at `auth.config.ts:authorized()` treats `/me/*` the
+    // same — `/me/visibility` exercises the same gate AND renders.
+    const meResp = await page.goto(`${BASE_URL}/me/visibility`);
     expect(meResp?.status() ?? 0).toBeLessThan(400);
   });
 

@@ -39,7 +39,9 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import bcrypt from 'bcrypt';
 import { closeDb, getDb } from '@/lib/db/client';
 import {
+  authEventLog,
   modelBreakdownAgg,
+  onboardingInvites,
   orgs,
   sessionsAgg,
   teams,
@@ -397,6 +399,64 @@ const seedE2e = async (): Promise<void> => {
 
     sessionCount += 1;
   }
+
+  // fix-sso-e2e-remaining-5 TASK-3: wildcard invite for *@e2e-sso.test
+  // so SSO tests that auto-provision through `evaluateAutoProvision`
+  // (sso-flow TC-E2E-01, sso-nonce-replay TC-E2E-02) find an active
+  // pattern match. The domain is deliberately `e2e-sso.test` (NOT
+  // `alpha.test`) to avoid collision with manager-ui invite-create tests
+  // that seed `*@alpha.test` patterns — without this isolation, SSO
+  // tests in the combined Playwright run hit `rejected-multiple-matches`
+  // (4 candidate invites matching `e2e-sso-new@alpha.test`).
+  //
+  // Maps to Alpha org for the existing manager UI fixtures. TASK-1 also
+  // verified this row does NOT cause the "30-test bypass regression"
+  // the previous session attributed to it — that was port 3232 collision,
+  // fixed in `waitForDevServerReady`.
+  const alphaOrgId = stableUuid(`org:org-alpha`);
+  const wildcardToken = createHash('sha256')
+    .update('e2e:wildcard-invite:e2e-sso')
+    .digest('hex');
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  await db
+    .insert(onboardingInvites)
+    .values({
+      token: wildcardToken,
+      orgId: alphaOrgId,
+      teamId: null,
+      emailPattern: '*@e2e-sso.test',
+      maxUses: 100,
+      usedCount: 0,
+      expiresAt,
+      allowedSsoProviders: ['okta'],
+    })
+    .onConflictDoNothing();
+  process.stdout.write(
+    `[seed-e2e] wildcard invite: *@e2e-sso.test token_prefix=${wildcardToken.slice(0, 8)}\n`,
+  );
+
+  // fix-sso-e2e-remaining-5: seed a single accepted-sso-auto audit-log
+  // row for alice@alpha.test so manager-ui TC-E2E-04 (audit-log filters
+  // update visible rows) has at least one row to render after applying
+  // the outcome filter. The `loadAuditLogPage` query joins by
+  // `email_hash IN (peppered hashes of users in org)`, so the row's
+  // email_hash must be peppered from a real Alpha-org user email.
+  const { hashEmail } = await import('@/lib/auth/email-hash');
+  const aliceEmailHash = hashEmail('alice@alpha.test');
+  await db
+    .insert(authEventLog)
+    .values({
+      ssoProvider: 'okta',
+      iss: 'https://e2e-stub-issuer.example',
+      emailHash: aliceEmailHash,
+      ssoSubjectHash: hashEmail('sso-subject:e2e-seed-sub-001'),
+      ip: '203.0.113.1',
+      city: null,
+      userAgent: 'e2e-seed/1.0',
+      outcome: 'accepted-sso-auto',
+    })
+    .onConflictDoNothing();
+  process.stdout.write(`[seed-e2e] audit-log: 1 accepted-sso-auto row for alice@alpha.test\n`);
 
   process.stdout.write(
     `[seed-e2e] orgs=${orgCount} teams=${teamCount} users=${userCount} machines=${machineCount} sessions=${sessionCount}\n`,

@@ -44,6 +44,53 @@ describe('isStateReplayAuthError', () => {
   it('returns false for a non-object value', () => {
     expect(isStateReplayAuthError('InvalidCheck' as unknown)).toBe(false);
   });
+
+  // fix-sso-e2e-remaining-5 TASK-4: Auth.js v5 + openid-client v6 wrap
+  // the underlying error in `CallbackRouteError → { err, ... } →
+  // OperationProcessingError`. The widened predicate must:
+  //   - DETECT OperationProcessingError with state/nonce/PKCE messages
+  //     (positive cases below)
+  //   - REJECT OperationProcessingError with unrelated messages — the
+  //     prior `(unexpected|missing).*` regex would have matched any
+  //     OPE message containing `"state"` substring anywhere, emitting
+  //     spurious `rejected-replay` audit rows. Self-review fix.
+
+  it('detects OperationProcessingError wrapped in CallbackRouteError → { err }', () => {
+    const inner = { name: 'OperationProcessingError', message: 'unexpected "state" response parameter value' };
+    const wrapped = { name: 'CallbackRouteError', type: 'CallbackRouteError', cause: { err: inner } };
+    expect(isStateReplayAuthError(wrapped)).toBe(true);
+  });
+
+  it('detects OperationProcessingError for nonce mismatch', () => {
+    const err = { name: 'OperationProcessingError', message: 'unexpected "nonce" response parameter value' };
+    expect(isStateReplayAuthError(err)).toBe(true);
+  });
+
+  it('detects OperationProcessingError for missing state', () => {
+    const err = { name: 'OperationProcessingError', message: 'missing "state" response parameter' };
+    expect(isStateReplayAuthError(err)).toBe(true);
+  });
+
+  it('returns FALSE for OperationProcessingError with unrelated message (regex tightness)', () => {
+    // Regression lock against the broad `.*` regex that would have
+    // matched any OPE message — e.g. token-exchange failures.
+    const err = { name: 'OperationProcessingError', message: 'unexpected response status 500' };
+    expect(isStateReplayAuthError(err)).toBe(false);
+  });
+
+  it('returns FALSE for OperationProcessingError with unrelated text mentioning state elsewhere', () => {
+    const err = { name: 'OperationProcessingError', message: 'failed to refresh state cache' };
+    expect(isStateReplayAuthError(err)).toBe(false);
+  });
+
+  it('stops cause-chain walking at depth 8 (no infinite recursion on cyclic cause)', () => {
+    const cyclic: { name: string; message: string; cause?: unknown } = {
+      name: 'X',
+      message: 'irrelevant',
+    };
+    cyclic.cause = cyclic;
+    expect(isStateReplayAuthError(cyclic)).toBe(false);
+  });
 });
 
 describe('deriveSsoProviderFromCallbackPath', () => {

@@ -55,12 +55,65 @@ const CALLBACK_PATH_RE = /^\/api\/auth\/callback\/([a-z-]+)$/;
  * of `instanceof InvalidCheck`) avoids importing from `@auth/core`
  * internals — public surface is more stable than the class identity.
  */
-export const isStateReplayAuthError = (
-  err: unknown,
-): err is { type: 'InvalidCheck' } => {
+/**
+ * Match the openid-client v6 `OperationProcessingError` codes that
+ * correspond to state / nonce / PKCE check failures. Auth.js v5 wraps
+ * these inside `CallbackRouteError`, so the predicate below walks the
+ * cause chain (including the `.err` field that Auth.js uses to attach
+ * the underlying openid-client error).
+ *
+ * Message shapes observed in TASK-4 diagnostic dumps against openid-client
+ * v6 source (`src/lib/oauth/process_response.ts`) and the JWT-nonce
+ * validation path:
+ *   - `unexpected "state" response parameter value` — state mismatch
+ *   - `unexpected "nonce" response parameter value` — nonce mismatch
+ *   - `missing "state" response parameter` / `missing "nonce" ...` — missing
+ *   - JWT `"nonce"` claim mismatch (validated path variations)
+ *   - `state value could not be parsed` — Auth.js v4-style state-parse failure
+ *
+ * False-positive guard: the regex REQUIRES the parameter name to appear
+ * between literal double quotes (`"state"` / `"nonce"` / `"code_verifier"`
+ * / `"PKCE"`). Generic `OperationProcessingError` messages like
+ * `unexpected response status 500` lack the quoted parameter and do NOT
+ * match (verified by negative test cases in replay-detector.test.ts).
+ * The `.*` separator between verb and quoted parameter is intentional —
+ * it accommodates message variants like `JWT "nonce" claim mismatch`
+ * where extra context sits between the verb and the parameter.
+ */
+const REPLAY_MESSAGE_RE = /(unexpected|missing).*"(state|nonce|code_verifier|PKCE)"|state value could not be parsed|nonce.*mismatch|invalid (state|nonce|PKCE)/i;
+
+const matchesReplay = (err: unknown): boolean => {
   if (err === null || typeof err !== 'object') return false;
-  const type = (err as { type?: unknown }).type;
-  return type === 'InvalidCheck';
+  const e = err as { type?: unknown; name?: unknown; message?: unknown };
+  // Legacy direct InvalidCheck (Auth.js's own typed error, kept for
+  // forward compatibility in case future versions stop wrapping).
+  if (e.type === 'InvalidCheck') return true;
+  // openid-client v6's OperationProcessingError carries the actual
+  // state/nonce/PKCE diagnostics via its `message` field.
+  if (e.name === 'OperationProcessingError' && typeof e.message === 'string') {
+    return REPLAY_MESSAGE_RE.test(e.message);
+  }
+  return false;
+};
+
+export const isStateReplayAuthError = (err: unknown): boolean => {
+  // fix-sso-e2e-remaining-5 TASK-4: Auth.js v5 + openid-client v6 wraps
+  // the underlying state/nonce/PKCE failure inside a chain:
+  //   CallbackRouteError → { err, expected, parameters, provider } → OperationProcessingError
+  // We walk both `.cause` AND `.err` so any of the wrappers surfaces
+  // the replay-detection signal. Bounded recursion (depth 8) defends
+  // against pathological cycles.
+  let cursor: unknown = err;
+  let depth = 8;
+  while (cursor && typeof cursor === 'object' && depth > 0) {
+    if (matchesReplay(cursor)) return true;
+    const e = cursor as { cause?: unknown; err?: unknown };
+    const next = e.cause ?? e.err;
+    if (next === cursor) break;
+    cursor = next;
+    depth -= 1;
+  }
+  return false;
 };
 
 /**
