@@ -170,6 +170,9 @@ importers:
       '@playwright/test':
         specifier: ^1.59.0
         version: 1.59.1
+      '@tailwindcss/postcss':
+        specifier: ^4.0.0
+        version: 4.2.2
       '@testcontainers/postgresql':
         specifier: ^10.0.0
         version: 10.28.0

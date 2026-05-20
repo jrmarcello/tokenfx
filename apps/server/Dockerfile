@@ -153,7 +153,7 @@ ENV NODE_ENV=production \
 COPY --from=builder --chown=tokenfx-server:tokenfx-server \
      /repo/apps/server/.next/standalone/ ./
 COPY --from=builder --chown=tokenfx-server:tokenfx-server \
-     /repo/apps/server/.next/static ./apps/server/.next/static
+     /repo/apps/server/.next/static ./.next/static
 
 # Drizzle migrations: migrate.ts loads them from disk via the drizzle
 # migrator; the compiled migrate.js (commonjs) resolves paths relative

@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+/*
+ * Tailwind v4 dark-mode variant. Components throughout apps/server use the
+ * `dark:` prefix (e.g. `dark:bg-neutral-900`) — without this declaration
+ * those utilities never emit. Mirrors the root app's `app/globals.css`.
+ */
+@custom-variant dark (&:is(.dark, .dark *));
