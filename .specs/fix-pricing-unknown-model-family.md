@@ -1,6 +1,6 @@
 # Spec: fix-pricing-unknown-model-family
 
-## Status: DONE (pending commit)
+## Status: DONE
 
 ## Context
 
