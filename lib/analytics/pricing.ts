@@ -1,3 +1,8 @@
+// Relative import (not '@/lib/logger'): this module is consumed by
+// apps/server via '@root/analytics/*', whose tsconfig maps '@/' to its own
+// tree — a root-alias import would break the server typecheck.
+import { log } from '../logger';
+
 export type ModelPricing = {
   input: number; // $ per 1M tokens
   output: number; // $ per 1M tokens
@@ -16,7 +21,7 @@ export type ModelPricing = {
  * is fragile (the markup is not a stable contract). The practical path is:
  * a quick manual audit every ~30–60 days + this staleness check.
  */
-export const PRICING_LAST_UPDATED = '2026-04-18';
+export const PRICING_LAST_UPDATED = '2026-07-11';
 export const STALE_THRESHOLD_DAYS = 90;
 
 /**
@@ -53,7 +58,21 @@ const HAIKU: ModelPricing = {
   cacheCreation1h: 2,
 };
 
+/**
+ * Claude 5 family (Fable / Mythos). Source: official Anthropic model
+ * pricing table (cached 2026-06-24). Audited 2026-07-11.
+ */
+const CLAUDE5: ModelPricing = {
+  input: 10,
+  output: 50,
+  cacheRead: 1.0,
+  cacheCreation5m: 12.5,
+  cacheCreation1h: 20,
+};
+
 export const PRICING: Record<string, ModelPricing> = {
+  "claude-fable-5": CLAUDE5,
+  "claude-mythos-5": CLAUDE5,
   "claude-opus-4-1": OPUS,
   "claude-opus-4-7": OPUS,
   "claude-sonnet-4-5": SONNET,
@@ -83,11 +102,14 @@ function normalizeModel(model: string): string {
  * previously shipped bug where 22k+ `claude-opus-4-6` turns were
  * recorded at zero cost).
  */
-const FAMILY_PATTERN = /^claude-(opus|sonnet|haiku)\b/;
-const FAMILY_PRICING: Record<'opus' | 'sonnet' | 'haiku', ModelPricing> = {
+type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'mythos';
+const FAMILY_PATTERN = /^claude-(opus|sonnet|haiku|fable|mythos)\b/;
+const FAMILY_PRICING: Record<ModelFamily, ModelPricing> = {
   opus: OPUS,
   sonnet: SONNET,
   haiku: HAIKU,
+  fable: CLAUDE5,
+  mythos: CLAUDE5,
 };
 
 export function getPricing(model: string): ModelPricing | null {
@@ -102,9 +124,36 @@ export function getPricing(model: string): ModelPricing | null {
   // (e.g. claude-opus-4-8) as long as Anthropic keeps family pricing stable.
   const familyMatch = FAMILY_PATTERN.exec(key);
   if (familyMatch) {
-    return FAMILY_PRICING[familyMatch[1] as 'opus' | 'sonnet' | 'haiku'];
+    return FAMILY_PRICING[familyMatch[1] as ModelFamily];
   }
   return null;
+}
+
+// Cardinality is implicitly small — a handful of model families exist,
+// so this Set stays tiny even across long ingest runs.
+const warnedUnknownModels = new Set<string>();
+
+/**
+ * Warn (once per normalized model) when a model has no pricing — otherwise
+ * its turns silently accumulate at $0 cost.
+ */
+export function warnIfUnknownModel(
+  model: string,
+  ctx: { sessionId: string; turnId: string }
+): void {
+  if (getPricing(model) !== null) return;
+  const key = normalizeModel(model);
+  if (warnedUnknownModels.has(key)) return;
+  warnedUnknownModels.add(key);
+  log.warn(
+    `[pricing] unknown model '${model}' — costs will be recorded as $0`,
+    { model, sessionId: ctx.sessionId, turnId: ctx.turnId }
+  );
+}
+
+/** Test seam: clear the once-per-model warning memory. */
+export function __resetUnknownModelWarnings(): void {
+  warnedUnknownModels.clear();
 }
 
 /**

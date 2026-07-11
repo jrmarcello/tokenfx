@@ -207,6 +207,8 @@ type TurnRow = {
   output_tokens: number;
   cache_read_tokens: number;
   cache_creation_tokens: number;
+  cache_creation_5m_tokens: number;
+  cache_creation_1h_tokens: number;
   cost_usd: number;
 };
 
@@ -217,7 +219,8 @@ const recomputeTurnsDefault = (
   const db = getDb();
 
   const baseSelectCols = `t.id, t.session_id, t.model, t.input_tokens,
-    t.output_tokens, t.cache_read_tokens, t.cache_creation_tokens, t.cost_usd`;
+    t.output_tokens, t.cache_read_tokens, t.cache_creation_tokens,
+    t.cache_creation_5m_tokens, t.cache_creation_1h_tokens, t.cost_usd`;
 
   const rows: TurnRow[] =
     scope.kind === 'all'
@@ -270,12 +273,22 @@ const recomputeTurnsDefault = (
 
   const runRecompute = (): void => {
     for (const r of rows) {
+      // Prefer the split 5m/1h cache-creation buckets when present (1h bills
+      // at 2x vs 1.25x for 5m — computeCost's REQ-12 priority rule); fall back
+      // to the legacy aggregate (treated as 100% 5m) only when no split data.
+      const hasSplit =
+        r.cache_creation_5m_tokens > 0 || r.cache_creation_1h_tokens > 0;
       const newCost = computeCost({
         model: r.model,
         inputTokens: r.input_tokens,
         outputTokens: r.output_tokens,
         cacheReadTokens: r.cache_read_tokens,
-        cacheCreationTokens: r.cache_creation_tokens,
+        ...(hasSplit
+          ? {
+              cacheCreation5mTokens: r.cache_creation_5m_tokens,
+              cacheCreation1hTokens: r.cache_creation_1h_tokens,
+            }
+          : { cacheCreationTokens: r.cache_creation_tokens }),
       });
       const rounded = Math.round(newCost * 1e6) / 1e6;
       if (r.cost_usd === 0) zeroedBefore += 1;

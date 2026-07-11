@@ -18,6 +18,8 @@ import type {
   ParsedSession,
 } from './transcript/types';
 import type { OtelScrape } from './otel/parser';
+import { __resetUnknownModelWarnings } from '@/lib/analytics/pricing';
+import { log } from '@/lib/logger';
 
 // ---- subagent-inflation fixture helpers (TASK-2 of fix-ingest-skip-subagent-jsonls) ----
 //
@@ -217,6 +219,47 @@ describe('writer', () => {
 
   afterEach(() => {
     db.close();
+  });
+
+  it('warns exactly once with first-seen session/turn ids when ingesting turns of an unknown model family, still writing zero-cost rows', () => {
+    __resetUnknownModelWarnings();
+    // Stub lifecycle kept inline (try/finally) because only this one test
+    // in the suite needs the warn capture; hoist to beforeEach/afterEach if
+    // a second warn-dependent test is ever added.
+    const warnings: Array<{ msg: unknown; meta: unknown }> = [];
+    const originalWarn = log.warn;
+    log.warn = (...a: unknown[]): void => {
+      warnings.push({ msg: a[0], meta: a[1] });
+    };
+    try {
+      const first = makeSession({ id: 'sess-unknown-1' });
+      for (const turn of first.turns) turn.model = 'claude-newfamily-6';
+      const second = makeSession({ id: 'sess-unknown-2' });
+      for (const turn of second.turns) turn.model = 'claude-newfamily-6';
+      second.turns.forEach((turn, i) => {
+        turn.id = `b${i + 1}`;
+      });
+
+      writeSession(db, first, '/tmp/unknown-1.jsonl');
+      writeSession(db, second, '/tmp/unknown-2.jsonl');
+
+      const costs = db
+        .prepare('SELECT cost_usd FROM turns')
+        .all() as Array<{ cost_usd: number }>;
+      expect(costs).toHaveLength(6);
+      expect(costs.every((row) => row.cost_usd === 0)).toBe(true);
+
+      expect(warnings).toHaveLength(1);
+      expect(String(warnings[0].msg)).toContain('claude-newfamily-6');
+      expect(warnings[0].meta).toMatchObject({
+        model: 'claude-newfamily-6',
+        sessionId: 'sess-unknown-1',
+        turnId: 'a1',
+      });
+    } finally {
+      log.warn = originalWarn;
+      __resetUnknownModelWarnings();
+    }
   });
 
   it('TC-I-WRITER-01: writes a session with turns and tool calls', () => {

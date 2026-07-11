@@ -375,3 +375,141 @@ describe("pricing", () => {
     });
   });
 });
+
+// --- TASK-1: Claude 5 pricing, fable/mythos families, warnIfUnknownModel ---
+import { afterEach, beforeEach } from "vitest";
+import {
+  PRICING_LAST_UPDATED,
+  getPricingAgeDays,
+  warnIfUnknownModel,
+  __resetUnknownModelWarnings,
+} from "./pricing";
+import { log } from "@/lib/logger";
+
+describe("Claude 5 pricing (fable/mythos)", () => {
+  const CLAUDE5 = {
+    input: 10,
+    output: 50,
+    cacheRead: 1.0,
+    cacheCreation5m: 12.5,
+    cacheCreation1h: 20,
+  };
+
+  it.each([
+    ["claude-fable-5"],
+    ["claude-mythos-5"],
+    ["claude-fable-5-20260601"],
+    ["claude-fable-5[1m]"],
+    ["Claude-Fable-5"],
+  ])("resolves %s to Claude 5 pricing", (model) => {
+    expect(getPricing(model)).toEqual(CLAUDE5);
+  });
+
+  it.each([["claude-fable-6"], ["claude-mythos-7-2"]])(
+    "family fallback maps %s to Claude 5 pricing",
+    (model) => {
+      expect(getPricing(model)).toEqual(CLAUDE5);
+    }
+  );
+
+  it.each([["claude-fabled-5"], ["claude-mythosx-6"]])(
+    "near-miss family prefix %s does NOT match",
+    (model) => {
+      expect(getPricing(model)).toBeNull();
+    }
+  );
+
+  it.each([
+    ["claude-opus-4-8", 15, 75],
+    ["claude-sonnet-5", 3, 15],
+    ["claude-haiku-4-5", 1, 5],
+  ])("no regression: %s keeps its family pricing", (model, input, output) => {
+    const p = getPricing(model);
+    expect(p?.input).toBe(input);
+    expect(p?.output).toBe(output);
+  });
+
+  it.each([["claude-newfamily-6"], [""]])(
+    "returns null for %j",
+    (model) => {
+      expect(getPricing(model)).toBeNull();
+    }
+  );
+
+  it("computeCost for fable 1M of each component → 73.5", () => {
+    // 10 + 50 + 1 + 12.5 = 73.5
+    expect(
+      computeCost({
+        model: "claude-fable-5",
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        cacheReadTokens: 1_000_000,
+        cacheCreation5mTokens: 1_000_000,
+      })
+    ).toBeCloseTo(73.5, 6);
+  });
+});
+
+describe("warnIfUnknownModel", () => {
+  const originalWarn = log.warn;
+  let warnings: unknown[][] = [];
+
+  beforeEach(() => {
+    __resetUnknownModelWarnings();
+    warnings = [];
+    log.warn = (...a: unknown[]): void => {
+      warnings.push(a);
+    };
+  });
+
+  afterEach(() => {
+    log.warn = originalWarn;
+  });
+
+  const ctx = { sessionId: "sess-1", turnId: "turn-1" };
+
+  it("warns exactly once for repeated unknown model (incl. date-suffix variant)", () => {
+    warnIfUnknownModel("claude-zzz-9", ctx);
+    warnIfUnknownModel("claude-zzz-9", { sessionId: "sess-2", turnId: "turn-2" });
+    warnIfUnknownModel("claude-zzz-9-20260101", ctx);
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0]?.[0])).toContain("claude-zzz-9");
+    expect(warnings[0]?.[1]).toMatchObject({
+      model: "claude-zzz-9",
+      sessionId: "sess-1",
+      turnId: "turn-1",
+    });
+  });
+
+  it("warns once per distinct unknown model", () => {
+    warnIfUnknownModel("claude-zzz-9", ctx);
+    warnIfUnknownModel("claude-qqq-3", ctx);
+    expect(warnings).toHaveLength(2);
+  });
+
+  it("does not warn for known models", () => {
+    warnIfUnknownModel("claude-fable-5", ctx);
+    warnIfUnknownModel("claude-opus-4-8", ctx);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("warns again after __resetUnknownModelWarnings()", () => {
+    warnIfUnknownModel("claude-zzz-9", ctx);
+    __resetUnknownModelWarnings();
+    warnIfUnknownModel("claude-zzz-9", ctx);
+    expect(warnings).toHaveLength(2);
+  });
+});
+
+describe("pricing staleness metadata", () => {
+  it("PRICING_LAST_UPDATED is 2026-07-11", () => {
+    expect(PRICING_LAST_UPDATED).toBe("2026-07-11");
+  });
+
+  // Explicit `now` param preferred over vi.setSystemTime(): no global timer
+  // state to leak, and it exercises the same code path.
+  it("getPricingAgeDays computes exact day delta from an explicit now", () => {
+    const now = Date.parse("2026-07-21") + 3_600_000; // 10 days + 1h later
+    expect(getPricingAgeDays(now)).toBe(10);
+  });
+});

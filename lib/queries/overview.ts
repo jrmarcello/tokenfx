@@ -115,8 +115,12 @@ function getPrepared(db: DB): PreparedSet {
     tokensSince: db.prepare(
       'SELECT COALESCE(SUM(total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens), 0) AS v FROM sessions WHERE started_at >= ?'
     ),
+    // Cache-hit formula: read / (input + read + creation). Source of truth is
+    // the `session_effectiveness` view in lib/db/schema.sql — keep the two in
+    // sync (including cache-creation writes in the denominator matches the
+    // "% de tokens reaproveitados" mental model).
     cacheRatioSince: db.prepare(
-      'SELECT COALESCE(CAST(SUM(total_cache_read_tokens) AS REAL) / NULLIF(SUM(total_input_tokens + total_cache_read_tokens), 0), 0) AS v FROM sessions WHERE started_at >= ?'
+      'SELECT COALESCE(CAST(SUM(total_cache_read_tokens) AS REAL) / NULLIF(SUM(total_input_tokens + total_cache_read_tokens + total_cache_creation_tokens), 0), 0) AS v FROM sessions WHERE started_at >= ?'
     ),
     sessionCountSince: db.prepare(
       'SELECT COUNT(*) AS v FROM sessions WHERE started_at >= ?'

@@ -136,11 +136,12 @@ describe('overview queries', () => {
       expect(kpis.tokens30d).toBe(expected);
     });
 
-    it('getOverviewKpis: cacheHitRatio30d computed from cacheRead / (input + cacheRead)', () => {
+    it('getOverviewKpis: cacheHitRatio30d computed from cacheRead / (input + cacheRead + cacheCreation)', () => {
       const kpis = getOverviewKpis(db);
       const sumCache = 2000 + 1500 + 1000;
       const sumInput = 1000 + 500 + 800;
-      const expected = sumCache / (sumInput + sumCache);
+      const sumCreation = 100 + 50 + 200;
+      const expected = sumCache / (sumInput + sumCache + sumCreation);
       expect(kpis.cacheHitRatio30d).toBeCloseTo(expected, 8);
       expect(kpis.cacheHitRatio30d).toBeGreaterThan(0);
       expect(kpis.cacheHitRatio30d).toBeLessThanOrEqual(1);
@@ -306,6 +307,69 @@ describe('overview queries', () => {
       const key = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
       const point = series.find((p) => p.date === key);
       expect(point?.spend).toBeCloseTo(8.0 + 2.0, 5);
+    });
+  });
+
+  // REQ-5 (fix-pricing-unknown-model-family): the home KPI's cache-hit formula
+  // must mirror the session_effectiveness view — read/(input+read+creation).
+  describe('cache hit ratio parity with session_effectiveness view', () => {
+    type ViewRow = { cache_hit_ratio: number | null };
+
+    // TC-I-07 (happy): sessions with cache_creation > 0 — ratio includes
+    // creation in the denominator and equals the view's value for a
+    // single-session fixture.
+    it('TC-I-07: cacheHitRatio30d = read/(input+read+creation), matching the view', () => {
+      insertSession(db, {
+        id: 'cc1',
+        startedAt: now - 1 * DAY_MS,
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheReadTokens: 3000,
+        cacheCreationTokens: 2000,
+      });
+
+      const kpis = getOverviewKpis(db);
+      const expected = 3000 / (1000 + 3000 + 2000);
+      expect(kpis.cacheHitRatio30d).toBeCloseTo(expected, 8);
+
+      // Cross-check against the schema.sql source-of-truth view directly.
+      const viewRow = db
+        .prepare('SELECT cache_hit_ratio FROM session_effectiveness WHERE id = ?')
+        .get('cc1') as ViewRow | undefined;
+      expect(viewRow?.cache_hit_ratio).not.toBeNull();
+      expect(kpis.cacheHitRatio30d).toBeCloseTo(viewRow?.cache_hit_ratio ?? -1, 8);
+    });
+
+    // TC-I-08 (edge): all-zero tokens → ratio 0 without a division-by-zero
+    // error; partial case creation=0/input>0 still matches the view formula.
+    it('TC-I-08: all-zero tokens yield ratio 0; creation=0 partial case matches view', () => {
+      insertSession(db, {
+        id: 'zero',
+        startedAt: now - 1 * DAY_MS,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      });
+      expect(getOverviewKpis(db).cacheHitRatio30d).toBe(0);
+
+      insertSession(db, {
+        id: 'partial',
+        startedAt: now - 2 * DAY_MS,
+        inputTokens: 400,
+        outputTokens: 100,
+        cacheReadTokens: 600,
+        cacheCreationTokens: 0,
+      });
+      const kpis = getOverviewKpis(db);
+      // Zero-token session contributes 0 to numerator and denominator.
+      const expected = 600 / (400 + 600 + 0);
+      expect(kpis.cacheHitRatio30d).toBeCloseTo(expected, 8);
+
+      const viewRow = db
+        .prepare('SELECT cache_hit_ratio FROM session_effectiveness WHERE id = ?')
+        .get('partial') as ViewRow | undefined;
+      expect(kpis.cacheHitRatio30d).toBeCloseTo(viewRow?.cache_hit_ratio ?? -1, 8);
     });
   });
 

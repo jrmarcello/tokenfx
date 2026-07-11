@@ -1,3 +1,5 @@
+import { cache } from 'react';
+import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { getDb } from '@/lib/db/client';
 import { ensureFreshIngest } from '@/lib/ingest/auto';
@@ -23,6 +25,31 @@ import {
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+// Deduplicates the existence lookup between generateMetadata and the page
+// body within a single request (React per-request cache).
+const getCachedSession = cache((id: string) => getSession(getDb(), id));
+
+/**
+ * Existence check BEFORE streaming: with a loading.tsx in this segment, Next
+ * streams the shell with HTTP 200 before the body runs, so a notFound() in
+ * the body becomes a soft-404. generateMetadata runs before the response
+ * status is committed, making the 404 a real HTTP 404 (REQ-6).
+ */
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}): Promise<Metadata> {
+  const { id } = await params;
+  // Required: a brand-new session may not be ingested yet — without this a
+  // fresh session would false-404. Coalesced via the in-flight promise in
+  // lib/ingest/auto.ts, so the body's call below is effectively free.
+  await ensureFreshIngest();
+  const session = getCachedSession(id);
+  if (!session) notFound();
+  return { title: `${session.project} — TokenFx` };
+}
+
 export default async function SessionPage({
   params,
 }: {
@@ -31,7 +58,9 @@ export default async function SessionPage({
   const { id } = await params;
   await ensureFreshIngest();
   const db = getDb();
-  const session = getSession(db, id);
+  // Defense in depth: generateMetadata already 404s pre-streaming; the cache
+  // makes this a no-op re-read within the same request.
+  const session = getCachedSession(id);
   if (!session) notFound();
   const turns = getTurns(db, id);
   const otel = getSessionOtelStats(db, id);

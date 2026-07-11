@@ -8,7 +8,7 @@ import {
 import type { ParsedSession } from '@/lib/ingest/transcript/types';
 import { fetchAndParse, type OtelScrape } from '@/lib/ingest/otel/parser';
 import { reconcileSession } from '@/lib/ingest/reconcile';
-import { computeCost } from '@/lib/analytics/pricing';
+import { computeCost, warnIfUnknownModel } from '@/lib/analytics/pricing';
 import {
   getOtelCostBySession,
   getOtelCostForSession,
@@ -213,6 +213,9 @@ export function writeSession(
   let toolCallCount = 0;
 
   const turnRows = parsed.turns.map((t, idx) => {
+    // Unknown model family → computeCost records $0. Surface it (once per
+    // model per process) instead of letting zero-cost turns pile up silently.
+    warnIfUnknownModel(t.model, { sessionId: parsed.id, turnId: t.id });
     const cost = computeCost({
       model: t.model,
       inputTokens: t.inputTokens,

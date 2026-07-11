@@ -112,6 +112,88 @@ describe('recomputeCosts', () => {
     delete process.env.DASHBOARD_DB_PATH;
   });
 
+  it('reprices historical zero-cost turns of a newly-priced family (claude-fable-5)', () => {
+    const db = openDatabase(dbPath);
+    seedSession(db, 'sess-fable', { total_cost_usd: 0 });
+    db.prepare(
+      `INSERT INTO turns (
+         id, session_id, sequence, timestamp, model,
+         input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+         cost_usd
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('t-fable', 'sess-fable', 0, 1_700_000_005_000, 'claude-fable-5', 1_000_000, 1_000_000, 0, 0, 0);
+    db.close();
+
+    const summary = recomputeCosts({ mode: 'default', scope: { kind: 'all' }, dryRun: false });
+    expect(summary.mode === 'default' && summary.updated).toBe(1);
+
+    const verify = openDatabase(dbPath);
+    const turn = verify
+      .prepare('SELECT cost_usd FROM turns WHERE id = ?')
+      .get('t-fable') as { cost_usd: number };
+    // 1M input @ $10 + 1M output @ $50 = $60
+    expect(turn.cost_usd).toBeCloseTo(60, 6);
+    const session = verify
+      .prepare('SELECT total_cost_usd FROM sessions WHERE id = ?')
+      .get('sess-fable') as { total_cost_usd: number };
+    expect(session.total_cost_usd).toBeCloseTo(60, 6);
+    verify.close();
+  });
+
+  it('leaves turns of a still-unknown family at zero cost without throwing', () => {
+    const db = openDatabase(dbPath);
+    seedSession(db, 'sess-unknown', { total_cost_usd: 0 });
+    db.prepare(
+      `INSERT INTO turns (
+         id, session_id, sequence, timestamp, model,
+         input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+         cost_usd
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('t-unknown', 'sess-unknown', 0, 1_700_000_005_000, 'claude-newfamily-6', 1_000_000, 1_000_000, 0, 0, 0);
+    db.close();
+
+    expect(() =>
+      recomputeCosts({ mode: 'default', scope: { kind: 'all' }, dryRun: false }),
+    ).not.toThrow();
+
+    const verify = openDatabase(dbPath);
+    const turn = verify
+      .prepare('SELECT cost_usd FROM turns WHERE id = ?')
+      .get('t-unknown') as { cost_usd: number };
+    expect(turn.cost_usd).toBe(0);
+    verify.close();
+  });
+
+  it('uses split cache-creation buckets (1h at 2x) instead of treating the legacy aggregate as all-5m', () => {
+    const db = openDatabase(dbPath);
+    seedSession(db, 'sess-split', { total_cost_usd: 0 });
+    db.prepare(
+      `INSERT INTO turns (
+         id, session_id, sequence, timestamp, model,
+         input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+         cache_creation_5m_tokens, cache_creation_1h_tokens, cost_usd
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      't-split', 'sess-split', 0, 1_700_000_005_000, 'claude-fable-5',
+      0, 0, 0,
+      1_000_000, // legacy aggregate mirrors the split sum
+      0, 1_000_000, // all of it is 1h-TTL cache creation
+      0,
+    );
+    db.close();
+
+    recomputeCosts({ mode: 'default', scope: { kind: 'all' }, dryRun: false });
+
+    const verify = openDatabase(dbPath);
+    const turn = verify
+      .prepare('SELECT cost_usd FROM turns WHERE id = ?')
+      .get('t-split') as { cost_usd: number };
+    // 1M 1h-cache-creation @ $20 (2x input) — NOT $12.50 (the 5m rate the
+    // legacy aggregate path would apply).
+    expect(turn.cost_usd).toBeCloseTo(20, 6);
+    verify.close();
+  });
+
   // TC-I-11 — happy, default (no --prefer-otel)
   it('recomputes turns.cost_usd and leaves total_cost_usd_otel untouched when flag absent', () => {
     const db = openDatabase(dbPath);
