@@ -244,10 +244,18 @@ export const onboardingAuditActionEnum = pgEnum('onboarding_audit_action', [
 // `created_by` is NULLABLE (ON DELETE SET NULL) so deleting a manager preserves
 // the historical row (audit invariant). `team_id` is NULLABLE; deleting a team
 // SET NULLs the column rather than cascading the invite.
+//
+// security-hardening-lowsev (REQ-1): the invite token is stored HASHED at rest.
+// `token_hash` (PK) holds `sha256(plaintext)` — the plaintext bearer token is
+// never persisted (a read-only DB leak no longer exposes usable credentials).
+// `token_prefix` holds the first 8 chars of the PLAINTEXT for UI/audit
+// correlation (it matches `onboarding_redemption_log.token_prefix`, which is
+// derived from the plaintext at redeem time). See `lib/auth/tokens.ts`.
 export const onboardingInvites = pgTable(
   'onboarding_invites',
   {
-    token: text('token').primaryKey(),
+    tokenHash: text('token_hash').primaryKey(),
+    tokenPrefix: text('token_prefix').notNull(),
     orgId: uuid('org_id')
       .notNull()
       .references(() => orgs.id, { onDelete: 'cascade' }),
@@ -271,10 +279,12 @@ export const onboardingInvites = pgTable(
   (t) => ({
     maxUsesCheck: check('max_uses_positive', sql`${t.maxUses} >= 1`),
     orgCreatedIdx: index('idx_onboarding_invites_org_created').on(t.orgId, t.createdAt),
-    // Functional expression index — supports the 8-char-prefix lookup for the
-    // revoke flow (REQ-19). Drizzle's `index().on(sql\`...\`)` emits the raw
-    // SQL `CREATE INDEX ... ON onboarding_invites (left(token, 8))`.
-    prefixIdx: index('idx_onboarding_invites_prefix').on(sql`left(${t.token}, 8)`),
+    // Supports the 8-char-prefix lookup for the revoke flow (REQ-19). Since
+    // security-hardening-lowsev (REQ-1) the plaintext prefix is a physical
+    // column (`token_prefix`), so the index is a plain column index rather than
+    // the old functional expression `left(token, 8)` (which now hashes to the
+    // prefix of the digest — meaningless for correlation).
+    prefixIdx: index('idx_onboarding_invites_prefix').on(t.tokenPrefix),
     // central-server-onboarding-v2-sso (REQ-18): invites with an
     // email_pattern (SSO-eligible) MUST expire within 180 days — caps
     // the blast radius of a leaked invite that auto-provisions on first

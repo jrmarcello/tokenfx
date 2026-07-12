@@ -10,13 +10,13 @@
  *            still ingest. Status remains 200.
  *
  * Auth (central-server-onboarding REQ-6): `Authorization: Bearer <secret>`.
- * The server stores `bcrypt(secret)` in `user_machines.secret_hash`. On the
- * first push from a given `key_id` we run `bcrypt.compare` (cost 10, ~25ms)
- * and cache the plaintext secret in process memory with a 60s TTL. Subsequent
- * pushes within the TTL do a constant-time string compare against the cached
- * plaintext and skip bcrypt entirely (the ingest hot-path can sustain
- * thousands of pushes/min/core that way). Cache is per-process — never
- * persisted, never logged.
+ * The server stores `bcrypt(secret)` in `user_machines.secret_hash`. Every
+ * push runs `bcrypt.compare` (cost 10, ~25ms) against that stored hash —
+ * there is no fast path that bypasses bcrypt. A per-process cache holds only
+ * `{ secretHash, expiresAt }` (never the secret itself): it exists solely to
+ * detect hash rotation early (a changed `secretHash` invalidates the stale
+ * entry) and to bound memory via a 60s TTL. See `lib/auth/bearer-auth.ts`
+ * for the verifier. Cache is per-process — never persisted, never logged.
  *
  * Idempotency: per-session SHA-256 hash of canonical JSON. If a row already
  * has the same hash, the item is skipped.
@@ -160,7 +160,8 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
     );
   }
 
-  // bcrypt.compare (with 60s plaintext cache) — central-server-onboarding REQ-6.
+  // bcrypt.compare on every push; cache holds only {secretHash, expiresAt} —
+  // central-server-onboarding REQ-6.
   const credOk = await verifyKeySecret(
     env.data.key_id,
     bearer.value,

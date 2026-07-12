@@ -85,9 +85,11 @@ test.describe('AUTH_REQUIRED=false localhost-only mode', () => {
     });
     expect(response.status()).toBe(403);
     const body = await response.json();
+    // security-hardening-lowsev (REQ-3): error body follows the
+    // `{error:{message,code}}` shape from .claude/rules/security.md
+    // (was a bare `{error:'forbidden',code:'localhost-only'}`).
     expect(body).toMatchObject({
-      error: 'forbidden',
-      code: 'localhost-only',
+      error: { message: 'forbidden', code: 'localhost-only' },
     });
   });
 

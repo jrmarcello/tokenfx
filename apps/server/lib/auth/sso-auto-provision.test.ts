@@ -21,6 +21,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { err, ok, type Result } from '@/lib/result';
+import { hashInviteToken } from '@/lib/auth/tokens';
 import type {
   AuthEventInput,
   AuthEventOutcome,
@@ -80,7 +81,8 @@ const TEST_PEPPER = 'test-pepper';
 const FAKE_INVITE_TOKEN = 'tk0011223344556677889900aabbccddeeff';
 
 const makeInvite = (overrides: Partial<ActiveInvite> = {}): ActiveInvite => ({
-  token: FAKE_INVITE_TOKEN,
+  tokenHash: hashInviteToken(FAKE_INVITE_TOKEN),
+  tokenPrefix: FAKE_INVITE_TOKEN.slice(0, 8),
   orgId: '00000000-0000-0000-0000-000000000111',
   teamId: null,
   emailPattern: '*@example.com',
@@ -316,20 +318,21 @@ describe('evaluateAutoProvision (TASK-10)', () => {
   // -- TC-U-06 ----------------------------------------------------------------
   it('two matches returns rejected-multiple-matches', async () => {
     const invites = [
-      makeInvite({ token: 'b' + 'b'.repeat(63) }),
-      makeInvite({ token: 'a' + 'a'.repeat(63) }),
+      makeInvite({ tokenHash: 'b'.repeat(64), tokenPrefix: 'b'.repeat(8) }),
+      makeInvite({ tokenHash: 'a'.repeat(64), tokenPrefix: 'a'.repeat(8) }),
     ];
     const { deps, recorder } = makeDeps({ matchInvitesReturns: invites });
     const decision = await evaluateAutoProvision(baseInput(), deps);
     expect(decision).toEqual({ kind: 'rejected-multiple-matches' });
-    // tokenPrefix is alphabetically first → 'aaaaaaaa'.
+    // Production sorts matches by token_hash for deterministic forensic
+    // tracking; the 'a'*64 hash sorts first, so its prefix is the one recorded.
     expect(recorder.redemptionWrites[0].tokenPrefix).toBe('aaaaaaaa');
   });
 
   // -- TC-U-07 ----------------------------------------------------------------
   it('five matches returns rejected-multiple-matches (no count-based branching beyond 2)', async () => {
     const invites = Array.from({ length: 5 }, (_, i) =>
-      makeInvite({ token: `${i}`.repeat(64) }),
+      makeInvite({ tokenPrefix: `${i}`.repeat(8) }),
     );
     const { deps } = makeDeps({ matchInvitesReturns: invites });
     const decision = await evaluateAutoProvision(baseInput(), deps);

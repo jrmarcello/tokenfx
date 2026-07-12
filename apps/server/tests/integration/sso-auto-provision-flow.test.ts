@@ -50,6 +50,7 @@ import {
 import { matchActiveInvitesByEmail } from '@/lib/auth/match-active-invites';
 import { evaluateSignIn } from '@/lib/auth/load-user';
 import { hashEmail, emailDomain } from '@/lib/auth/email-hash';
+import { hashInviteToken } from '@/lib/auth/tokens';
 import { __resetSsoRateLimit } from '@/lib/auth/rate-limit-sso';
 import { __resetPreExistingBindingEmailState } from '@/lib/auth/pre-existing-binding-email';
 
@@ -125,7 +126,8 @@ type SeedInviteInput = {
 const seedInvite = async (input: SeedInviteInput): Promise<void> => {
   const db = getDb();
   await db.insert(onboardingInvites).values({
-    token: input.token,
+    tokenHash: hashInviteToken(input.token),
+    tokenPrefix: input.token.slice(0, 8),
     orgId: input.orgId,
     teamId: input.teamId ?? null,
     emailPattern: input.emailPattern ?? '*@example.com',
@@ -259,6 +261,38 @@ skipDescribe('SSO auto-provision flow (Postgres integration)', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // TC-I-10 (security-hardening-lowsev REQ-6) — accepted auto-provision records
+  // redemption_log.token_prefix = left(plaintext, 8), NOT left(token_hash, 8).
+  // ---------------------------------------------------------------------------
+  it('TC-I-10: accepted auto-provision records redemption_log.token_prefix = left(plaintext,8), not left(hash,8)', async () => {
+    const { orgId } = await seedOrg();
+    const { teamId } = await seedTeam(orgId);
+    const token = makeToken('tc-i-10-prefix-from-plaintext');
+    await seedInvite({ orgId, teamId, token });
+
+    const decision = await evaluateAutoProvision(
+      makeInput({ email: 'prefixcheck@example.com' }),
+      buildIntegrationDeps(),
+    );
+    expect(decision.kind).toBe('accepted-sso-auto');
+
+    const db = getDb();
+    const redemptionRows = await db
+      .select({
+        tokenPrefix: onboardingRedemptionLog.tokenPrefix,
+        outcome: onboardingRedemptionLog.outcome,
+      })
+      .from(onboardingRedemptionLog);
+    expect(redemptionRows).toHaveLength(1);
+    expect(redemptionRows[0].outcome).toBe('accepted-sso-auto');
+    // The audit prefix is derived from the PLAINTEXT token, never the at-rest
+    // hash. A derivation on left(token_hash, 8) would record the hash prefix
+    // instead, so the inequality below is the actual regression guard.
+    expect(redemptionRows[0].tokenPrefix).toBe(token.slice(0, 8));
+    expect(redemptionRows[0].tokenPrefix).not.toBe(hashInviteToken(token).slice(0, 8));
+  });
+
+  // ---------------------------------------------------------------------------
   // TC-I-02 — public domain
   // ---------------------------------------------------------------------------
   it('TC-I-02: public-domain email is rejected with both audit rows but no user', async () => {
@@ -329,10 +363,13 @@ skipDescribe('SSO auto-provision flow (Postgres integration)', () => {
     expect(authEvents[0].outcome).toBe('rejected-multiple-matches');
     const redemptionRows = await db.select().from(onboardingRedemptionLog);
     expect(redemptionRows).toHaveLength(1);
-    // Token prefix in audit row should be the alphabetically-first token's
-    // first 8 chars (token_prefix length = 8 per onboarding_audit_log CHECK).
-    const sortedTokens = [tokenA, tokenB].sort();
-    expect(redemptionRows[0].tokenPrefix).toBe(sortedTokens[0].slice(0, 8));
+    // Production sorts the multiple matches by token_hash (deterministic
+    // forensic tracking) and records the first invite's token_prefix
+    // (= left(plaintext, 8); length 8 per onboarding_audit_log CHECK).
+    const firstByHash = [tokenA, tokenB].sort((a, b) =>
+      hashInviteToken(a).localeCompare(hashInviteToken(b)),
+    )[0];
+    expect(redemptionRows[0].tokenPrefix).toBe(firstByHash.slice(0, 8));
   });
 
   // ---------------------------------------------------------------------------
@@ -463,8 +500,8 @@ skipDescribe('SSO auto-provision flow (Postgres integration)', () => {
       try {
         await client.query('BEGIN');
         await client.query(
-          'UPDATE onboarding_invites SET revoked_at = NOW() WHERE token = $1',
-          [token],
+          'UPDATE onboarding_invites SET revoked_at = NOW() WHERE token_hash = $1',
+          [hashInviteToken(token)],
         );
         await client.query('COMMIT');
       } finally {
@@ -473,6 +510,20 @@ skipDescribe('SSO auto-provision flow (Postgres integration)', () => {
     } finally {
       await secondPool.end();
     }
+
+    // Deterministic synchronization barrier (replaces reliance on
+    // COMMIT-then-call wall-clock timing): re-read the row on the SAME pool
+    // the orchestrator's `defaultProvisionInTx` will use (`getDb()`), and
+    // assert it observes the revoke BEFORE we drive the orchestrator. Under
+    // READ COMMITTED, if this connection sees `revoked_at` set, the
+    // orchestrator's later FOR UPDATE on the same pool must too — so the
+    // outcome can never flip to `accepted-sso-auto`. If the revoke were
+    // somehow not yet visible, this fails loudly here instead of flaking.
+    const preRevokeCheck = await getDb()
+      .select({ revokedAt: onboardingInvites.revokedAt })
+      .from(onboardingInvites)
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(token)));
+    expect(preRevokeCheck[0]?.revokedAt).not.toBeNull();
 
     // Inject a stale matcher that returns the pre-revoke snapshot — this
     // bypasses the candidate-selection's `revoked_at IS NULL` filter so the
@@ -497,7 +548,7 @@ skipDescribe('SSO auto-provision flow (Postgres integration)', () => {
     const inviteRows = await db
       .select({ usedCount: onboardingInvites.usedCount })
       .from(onboardingInvites)
-      .where(eq(onboardingInvites.token, token));
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(token)));
     expect(inviteRows[0].usedCount).toBe(0);
     // Audit row was written OUTSIDE the rolled-back tx.
     const authEvents = await db.select().from(authEventLog);
@@ -571,7 +622,7 @@ skipDescribe('SSO auto-provision flow (Postgres integration)', () => {
     const [inv] = await db
       .select({ usedCount: onboardingInvites.usedCount })
       .from(onboardingInvites)
-      .where(eq(onboardingInvites.token, token));
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(token)));
     expect(inv.usedCount).toBe(1);
     const authEvents = await db.select().from(authEventLog);
     expect(authEvents).toHaveLength(1);

@@ -101,7 +101,7 @@ skipDescribe('schema onboarding migration (Postgres integration)', () => {
     expect(rows.rows.map((r) => r.enumlabel)).toEqual(['invite-created', 'invite-revoked']);
   });
 
-  it('TC-I-01: idx_onboarding_invites_prefix index exists (functional, on left(token,8))', async () => {
+  it('TC-I-01: idx_onboarding_invites_prefix index exists (plain column index on token_prefix)', async () => {
     const db = getDb();
     const rows = await db.execute<{ indexname: string; indexdef: string }>(sql`
       SELECT indexname, indexdef
@@ -111,8 +111,10 @@ skipDescribe('schema onboarding migration (Postgres integration)', () => {
         AND indexname = 'idx_onboarding_invites_prefix'
     `);
     expect(rows.rows.length).toBe(1);
-    // Postgres normalizes the expression — verify it references left(token, 8).
-    expect(rows.rows[0].indexdef.toLowerCase()).toContain('"left"(token, 8)');
+    // Post-migration 0007 the prefix index is a plain column index on the
+    // physical token_prefix column (it was a functional left(token, 8) index
+    // before the token→token_hash rename).
+    expect(rows.rows[0].indexdef.toLowerCase()).toContain('(token_prefix)');
   });
 
   it('TC-I-02: users.sso_provider is NULLABLE', async () => {

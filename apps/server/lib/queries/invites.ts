@@ -17,7 +17,7 @@
  *     fires rather than silently looping).
  *
  *   - `revokeInviteByPrefix(db, params)` — set `revoked_at = now()` on the row
- *     matching `left(token, 8) = ? AND org_id = ?`. Idempotent (already-revoked
+ *     matching `token_prefix = ? AND org_id = ?`. Idempotent (already-revoked
  *     is a 'already-revoked' kind, not an error). Returns one of four kinds:
  *     'revoked' | 'already-revoked' | 'not-found' | 'collision'. The 'collision'
  *     branch defends against the (~10^-9 with 64-bit entropy) case where two
@@ -43,10 +43,10 @@
  * Map is exported as `__resetIdempotencyCache` for tests to clear between
  * runs without stale state bleeding across `it()` blocks.
  */
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { onboardingInvites, teams, users } from '@/lib/db/schema';
 import type { getDb } from '@/lib/db/client';
-import { generateInviteToken } from '@/lib/auth/tokens';
+import { generateInviteToken, hashInviteToken } from '@/lib/auth/tokens';
 import {
   writeAuditCreate,
   writeAuditRevoke,
@@ -106,7 +106,11 @@ export const createInviteRow = async (
     const token = generateInviteToken();
     try {
       await db.insert(onboardingInvites).values({
-        token,
+        // Store only sha256(token) at rest; the 8-char prefix (from the
+        // plaintext) is kept for UI/audit correlation. See
+        // .specs/security-hardening-lowsev.md REQ-1.
+        tokenHash: hashInviteToken(token),
+        tokenPrefix: tokenPrefix(token),
         orgId: params.orgId,
         teamId: params.teamId,
         emailPattern: params.emailPattern,
@@ -155,8 +159,8 @@ export type RevokeInviteResult =
   | { kind: 'collision'; matchCount: number };
 
 /**
- * Idempotent revoke. The UPDATE WHERE clause includes both `left(token, 8)`
- * (uses the functional index in REQ-1) AND `org_id = ?` (tenant scope). A
+ * Idempotent revoke. The UPDATE WHERE clause includes both the `token_prefix` column
+ * (uses the `idx_onboarding_invites_prefix` index) AND `org_id = ?` (tenant scope). A
  * cross-org request becomes 'not-found' rather than 'unauthorized' — same
  * UX as "doesn't exist" prevents existence-probing across orgs.
  *
@@ -180,13 +184,13 @@ export const revokeInviteByPrefix = async (
 
   const matches = await db
     .select({
-      token: onboardingInvites.token,
+      tokenHash: onboardingInvites.tokenHash,
       revokedAt: onboardingInvites.revokedAt,
     })
     .from(onboardingInvites)
     .where(
       and(
-        sql`left(${onboardingInvites.token}, ${PREFIX_LEN}) = ${params.prefix}`,
+        eq(onboardingInvites.tokenPrefix, params.prefix),
         eq(onboardingInvites.orgId, params.orgId),
       ),
     )
@@ -205,7 +209,7 @@ export const revokeInviteByPrefix = async (
   await db
     .update(onboardingInvites)
     .set({ revokedAt: new Date() })
-    .where(eq(onboardingInvites.token, row.token));
+    .where(eq(onboardingInvites.tokenHash, row.tokenHash));
 
   return { kind: 'revoked', tokenPrefix: params.prefix };
 };
@@ -256,7 +260,7 @@ export const deriveInviteStatus = (input: {
  * Joins teams + users to enrich with names; both joins are LEFT so a deleted
  * team / actor still surfaces the row (the `created_by` FK is `SET NULL`).
  *
- * **Full token is NEVER selected** — we project `left(token, 8)` directly in
+ * **Full token is NEVER selected** — we project the `token_prefix` column directly in
  * SQL so the plaintext never travels through the Drizzle->JS->serializer
  * boundary. TC-I-30 audits this with a regex assertion on the result shape.
  */
@@ -267,7 +271,7 @@ export const listInvitesForOrg = async (
 ): Promise<InviteListRow[]> => {
   const rows = await db
     .select({
-      tokenPrefix: sql<string>`left(${onboardingInvites.token}, ${PREFIX_LEN})`,
+      tokenPrefix: onboardingInvites.tokenPrefix,
       maxUses: onboardingInvites.maxUses,
       usedCount: onboardingInvites.usedCount,
       emailPattern: onboardingInvites.emailPattern,

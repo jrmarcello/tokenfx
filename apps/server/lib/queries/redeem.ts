@@ -76,7 +76,7 @@ import {
 import { extractExecRows } from '@/lib/db/exec';
 import type { getDb } from '@/lib/db/client';
 import { BCRYPT_COST } from '@/lib/auth/bearer-auth';
-import { generateKeyId } from '@/lib/auth/tokens';
+import { generateKeyId, hashInviteToken } from '@/lib/auth/tokens';
 import { hashEmail, emailDomain } from '@/lib/auth/email-hash';
 import { matchEmailPattern } from '@/lib/auth/match-email-pattern';
 import { writeRedemptionLog, type OnboardingOutcome } from './redemption-log';
@@ -152,7 +152,7 @@ const getCentralUrl = (): string => {
 const TOKEN_PREFIX_LEN = 8;
 
 type InviteRow = {
-  token: string;
+  tokenHash: string;
   orgId: string;
   teamId: string | null;
   emailPattern: string | null;
@@ -163,7 +163,7 @@ type InviteRow = {
 };
 
 type InviteRowSql = {
-  token: string;
+  token_hash: string;
   org_id: string;
   team_id: string | null;
   email_pattern: string | null;
@@ -174,7 +174,7 @@ type InviteRowSql = {
 };
 
 const normalizeInviteRow = (r: InviteRowSql): InviteRow => ({
-  token: r.token,
+  tokenHash: r.token_hash,
   orgId: r.org_id,
   teamId: r.team_id,
   emailPattern: r.email_pattern,
@@ -203,10 +203,10 @@ const lookupInviteForUpdate = async (
   token: string,
 ): Promise<InviteRow | null> => {
   const result = await tx.execute<InviteRowSql>(sql`
-    SELECT token, org_id, team_id, email_pattern, max_uses, used_count,
+    SELECT token_hash, org_id, team_id, email_pattern, max_uses, used_count,
            expires_at, revoked_at
     FROM ${onboardingInvites}
-    WHERE token = ${token}
+    WHERE token_hash = ${token}
     FOR UPDATE
   `);
   const rows = extractExecRows<InviteRowSql>(result);
@@ -394,7 +394,12 @@ export const redeemInvite = async (
 
   try {
     txResult = await db.transaction(async (tx) => {
-      const invite = await lookupInviteForUpdate(tx, input.token);
+      // Hash the caller-supplied plaintext before lookup — the DB stores
+      // only sha256(token), so a DB dump is not a usable credential.
+      const invite = await lookupInviteForUpdate(
+        tx,
+        hashInviteToken(input.token),
+      );
       if (!invite) {
         // No row, no lock acquired. Throw the sentinel so the transaction
         // commits empty (Postgres treats this as a no-op tx) and the outer
@@ -429,7 +434,7 @@ export const redeemInvite = async (
       await tx
         .update(onboardingInvites)
         .set({ usedCount: invite.usedCount + 1 })
-        .where(eq(onboardingInvites.token, invite.token));
+        .where(eq(onboardingInvites.tokenHash, invite.tokenHash));
 
       // Audit log — `accepted`. Privacy: domain + peppered hash, never
       // the raw email. This write is INSIDE the tx so an `accepted` row

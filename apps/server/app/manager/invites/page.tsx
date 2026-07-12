@@ -3,7 +3,7 @@
  *
  * Server Component. Pulls every invite for the org via `listInvitesForOrg`
  * (joins teams + users for the display labels). The query already projects
- * only `left(token, 8)` — the full plaintext token NEVER reaches this page,
+ * only the `token_prefix` column — the full plaintext token NEVER reaches this page,
  * so there is nothing here that could leak a usable token even via a bug.
  *
  * Empty state: encourages the manager to create the first invite. The table

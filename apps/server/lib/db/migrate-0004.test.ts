@@ -444,8 +444,8 @@ skipDescribe('migration 0004 — sso auto-provision schema (REQ-1..10, REQ-17)',
       const org = await seedOrg('req8-default');
       const token = uniq('tok');
       const result = await db.execute<{ allowed_sso_providers: string[] }>(sql`
-        INSERT INTO onboarding_invites (token, org_id, expires_at)
-        VALUES (${token}, ${org}, now() + INTERVAL '30 days')
+        INSERT INTO onboarding_invites (token_hash, token_prefix, org_id, expires_at)
+        VALUES (${token}, ${token.slice(0, 8)}, ${org}, now() + INTERVAL '30 days')
         RETURNING allowed_sso_providers
       `);
       expect(result.rows[0]!.allowed_sso_providers).toEqual([]);
@@ -460,10 +460,12 @@ skipDescribe('migration 0004 — sso auto-provision schema (REQ-1..10, REQ-17)',
       // TC-I-22 (happy)
       const db = getDb();
       const org = await seedOrg('req9-90d');
+      const token = uniq('tok');
       await db.execute(sql`
-        INSERT INTO onboarding_invites (token, org_id, email_pattern, expires_at, created_at)
+        INSERT INTO onboarding_invites (token_hash, token_prefix, org_id, email_pattern, expires_at, created_at)
         VALUES (
-          ${uniq('tok')},
+          ${token},
+          ${token.slice(0, 8)},
           ${org},
           '*@example.com',
           now() + INTERVAL '90 days',
@@ -476,11 +478,13 @@ skipDescribe('migration 0004 — sso auto-provision schema (REQ-1..10, REQ-17)',
       // TC-I-23 (business)
       const db = getDb();
       const org = await seedOrg('req9-200d');
+      const token = uniq('tok');
       await expect(
         db.execute(sql`
-          INSERT INTO onboarding_invites (token, org_id, email_pattern, expires_at, created_at)
+          INSERT INTO onboarding_invites (token_hash, token_prefix, org_id, email_pattern, expires_at, created_at)
           VALUES (
-            ${uniq('tok')},
+            ${token},
+            ${token.slice(0, 8)},
             ${org},
             '*@example.com',
             now() + INTERVAL '200 days',
@@ -494,10 +498,12 @@ skipDescribe('migration 0004 — sso auto-provision schema (REQ-1..10, REQ-17)',
       // TC-I-24 (edge — manual-token invites exempted)
       const db = getDb();
       const org = await seedOrg('req9-null');
+      const token = uniq('tok');
       await db.execute(sql`
-        INSERT INTO onboarding_invites (token, org_id, email_pattern, expires_at, created_at)
+        INSERT INTO onboarding_invites (token_hash, token_prefix, org_id, email_pattern, expires_at, created_at)
         VALUES (
-          ${uniq('tok')},
+          ${token},
+          ${token.slice(0, 8)},
           ${org},
           NULL,
           now() + INTERVAL '200 days',
@@ -510,10 +516,12 @@ skipDescribe('migration 0004 — sso auto-provision schema (REQ-1..10, REQ-17)',
       // TC-I-25 (edge — boundary)
       const db = getDb();
       const org = await seedOrg('req9-180d');
+      const token = uniq('tok');
       await db.execute(sql`
-        INSERT INTO onboarding_invites (token, org_id, email_pattern, expires_at, created_at)
+        INSERT INTO onboarding_invites (token_hash, token_prefix, org_id, email_pattern, expires_at, created_at)
         VALUES (
-          ${uniq('tok')},
+          ${token},
+          ${token.slice(0, 8)},
           ${org},
           '*@example.com',
           now() + INTERVAL '180 days',
@@ -526,11 +534,13 @@ skipDescribe('migration 0004 — sso auto-provision schema (REQ-1..10, REQ-17)',
       // TC-I-26 (edge — boundary + epsilon)
       const db = getDb();
       const org = await seedOrg('req9-180d-plus');
+      const token = uniq('tok');
       await expect(
         db.execute(sql`
-          INSERT INTO onboarding_invites (token, org_id, email_pattern, expires_at, created_at)
+          INSERT INTO onboarding_invites (token_hash, token_prefix, org_id, email_pattern, expires_at, created_at)
           VALUES (
-            ${uniq('tok')},
+            ${token},
+            ${token.slice(0, 8)},
             ${org},
             '*@example.com',
             now() + INTERVAL '180 days' + INTERVAL '1 millisecond',

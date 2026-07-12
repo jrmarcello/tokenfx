@@ -6,8 +6,8 @@
  * - `queryInviteByTokenPrefix` — TC-E2E-06 persistence assertion: the
  *   flash URL contains a 64-char hex token; the test extracts the first
  *   8 chars and looks up the row via the `idx_onboarding_invites_prefix`
- *   expression index (`left(token, 8)`) declared in
- *   `apps/server/lib/db/schema.ts:277`.
+ *   index on the physical `token_prefix` column (which stores
+ *   `left(plaintext, 8)`), declared in `apps/server/lib/db/schema.ts`.
  * - `queryInvitesCreatedSince` — TC-E2E-06b time-window guard for the
  *   "form rejects empty provider selection, no row written" assertion.
  *
@@ -51,20 +51,20 @@ const withClient = async <T>(
 
 /**
  * Look up an `onboarding_invites` row by the 8-char token prefix
- * derived from a captured invite URL. The schema's expression index
- * `idx_onboarding_invites_prefix` (`left(token, 8)`) makes this a
- * single-row index scan.
+ * derived from a captured invite URL. The schema's index
+ * `idx_onboarding_invites_prefix` on the physical `token_prefix`
+ * column makes this a single-row index scan.
  */
 export const queryInviteByTokenPrefix = async (
   prefix: string,
 ): Promise<InviteRow | null> =>
   withClient('queryInviteByTokenPrefix', async (client) => {
     const res = await client.query<InviteRow>(
-      `SELECT left(token, 8) AS token_prefix,
+      `SELECT token_prefix,
               allowed_sso_providers,
               created_at
          FROM onboarding_invites
-        WHERE left(token, 8) = $1
+        WHERE token_prefix = $1
         LIMIT 1`,
       [prefix],
     );
@@ -86,7 +86,7 @@ export const queryInvitesCreatedSince = async (
     // so both probes share one time-comparison idiom.
     const sinceIso = new Date(sinceMs).toISOString();
     const res = await client.query<InviteRow>(
-      `SELECT left(token, 8) AS token_prefix,
+      `SELECT token_prefix,
               allowed_sso_providers,
               created_at
          FROM onboarding_invites

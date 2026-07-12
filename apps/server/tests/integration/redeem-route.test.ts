@@ -15,7 +15,7 @@
  *   - REQ-27 / rate limit:            TC-I-31, TC-I-32, TC-I-33, TC-I-33b/c
  *   - REQ-27 / Bearer-related notes:  TC-I-33d (N/A — no Bearer on redeem)
  *   - REQ-27 / token rejection:       TC-I-44..48
- *   - REQ-27 / 401 byte uniformity:   TC-I-49
+ *   - REQ-27 / 401 byte uniformity:   TC-I-49 (also security-hardening-lowsev TC-I-12 — byte-identical post token-hash lookup)
  *   - REQ-27 / no token echo:         TC-I-50
  *   - REQ-27 / large body:            TC-F-06
  */
@@ -43,6 +43,7 @@ import {
   userMachines,
   users,
 } from '@/lib/db/schema';
+import { hashInviteToken } from '@/lib/auth/tokens';
 
 const SKIP = process.env.SKIP_PG_TESTS === '1';
 const skipDescribe = SKIP ? describe.skip : describe;
@@ -82,7 +83,8 @@ const seedInvite = async (opts: {
 }): Promise<void> => {
   const db = getDb();
   await db.insert(onboardingInvites).values({
-    token: opts.token,
+    tokenHash: hashInviteToken(opts.token),
+    tokenPrefix: opts.token.slice(0, 8),
     orgId: opts.orgId,
     teamId: opts.teamId,
     emailPattern: opts.emailPattern ?? null,
@@ -578,6 +580,11 @@ skipDescribe('POST /api/onboarding/redeem-invite (HTTP integration)', () => {
 
   // ===========================================================================
   // 401 byte-uniformity + no-token-echo (REQ-27 — TC-I-49 / TC-I-50)
+  //
+  // TC-I-49 doubles as security-hardening-lowsev TC-I-12: after the
+  // token→token_hash rename + hash-based lookup, the five rejection bodies
+  // must remain byte-identical (redeem now hashes the plaintext before the
+  // `WHERE token_hash = ?` probe; the uniform-401 contract is unchanged).
   // ===========================================================================
 
   it('TC-I-49: bodies of TC-I-44..48 are byte-equal (uniform 401)', async () => {

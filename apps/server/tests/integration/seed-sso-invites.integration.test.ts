@@ -22,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createAuthorize } from '@/lib/auth/e2e-bypass-provider';
 import { matchActiveInvitesByEmail } from '@/lib/auth/match-active-invites';
+import { hashInviteToken } from '@/lib/auth/tokens';
 import { closeDb, getDb } from '@/lib/db/client';
 import { onboardingInvites, orgs, users } from '@/lib/db/schema';
 import { stableUuid } from '@/lib/e2e/seed-ids';
@@ -65,7 +66,8 @@ skipIfNoPg('seed-sso-invites contract (TC-I-05, TC-I-06)', () => {
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     await db.insert(onboardingInvites).values([
       {
-        token: alphaToken,
+        tokenHash: hashInviteToken(alphaToken),
+        tokenPrefix: alphaToken.slice(0, 8),
         orgId: ALPHA_ORG_ID,
         teamId: null,
         emailPattern: '*@alpha.test',
@@ -75,7 +77,8 @@ skipIfNoPg('seed-sso-invites contract (TC-I-05, TC-I-06)', () => {
         allowedSsoProviders: ['okta'],
       },
       {
-        token: ssoToken,
+        tokenHash: hashInviteToken(ssoToken),
+        tokenPrefix: ssoToken.slice(0, 8),
         orgId: ALPHA_ORG_ID,
         teamId: null,
         emailPattern: '*@e2e-sso.test',
@@ -112,7 +115,7 @@ skipIfNoPg('seed-sso-invites contract (TC-I-05, TC-I-06)', () => {
     const ssoNewMatches = await matchActiveInvitesByEmail('e2e-sso-new@e2e-sso.test');
     expect(happyMatches.length).toBe(1);
     expect(ssoNewMatches.length).toBe(1);
-    expect(happyMatches[0].token).toBe(ssoNewMatches[0].token);
+    expect(happyMatches[0].tokenHash).toBe(ssoNewMatches[0].tokenHash);
     expect(happyMatches[0].emailPattern).toBe('*@e2e-sso.test');
     expect(happyMatches[0].orgId).toBe(ALPHA_ORG_ID);
   });

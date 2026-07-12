@@ -4,6 +4,8 @@
  * so the shared seed helpers / cleanup hooks aren't duplicated.
  *
  * Happy path (TASK-6a, REQ-28):
+ *   - TC-I-02: redeem with createInviteRow's plaintext → 200 (hash round-trip; security-hardening-lowsev)
+ *   - TC-I-03: redeem with the stored token_hash value → 401 (a DB dump is not a credential)
  *   - TC-I-51: valid token + matching email → 200, user_machines row, bcrypt hash
  *   - TC-I-52: re-redeem same token (max_uses=2) by different machine → 2 rows
  *   - TC-I-52b: same machine_id with 2 distinct invites → 2 user_machines rows
@@ -45,6 +47,8 @@ import {
   users,
 } from '@/lib/db/schema';
 import { emailDomain, hashEmail } from '@/lib/auth/email-hash';
+import { hashInviteToken } from '@/lib/auth/tokens';
+import { createInviteRow } from './invites';
 import { redeemInvite } from './redeem';
 
 const SKIP = process.env.SKIP_PG_TESTS === '1';
@@ -92,7 +96,8 @@ type SeedInviteOpts = {
 const seedInvite = async (opts: SeedInviteOpts): Promise<void> => {
   const db = getDb();
   await db.insert(onboardingInvites).values({
-    token: opts.token,
+    tokenHash: hashInviteToken(opts.token),
+    tokenPrefix: opts.token.slice(0, 8),
     orgId: opts.orgId,
     teamId: opts.teamId ?? null,
     emailPattern: opts.emailPattern ?? null,
@@ -178,6 +183,73 @@ skipDescribe('redeemInvite (happy path — TASK-6a)', () => {
   });
 
   // -----------------------------------------------------------------------
+  // TC-I-02 / TC-I-03: hash-at-rest round-trip (security-hardening-lowsev REQ-2)
+  // -----------------------------------------------------------------------
+  it('TC-I-02: redeem with the plaintext returned by createInviteRow → 200 (hash round-trip)', async () => {
+    const db = getDb();
+    // Use the PRODUCTION create path (which hashes at rest) instead of the
+    // local seedInvite helper, so this proves create + redeem agree on the
+    // hash of the same plaintext.
+    const created = await createInviteRow(db, {
+      orgId: seeded.orgId,
+      teamId: seeded.teamAId,
+      emailPattern: null,
+      maxUses: 1,
+      expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
+      createdBy: null,
+    });
+
+    const result = await redeemInvite(db, {
+      token: created.token, // the plaintext, surfaced exactly once by create
+      machineId: MACHINE_A,
+      hostname: 'laptop-tc02',
+      claimedEmail: 'alice@example.com',
+      requestIp: null,
+    });
+    if (!result.ok) throw new Error(`expected ok, got ${result.error.kind}`);
+    expect(result.value.keyId).toMatch(/^k_[0-9a-f]{16}$/);
+
+    // The at-rest column holds the hash, never the plaintext we just redeemed.
+    const [row] = await db
+      .select({ tokenHash: onboardingInvites.tokenHash })
+      .from(onboardingInvites)
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(created.token)));
+    expect(row.tokenHash).toBe(hashInviteToken(created.token));
+    expect(row.tokenHash).not.toBe(created.token);
+  });
+
+  it('TC-I-03: redeem with the stored hash (DB column value) as the token → 401 (a DB dump is not a credential)', async () => {
+    const db = getDb();
+    const created = await createInviteRow(db, {
+      orgId: seeded.orgId,
+      teamId: seeded.teamAId,
+      emailPattern: null,
+      maxUses: 1,
+      expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
+      createdBy: null,
+    });
+
+    // What a read-only DB dump exposes: the at-rest token_hash. Replaying it
+    // as the redeem token hashes it AGAIN (sha256 of the hash), which cannot
+    // match the stored value — so it is rejected as token-invalid.
+    const storedHash = hashInviteToken(created.token);
+    const result = await redeemInvite(db, {
+      token: storedHash,
+      machineId: MACHINE_A,
+      hostname: 'laptop-tc03',
+      claimedEmail: 'alice@example.com',
+      requestIp: null,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.kind).toBe('token-invalid');
+
+    // No machine provisioned from a hash replay.
+    const machines = await db.select({ keyId: userMachines.keyId }).from(userMachines);
+    expect(machines).toHaveLength(0);
+  });
+
+  // -----------------------------------------------------------------------
   // TC-I-52: re-redeem same token (max_uses=2) by different machines → 2 rows
   // -----------------------------------------------------------------------
   it('TC-I-52: same token max_uses=2, two different machines → 2 user_machines rows, used_count=2', async () => {
@@ -213,7 +285,7 @@ skipDescribe('redeemInvite (happy path — TASK-6a)', () => {
     const [invite] = await db
       .select({ usedCount: onboardingInvites.usedCount })
       .from(onboardingInvites)
-      .where(eq(onboardingInvites.token, token));
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(token)));
     expect(invite.usedCount).toBe(2);
   });
 
@@ -608,7 +680,7 @@ skipDescribe('redeemInvite (rejection branches — TASK-6b)', () => {
     await db
       .update(onboardingInvites)
       .set({ revokedAt: new Date(Date.now() - 60_000) })
-      .where(eq(onboardingInvites.token, token));
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(token)));
 
     const claimedEmail = 'alice@example.com';
     const result = await redeemInvite(db, {
@@ -671,7 +743,7 @@ skipDescribe('redeemInvite (rejection branches — TASK-6b)', () => {
     await db
       .update(onboardingInvites)
       .set({ usedCount: 1 })
-      .where(eq(onboardingInvites.token, token));
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(token)));
 
     const claimedEmail = 'alice@example.com';
     const result = await redeemInvite(db, {
@@ -733,7 +805,7 @@ skipDescribe('redeemInvite (rejection branches — TASK-6b)', () => {
     await db
       .update(onboardingInvites)
       .set({ revokedAt: new Date(Date.now() - 1_000) })
-      .where(eq(onboardingInvites.token, tRevoked));
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(tRevoked)));
 
     // Token-expired.
     const tExpired = make64HexToken('tc49-expired');
@@ -755,7 +827,7 @@ skipDescribe('redeemInvite (rejection branches — TASK-6b)', () => {
     await db
       .update(onboardingInvites)
       .set({ usedCount: 1 })
-      .where(eq(onboardingInvites.token, tExhausted));
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(tExhausted)));
 
     // Email-mismatch.
     const tMismatch = make64HexToken('tc49-mismatch');
@@ -997,7 +1069,7 @@ skipDescribe('redeemInvite (concurrency + atomicity — TASK-6c)', () => {
     const [invite] = await db
       .select({ usedCount: onboardingInvites.usedCount })
       .from(onboardingInvites)
-      .where(eq(onboardingInvites.token, token));
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(token)));
     expect(invite.usedCount).toBe(1);
 
     const machines = await db.select({ keyId: userMachines.keyId }).from(userMachines);
@@ -1058,7 +1130,7 @@ skipDescribe('redeemInvite (concurrency + atomicity — TASK-6c)', () => {
     const [invite] = await db
       .select({ usedCount: onboardingInvites.usedCount })
       .from(onboardingInvites)
-      .where(eq(onboardingInvites.token, token));
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(token)));
     expect(invite.usedCount).toBe(3);
 
     const machines = await db.select({ keyId: userMachines.keyId }).from(userMachines);
@@ -1127,7 +1199,7 @@ skipDescribe('redeemInvite (concurrency + atomicity — TASK-6c)', () => {
     const [invite] = await db
       .select({ usedCount: onboardingInvites.usedCount })
       .from(onboardingInvites)
-      .where(eq(onboardingInvites.token, token));
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(token)));
     expect(invite.usedCount).toBe(0);
 
     // No `accepted` log row. The infra error path may or may not write a
@@ -1187,7 +1259,7 @@ skipDescribe('redeemInvite (concurrency + atomicity — TASK-6c)', () => {
     const [invite] = await db
       .select({ usedCount: onboardingInvites.usedCount })
       .from(onboardingInvites)
-      .where(eq(onboardingInvites.token, token));
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(token)));
     expect(invite.usedCount).toBe(0);
 
     const usersRows = await db
@@ -1246,7 +1318,7 @@ skipDescribe('redeemInvite (concurrency + atomicity — TASK-6c)', () => {
     const [invite] = await db
       .select({ usedCount: onboardingInvites.usedCount })
       .from(onboardingInvites)
-      .where(eq(onboardingInvites.token, token));
+      .where(eq(onboardingInvites.tokenHash, hashInviteToken(token)));
     expect(invite.usedCount).toBe(1);
   });
 });

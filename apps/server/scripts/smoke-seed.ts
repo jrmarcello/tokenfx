@@ -50,6 +50,7 @@ import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from '@/lib/db/schema';
 import { BCRYPT_COST } from '@/lib/auth/bearer-auth';
+import { hashInviteToken } from '@/lib/auth/tokens';
 
 // --- Public types -----------------------------------------------------------
 
@@ -218,10 +219,14 @@ export const runSmokeSeed = async (
       // expires cap enforced by `onboarding_invites_sso_expires_check`.
       const now = new Date();
       const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+      const smokeInviteToken = `${INVITE_TOKEN_PREFIX}${randomBytes(8).toString('hex')}`;
       await tx
         .insert(schema.onboardingInvites)
         .values({
-          token: `${INVITE_TOKEN_PREFIX}${randomBytes(8).toString('hex')}`,
+          // Email-pattern fixture, not token-redeemed in smoke — store the
+          // hash at rest with its plaintext-derived prefix.
+          tokenHash: hashInviteToken(smokeInviteToken),
+          tokenPrefix: smokeInviteToken.slice(0, 8),
           orgId: ORG_ID,
           emailPattern: INVITE_EMAIL_PATTERN,
           maxUses: 1,

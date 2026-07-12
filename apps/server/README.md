@@ -114,6 +114,18 @@ Red-team test (`lib/reporter/sanitizer.test.ts:TC-U-07`) injects 100 random
 adversarial fields (`password`, `__proto__`, `prompt_text`, etc.) and asserts
 zero leakage in the output.
 
+### Invite tokens at rest
+
+Invite tokens are **hashed at rest**: `onboarding_invites.token_hash` stores
+`sha256(token)`, never the plaintext (`token_prefix` keeps the first 8 chars
+for UI/audit correlation). The redeem endpoint hashes the caller-supplied
+plaintext before the lookup, so a read-only DB dump is not a usable
+credential. The plaintext exists only once — in the invite URL returned at
+creation time. Migration `0007_invite_token_hash` back-fills and hashes any
+pre-existing rows in place; invites minted before the migration stay
+redeemable by their original URL. See
+`.specs/security-hardening-lowsev.md`.
+
 ### Revocation procedure
 
 If a machine's HMAC secret is compromised:

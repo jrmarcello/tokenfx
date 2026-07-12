@@ -150,6 +150,30 @@ export const buildAuthConfig = (env: NodeJS.ProcessEnv) => {
         return !!auth?.user;
       }
 
+      // security-hardening-lowsev (REQ-3): `/api/manager/*` JSON API gate.
+      // These paths start with `/api`, so absent this branch the permissive
+      // `!startsWith('/manager') → return true` below would leave every
+      // `/api/manager/*` route ungated (only `dismiss-anomaly` self-checks
+      // org today; any future route would ship open). Must run BEFORE that
+      // fallthrough. Mirrors the role logic below but returns a JSON error —
+      // not an HTML sign-in redirect — since API clients expect the
+      // `{error:{message,code}}` shape (.claude/rules/security.md).
+      if (path.startsWith('/api/manager')) {
+        if (!auth?.user) {
+          return NextResponse.json(
+            { error: { message: 'unauthorized', code: 'unauthorized' } },
+            { status: 401 },
+          );
+        }
+        if (auth.user.role !== 'manager' && auth.user.role !== 'admin') {
+          return NextResponse.json(
+            { error: { message: 'forbidden', code: 'forbidden' } },
+            { status: 403 },
+          );
+        }
+        return true;
+      }
+
       if (!path.startsWith('/manager')) return true;
 
       if (!auth?.user) return false; // → redirect to signIn

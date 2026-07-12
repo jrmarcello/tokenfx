@@ -122,9 +122,9 @@ export const loadFirstAutoProvisionAlert = async (
       ),
     );
 
-  // The JOIN on `redemption_log.token_prefix = LEFT(invites.token, 8)`
-  // uses the functional index `idx_onboarding_invites_prefix` (declared in
-  // `lib/db/schema.ts`, line 277), so the lookup is index-backed.
+  // The JOIN on `redemption_log.token_prefix = invites.token_prefix`
+  // uses the index `idx_onboarding_invites_prefix` on the physical
+  // `token_prefix` column (declared in `lib/db/schema.ts`), so it is index-backed.
   const rows = await db
     .select({
       eventId: onboardingRedemptionLog.id,
@@ -135,7 +135,7 @@ export const loadFirstAutoProvisionAlert = async (
     .from(onboardingRedemptionLog)
     .innerJoin(
       onboardingInvites,
-      eq(onboardingRedemptionLog.tokenPrefix, sql`left(${onboardingInvites.token}, 8)`),
+      eq(onboardingRedemptionLog.tokenPrefix, onboardingInvites.tokenPrefix),
     )
     .where(
       and(
@@ -177,7 +177,7 @@ export const loadFirstAutoProvisionAlert = async (
  *
  *   INSERT ... SELECT ... WHERE EXISTS (
  *     SELECT 1 FROM onboarding_redemption_log r
- *     JOIN onboarding_invites i ON r.token_prefix = LEFT(i.token, 8)
+ *     JOIN onboarding_invites i ON r.token_prefix = i.token_prefix
  *     WHERE r.id = $eventId AND i.org_id = $orgId
  *   ) ON CONFLICT DO NOTHING
  *
@@ -225,7 +225,7 @@ export const acknowledgeAlert = async (
     WHERE EXISTS (
       SELECT 1
       FROM onboarding_redemption_log r
-      JOIN onboarding_invites i ON r.token_prefix = LEFT(i.token, 8)
+      JOIN onboarding_invites i ON r.token_prefix = i.token_prefix
       WHERE r.id = ${eventId}::bigint
         AND i.org_id = ${orgId}::uuid
     )

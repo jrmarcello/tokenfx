@@ -37,6 +37,7 @@ import {
   users,
 } from '@/lib/db/schema';
 
+import { hashInviteToken } from '@/lib/auth/tokens';
 import {
   acknowledgeAlert,
   loadFirstAutoProvisionAlert,
@@ -49,7 +50,7 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Deterministic but PREFIX-DIVERSIFIED token generator. The banner query
- * joins `redemption_log.token_prefix = LEFT(invites.token, 8)`, so two
+ * joins `redemption_log.token_prefix = invites.token_prefix`, so two
  * tokens whose first 8 hex chars collide would alias across orgs. Hex-
  * encoding `'tc-i-04-a'` vs `'tc-i-04-b'` produces the SAME first 4 bytes
  * (`74632d69` = "tc-i") — they only diverge at byte 5. To force a unique
@@ -103,7 +104,8 @@ type SeedInviteInput = {
 const seedInvite = async (input: SeedInviteInput): Promise<void> => {
   const db = getDb();
   await db.insert(onboardingInvites).values({
-    token: input.token,
+    tokenHash: hashInviteToken(input.token),
+    tokenPrefix: input.token.slice(0, 8),
     orgId: input.orgId,
     emailPattern: '*@example.com',
     maxUses: 50,
@@ -187,6 +189,34 @@ skipDescribe('manager-alerts queries (Postgres integration)', () => {
     expect(result!.events[0].emailHashPrefix).toBe('deadbeef');
     expect(result!.events[0].ssoProvider).toBe('google');
     expect(result!.latestAt).toEqual(result!.events[0].receivedAt);
+  });
+
+  // -------------------------------------------------------------------------
+  // TC-I-10b (security-hardening-lowsev REQ-6) — the banner JOIN matches
+  // redemption_log.token_prefix against invites.token_prefix (= left(plaintext,8)),
+  // NOT left(token_hash, 8). A row whose plaintext prefix differs from its hash
+  // prefix must still surface — proving the JOIN migrated off LEFT(token, 8).
+  // -------------------------------------------------------------------------
+  it('TC-I-10b: JOIN matches on token_prefix (left(plaintext,8)), not left(hash,8)', async () => {
+    const { orgId } = await seedOrg();
+    const { userId: managerId } = await seedUser({ orgId, email: 'mgr@example.com', role: 'manager' });
+    const token = makeToken('tc-i-10b-join-on-prefix');
+    await seedInvite({ orgId, token });
+
+    // The whole point: the at-rest hash prefix differs from the plaintext
+    // prefix, so a JOIN on left(token_hash, 8) would NOT match the redemption.
+    const plaintextPrefix = token.slice(0, 8);
+    const hashPrefix = hashInviteToken(token).slice(0, 8);
+    expect(plaintextPrefix).not.toBe(hashPrefix);
+
+    // The redemption audit trail carries the PLAINTEXT prefix (what redeem +
+    // sso-auto write).
+    const { id } = await seedRedemption({ tokenPrefix: plaintextPrefix });
+
+    const result = await loadFirstAutoProvisionAlert(getDb(), orgId, managerId);
+    expect(result).not.toBeNull();
+    expect(result!.count).toBe(1);
+    expect(result!.events[0].eventId).toBe(id);
   });
 
   // -------------------------------------------------------------------------

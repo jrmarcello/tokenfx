@@ -20,6 +20,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { sql } from 'drizzle-orm';
 import { closeDb, getDb } from '@/lib/db/client';
 import { onboardingInvites, orgs, teams } from '@/lib/db/schema';
+import { hashInviteToken } from '@/lib/auth/tokens';
 import { matchActiveInvitesByEmail } from './match-active-invites';
 
 const SKIP = process.env.SKIP_PG_TESTS === '1';
@@ -57,7 +58,8 @@ type SeedInviteOpts = {
 const seedInvite = async (opts: SeedInviteOpts): Promise<void> => {
   const db = getDb();
   await db.insert(onboardingInvites).values({
-    token: opts.token,
+    tokenHash: hashInviteToken(opts.token),
+    tokenPrefix: opts.token.slice(0, 8),
     orgId: opts.orgId,
     teamId: opts.teamId ?? null,
     emailPattern: opts.emailPattern,
@@ -110,7 +112,7 @@ skipDescribe('matchActiveInvitesByEmail (REQ-5)', () => {
 
     const results = await matchActiveInvitesByEmail('dev+tag@x.com');
     expect(results).toHaveLength(1);
-    expect(results[0].token).toBe(token);
+    expect(results[0].tokenHash).toBe(hashInviteToken(token));
     expect(results[0].orgId).toBe(primary.orgId);
     expect(results[0].teamId).toBe(primary.teamId);
     expect(results[0].emailPattern).toBe('*@x.com');
@@ -130,7 +132,7 @@ skipDescribe('matchActiveInvitesByEmail (REQ-5)', () => {
 
     const results = await matchActiveInvitesByEmail('DEV@X.COM');
     expect(results).toHaveLength(1);
-    expect(results[0].token).toBe(token);
+    expect(results[0].tokenHash).toBe(hashInviteToken(token));
   });
 
   // -----------------------------------------------------------------------
@@ -171,7 +173,7 @@ skipDescribe('matchActiveInvitesByEmail (REQ-5)', () => {
 
     const results = await matchActiveInvitesByEmail('dev@x.com');
     expect(results).toHaveLength(1);
-    expect(results[0].token).toBe(liveToken);
+    expect(results[0].tokenHash).toBe(hashInviteToken(liveToken));
   });
 
   // -----------------------------------------------------------------------
@@ -196,7 +198,7 @@ skipDescribe('matchActiveInvitesByEmail (REQ-5)', () => {
 
     const results = await matchActiveInvitesByEmail('dev@x.com');
     expect(results).toHaveLength(1);
-    expect(results[0].token).toBe(liveToken);
+    expect(results[0].tokenHash).toBe(hashInviteToken(liveToken));
   });
 
   // -----------------------------------------------------------------------
@@ -224,7 +226,7 @@ skipDescribe('matchActiveInvitesByEmail (REQ-5)', () => {
 
     const results = await matchActiveInvitesByEmail('dev@x.com');
     expect(results).toHaveLength(1);
-    expect(results[0].token).toBe(liveToken);
+    expect(results[0].tokenHash).toBe(hashInviteToken(liveToken));
   });
 
   // -----------------------------------------------------------------------
@@ -285,7 +287,7 @@ skipDescribe('matchActiveInvitesByEmail (REQ-5)', () => {
 
     const results = await matchActiveInvitesByEmail('dev@münchen.de');
     expect(results).toHaveLength(1);
-    expect(results[0].token).toBe(token);
+    expect(results[0].tokenHash).toBe(hashInviteToken(token));
   });
 
   // -----------------------------------------------------------------------
@@ -303,6 +305,6 @@ skipDescribe('matchActiveInvitesByEmail (REQ-5)', () => {
 
     const results = await matchActiveInvitesByEmail('  dev@x.com  ');
     expect(results).toHaveLength(1);
-    expect(results[0].token).toBe(token);
+    expect(results[0].tokenHash).toBe(hashInviteToken(token));
   });
 });

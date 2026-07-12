@@ -421,7 +421,10 @@ const seedE2e = async (): Promise<void> => {
   await db
     .insert(onboardingInvites)
     .values({
-      token: wildcardToken,
+      // SSO-matched fixture (by email_pattern), never token-redeemed — the
+      // opaque hash-shaped value doubles as token_hash; prefix is its first 8.
+      tokenHash: wildcardToken,
+      tokenPrefix: wildcardToken.slice(0, 8),
       orgId: alphaOrgId,
       teamId: null,
       emailPattern: '*@e2e-sso.test',

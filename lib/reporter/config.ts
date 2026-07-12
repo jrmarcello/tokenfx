@@ -15,13 +15,78 @@ import { z } from 'zod';
  * undefined-secret crash inside the signer.
  */
 
+/**
+ * Hosts treated as loopback for the `central_url` transport-security gate.
+ *
+ * Exact-match Set (NOT substring/suffix) — the same semantics as
+ * `apps/server/lib/auth/auth-required.ts` `isLocalhostHost`, which exists
+ * specifically to defeat suffix attacks like `localhost.evil.com`. Direct
+ * reuse of that helper is not possible here: `lib/reporter/` is a separate
+ * root package from `apps/server` (a `packages/shared` extraction is Phase
+ * 4), so the allow-list is duplicated with an intentionally identical shape.
+ *
+ * WHATWG `URL` serializes an IPv6 hostname WITH its brackets, i.e.
+ * `new URL('http://[::1]:3232').hostname === '[::1]'`, so the loopback form
+ * of `::1` is stored bracketed to match what `URL.hostname` produces.
+ */
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set([
+  'localhost',
+  '127.0.0.1',
+  '[::1]',
+]);
+
+/**
+ * True iff `hostname` (exactly as produced by `new URL(...).hostname`) is a
+ * loopback host. The input is assumed already port-stripped and, for IPv6,
+ * bracketed — both guaranteed by `URL.hostname` — so an exact Set-membership
+ * test is sufficient (and deliberately rejects `localhost.evil.com` et al.).
+ */
+export const isLoopbackHost = (hostname: string): boolean =>
+  LOOPBACK_HOSTS.has(hostname);
+
+/**
+ * Shared `central_url` validator, used by BOTH the runtime config reader
+ * (`readConfig`, below) and the init script
+ * (`scripts/reporter-config-init.ts`) so the transport-security rule has a
+ * single source of truth.
+ *
+ * The reporter attaches `Authorization: Bearer <secret>` to every request it
+ * sends to `central_url`; over plaintext `http://` to a non-loopback host
+ * that bearer secret would travel in the clear. Require `https:` unless the
+ * host is loopback (dev setups routinely run the central server on
+ * `http://localhost`).
+ *
+ * The refine parses with the WHATWG `URL` constructor — the SAME parser the
+ * reporter's HTTP client uses — rather than trusting Zod's `.url()` check,
+ * which in Zod v4 is a lenient regex that accepts strings WHATWG rejects
+ * (e.g. `http://[::1].evil.com`). We therefore parse defensively and
+ * fail-closed: an input that `new URL()` cannot parse is rejected, not
+ * allowed through. `.url()` is kept only so a totally malformed value still
+ * gets Zod's clearer "invalid url" message.
+ */
+export const centralUrlSchema = z
+  .string()
+  .url()
+  .refine(
+    (value) => {
+      let url: URL;
+      try {
+        url = new URL(value);
+      } catch {
+        return false;
+      }
+      return url.protocol === 'https:' || isLoopbackHost(url.hostname);
+    },
+    { message: 'central_url must use https unless the host is loopback' },
+  );
+
 const ReporterConfigSchema = z
   .object({
     key_id: z.string().min(1),
     secret: z.string().min(1),
     machine_id: z.string().min(1),
     user_email: z.string().email(),
-    central_url: z.string().url(),
+    central_url: centralUrlSchema,
     project_secret: z.string().min(1),
   })
   .strict();

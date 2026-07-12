@@ -4,6 +4,8 @@
  * Postgres-backed via Testcontainers. Skipped when SKIP_PG_TESTS=1.
  *
  * TC mappings:
+ *   - TC-I-01  — at-rest hashing: token_hash = sha256(plaintext), token_prefix = left(plaintext,8).
+ *   - TC-I-06  — revoke by token_prefix + fail-loud prefix collision (security-hardening-lowsev).
  *   - TC-I-10  — happy create: row inserted, token + prefix returned, audit row.
  *   - TC-I-23  — revoke active invite: revoked_at set, kind='revoked'.
  *   - TC-I-24  — idempotent revoke: already-revoked → kind='already-revoked'.
@@ -33,6 +35,7 @@ import {
   teams,
   users,
 } from '@/lib/db/schema';
+import { hashInviteToken } from '@/lib/auth/tokens';
 import {
   __resetIdempotencyCache,
   createInviteCore,
@@ -159,7 +162,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
       const [row] = await db
         .select()
         .from(onboardingInvites)
-        .where(eq(onboardingInvites.token, result.token));
+        .where(eq(onboardingInvites.tokenHash, hashInviteToken(result.token)));
       expect(row).toBeDefined();
       expect(row.orgId).toBe(orgAId);
       expect(row.maxUses).toBe(1);
@@ -181,10 +184,41 @@ skipDescribe('invite queries (Postgres integration)', () => {
       const [row] = await db
         .select()
         .from(onboardingInvites)
-        .where(eq(onboardingInvites.token, result.token));
+        .where(eq(onboardingInvites.tokenHash, hashInviteToken(result.token)));
       expect(row.teamId).toBeNull();
       expect(row.emailPattern).toBeNull();
       expect(row.createdBy).toBeNull();
+    });
+
+    it('TC-I-01: stores token_hash = sha256(plaintext) (never the plaintext) and token_prefix = left(plaintext, 8)', async () => {
+      const db = getDb();
+      const result = await createInviteRow(db, {
+        orgId: orgAId,
+        teamId: null,
+        emailPattern: null,
+        maxUses: 1,
+        expiresAt: new Date(Date.now() + 60_000),
+        createdBy: managerAId,
+      });
+
+      // Read the row back by its at-rest hash (the PRIMARY KEY).
+      const [row] = await db
+        .select({
+          tokenHash: onboardingInvites.tokenHash,
+          tokenPrefix: onboardingInvites.tokenPrefix,
+        })
+        .from(onboardingInvites)
+        .where(eq(onboardingInvites.tokenHash, hashInviteToken(result.token)));
+      expect(row).toBeDefined();
+
+      // token_hash holds sha256(plaintext) — NOT the plaintext bearer token.
+      expect(row.tokenHash).toBe(hashInviteToken(result.token));
+      expect(row.tokenHash).not.toBe(result.token);
+      expect(row.tokenHash).toMatch(/^[0-9a-f]{64}$/);
+      // token_prefix is the first 8 chars of the PLAINTEXT (UI/audit correlation).
+      expect(row.tokenPrefix).toBe(result.token.slice(0, 8));
+      // A read-only DB dump never yields the plaintext credential.
+      expect(JSON.stringify(row)).not.toContain(result.token);
     });
   });
 
@@ -212,7 +246,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
       const [row] = await db
         .select({ revokedAt: onboardingInvites.revokedAt })
         .from(onboardingInvites)
-        .where(eq(onboardingInvites.token, created.token));
+        .where(eq(onboardingInvites.tokenHash, hashInviteToken(created.token)));
       expect(row.revokedAt).not.toBeNull();
     });
 
@@ -235,7 +269,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
       const [beforeSecond] = await db
         .select({ revokedAt: onboardingInvites.revokedAt })
         .from(onboardingInvites)
-        .where(eq(onboardingInvites.token, created.token));
+        .where(eq(onboardingInvites.tokenHash, hashInviteToken(created.token)));
       const initialRevokedAt = beforeSecond.revokedAt?.getTime();
 
       // Sleep briefly so a buggy implementation that updates the timestamp
@@ -254,7 +288,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
       const [afterSecond] = await db
         .select({ revokedAt: onboardingInvites.revokedAt })
         .from(onboardingInvites)
-        .where(eq(onboardingInvites.token, created.token));
+        .where(eq(onboardingInvites.tokenHash, hashInviteToken(created.token)));
       expect(afterSecond.revokedAt?.getTime()).toBe(initialRevokedAt);
     });
 
@@ -280,7 +314,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
       const [row] = await db
         .select({ revokedAt: onboardingInvites.revokedAt })
         .from(onboardingInvites)
-        .where(eq(onboardingInvites.token, created.token));
+        .where(eq(onboardingInvites.tokenHash, hashInviteToken(created.token)));
       expect(row.revokedAt).toBeNull();
     });
 
@@ -293,7 +327,8 @@ skipDescribe('invite queries (Postgres integration)', () => {
       const tokenA = sharedPrefix + 'a'.repeat(56);
       const tokenB = sharedPrefix + 'b'.repeat(56);
       await db.insert(onboardingInvites).values({
-        token: tokenA,
+        tokenHash: hashInviteToken(tokenA),
+        tokenPrefix: tokenA.slice(0, 8),
         orgId: orgAId,
         teamId: null,
         emailPattern: null,
@@ -302,7 +337,8 @@ skipDescribe('invite queries (Postgres integration)', () => {
         createdBy: managerAId,
       });
       await db.insert(onboardingInvites).values({
-        token: tokenB,
+        tokenHash: hashInviteToken(tokenB),
+        tokenPrefix: tokenB.slice(0, 8),
         orgId: orgAId,
         teamId: null,
         emailPattern: null,
@@ -322,16 +358,84 @@ skipDescribe('invite queries (Postgres integration)', () => {
 
       // Neither row should have been revoked.
       const rows = await db
-        .select({ token: onboardingInvites.token, revokedAt: onboardingInvites.revokedAt })
+        .select({ tokenPrefix: onboardingInvites.tokenPrefix, revokedAt: onboardingInvites.revokedAt })
         .from(onboardingInvites)
         .where(
           and(
-            sql`left(${onboardingInvites.token}, 8) = ${sharedPrefix}`,
+            eq(onboardingInvites.tokenPrefix, sharedPrefix),
             eq(onboardingInvites.orgId, orgAId),
           ),
         );
       expect(rows).toHaveLength(2);
       for (const r of rows) expect(r.revokedAt).toBeNull();
+    });
+
+    it('TC-I-06: revoke resolves by token_prefix; two active invites sharing a prefix fail loudly (kind="collision")', async () => {
+      const db = getDb();
+      // (a) Happy: a normally-created invite is revoked by its plaintext-derived
+      // prefix — the revoke path resolves on the physical token_prefix column,
+      // not on left(token_hash, 8).
+      const created = await createInviteRow(db, {
+        orgId: orgAId,
+        teamId: null,
+        emailPattern: null,
+        maxUses: 1,
+        expiresAt: new Date(Date.now() + 60_000),
+        createdBy: managerAId,
+      });
+      const ok = await revokeInviteByPrefix(db, {
+        prefix: created.tokenPrefix,
+        orgId: orgAId,
+      });
+      expect(ok).toEqual({ kind: 'revoked', tokenPrefix: created.tokenPrefix });
+      const [revoked] = await db
+        .select({ revokedAt: onboardingInvites.revokedAt })
+        .from(onboardingInvites)
+        .where(eq(onboardingInvites.tokenHash, hashInviteToken(created.token)));
+      expect(revoked.revokedAt).not.toBeNull();
+
+      // (b) Collision: two ACTIVE invites whose PLAINTEXT shares an 8-char
+      // prefix. Distinct full tokens → distinct token_hash (PK holds), same
+      // token_prefix → revoke must refuse rather than revoke the wrong one.
+      const sharedPrefix = 'feedface';
+      const tA = sharedPrefix + 'a'.repeat(56);
+      const tB = sharedPrefix + 'b'.repeat(56);
+      await db.insert(onboardingInvites).values({
+        tokenHash: hashInviteToken(tA),
+        tokenPrefix: sharedPrefix,
+        orgId: orgAId,
+        teamId: null,
+        emailPattern: null,
+        maxUses: 1,
+        expiresAt: new Date(Date.now() + 60_000),
+        createdBy: managerAId,
+      });
+      await db.insert(onboardingInvites).values({
+        tokenHash: hashInviteToken(tB),
+        tokenPrefix: sharedPrefix,
+        orgId: orgAId,
+        teamId: null,
+        emailPattern: null,
+        maxUses: 1,
+        expiresAt: new Date(Date.now() + 60_000),
+        createdBy: managerAId,
+      });
+
+      const collision = await revokeInviteByPrefix(db, {
+        prefix: sharedPrefix,
+        orgId: orgAId,
+      });
+      expect(collision.kind).toBe('collision');
+      if (collision.kind === 'collision') {
+        expect(collision.matchCount).toBeGreaterThanOrEqual(2);
+      }
+      // Neither collided row was revoked.
+      const collidedRows = await db
+        .select({ revokedAt: onboardingInvites.revokedAt })
+        .from(onboardingInvites)
+        .where(eq(onboardingInvites.tokenPrefix, sharedPrefix));
+      expect(collidedRows).toHaveLength(2);
+      for (const r of collidedRows) expect(r.revokedAt).toBeNull();
     });
 
     it('returns "not-found" when prefix has the wrong length (defense-in-depth)', async () => {
@@ -367,7 +471,8 @@ skipDescribe('invite queries (Postgres integration)', () => {
       ];
       for (let i = 0; i < tokens.length; i++) {
         await db.insert(onboardingInvites).values({
-          token: tokens[i],
+          tokenHash: hashInviteToken(tokens[i]),
+          tokenPrefix: tokens[i].slice(0, 8),
           orgId: orgAId,
           teamId: null,
           emailPattern: null,
@@ -460,7 +565,8 @@ skipDescribe('invite queries (Postgres integration)', () => {
         // Use a unique token per case so the DB inserts don't collide.
         const token = (expected + '_').padEnd(8, 'x') + 'x'.repeat(56);
         await db.insert(onboardingInvites).values({
-          token: token.slice(0, 64),
+          tokenHash: hashInviteToken(token.slice(0, 64)),
+          tokenPrefix: token.slice(0, 8),
           orgId: orgAId,
           teamId: null,
           emailPattern: null,
@@ -613,7 +719,7 @@ skipDescribe('invite queries (Postgres integration)', () => {
       expect(r2.tokenPrefix).toBe(r1.tokenPrefix);
 
       const rows = await db
-        .select({ id: onboardingInvites.token })
+        .select({ id: onboardingInvites.tokenHash })
         .from(onboardingInvites);
       expect(rows).toHaveLength(1);
 
@@ -910,7 +1016,8 @@ skipDescribe('invite queries (Postgres integration)', () => {
       // collision
       const sharedPrefix = 'deadbeef';
       await db.insert(onboardingInvites).values({
-        token: sharedPrefix + '1'.repeat(56),
+        tokenHash: hashInviteToken(sharedPrefix + '1'.repeat(56)),
+        tokenPrefix: sharedPrefix,
         orgId: orgAId,
         teamId: null,
         emailPattern: null,
@@ -919,7 +1026,8 @@ skipDescribe('invite queries (Postgres integration)', () => {
         createdBy: managerAId,
       });
       await db.insert(onboardingInvites).values({
-        token: sharedPrefix + '2'.repeat(56),
+        tokenHash: hashInviteToken(sharedPrefix + '2'.repeat(56)),
+        tokenPrefix: sharedPrefix,
         orgId: orgAId,
         teamId: null,
         emailPattern: null,

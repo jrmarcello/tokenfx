@@ -292,7 +292,8 @@ const defaultProvisionInTx = async (
     //    (deleted, not just revoked) — treat as race.
     const locked = await tx
       .select({
-        token: onboardingInvites.token,
+        tokenHash: onboardingInvites.tokenHash,
+        tokenPrefix: onboardingInvites.tokenPrefix,
         orgId: onboardingInvites.orgId,
         teamId: onboardingInvites.teamId,
         maxUses: onboardingInvites.maxUses,
@@ -301,7 +302,7 @@ const defaultProvisionInTx = async (
         revokedAt: onboardingInvites.revokedAt,
       })
       .from(onboardingInvites)
-      .where(eq(onboardingInvites.token, input.invite.token))
+      .where(eq(onboardingInvites.tokenHash, input.invite.tokenHash))
       .for('update')
       .limit(1);
 
@@ -314,7 +315,7 @@ const defaultProvisionInTx = async (
     const fresh = locked[0];
     const revalidation = revalidateInvite(
       {
-        token: fresh.token,
+        token: fresh.tokenHash,
         revokedAt: fresh.revokedAt,
         expiresAt: fresh.expiresAt,
         usedCount: fresh.usedCount,
@@ -343,7 +344,7 @@ const defaultProvisionInTx = async (
     await tx
       .update(onboardingInvites)
       .set({ usedCount: sql`${onboardingInvites.usedCount} + 1` })
-      .where(eq(onboardingInvites.token, fresh.token));
+      .where(eq(onboardingInvites.tokenHash, fresh.tokenHash));
 
     // 6. Audit rows — INSIDE the tx so they're atomic with the INSERT
     //    (Decisão #23). We call the raw module-level writers bound to the
@@ -361,7 +362,7 @@ const defaultProvisionInTx = async (
       outcome: 'accepted-sso-auto',
     });
     await rawWriteRedemptionLog(tx, {
-      tokenPrefix: fresh.token.slice(0, 8),
+      tokenPrefix: fresh.tokenPrefix,
       machineId: null,
       emailDomain: input.emailDomain,
       emailHash: input.emailHash,
@@ -637,16 +638,18 @@ export const evaluateAutoProvision = async (
     return { kind: 'rejected-no-match' };
   }
   if (matches.length >= 2) {
-    // Sort alphabetically by token for deterministic forensic tracking.
-    const sorted = [...matches].sort((a, b) => a.token.localeCompare(b.token));
-    const firstPrefix = sorted[0].token.slice(0, 8);
+    // Sort by token hash for deterministic forensic tracking.
+    const sorted = [...matches].sort((a, b) =>
+      a.tokenHash.localeCompare(b.tokenHash),
+    );
+    const firstPrefix = sorted[0].tokenPrefix;
     // Forensic detail goes to logger (not the audit row — schema doesn't
     // currently store per-row metadata). Future spec can add a
     // metadata_json column; for spec b we log structured.
     logger.warn('sso-auto-provision rejected-multiple-matches', {
       email_domain: domain,
       match_count: sorted.length,
-      matching_prefixes: sorted.map((s) => s.token.slice(0, 8)),
+      matching_prefixes: sorted.map((s) => s.tokenPrefix),
     });
     await writeAuditRowsForRejection(deps, {
       outcome: 'rejected-multiple-matches',
@@ -656,7 +659,7 @@ export const evaluateAutoProvision = async (
     return { kind: 'rejected-multiple-matches' };
   }
   const invite = matches[0];
-  const tokenPrefix = invite.token.slice(0, 8);
+  const tokenPrefix = invite.tokenPrefix;
 
   // -----------------------------------------------------------------------
   // Step 7: allowed_sso_providers (REQ-4) via `enforceAllowedProviders`

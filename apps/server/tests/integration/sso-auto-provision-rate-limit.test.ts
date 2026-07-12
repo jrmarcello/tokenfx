@@ -71,6 +71,7 @@ import {
   evaluateAutoProvision,
 } from '@/lib/auth/sso-auto-provision';
 import { __resetSsoRateLimit } from '@/lib/auth/rate-limit-sso';
+import { hashInviteToken } from '@/lib/auth/tokens';
 
 const SKIP = process.env.SKIP_PG_TESTS === '1';
 const skipDescribe = SKIP ? describe.skip : describe;
@@ -105,7 +106,8 @@ const seedOrgInvite = async (): Promise<SeedHandles> => {
     .returning({ id: teams.id });
   const token = make64HexToken('rl-task14-invite');
   await db.insert(onboardingInvites).values({
-    token,
+    tokenHash: hashInviteToken(token),
+    tokenPrefix: token.slice(0, 8),
     orgId: org.id,
     teamId: team.id,
     emailPattern: '*@example.com',

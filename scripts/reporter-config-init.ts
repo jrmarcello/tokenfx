@@ -21,6 +21,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
+import { centralUrlSchema } from '@/lib/reporter/config';
 import { log } from '@/lib/logger';
 
 const CONFIG_PATH = path.resolve(process.cwd(), 'data/reporter-config.json');
@@ -31,6 +32,10 @@ const CONFIG_PATH = path.resolve(process.cwd(), 'data/reporter-config.json');
  * we mint it on first run if absent. Mint must produce ≥ 64 hex chars
  * (32 random bytes) so the runtime `min(1)` check is satisfied with
  * room to spare.
+ *
+ * `central_url` reuses the shared `centralUrlSchema` from the runtime
+ * config module so the https-unless-loopback transport rule is enforced
+ * identically in both validators (single source of truth).
  */
 const ConfigSchema = z
   .object({
@@ -38,7 +43,7 @@ const ConfigSchema = z
     secret: z.string().min(1),
     machine_id: z.string().uuid(),
     user_email: z.string().email(),
-    central_url: z.string().url(),
+    central_url: centralUrlSchema,
     project_secret: z.string().min(64).optional(),
   })
   .strict();

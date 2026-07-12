@@ -27,7 +27,8 @@ import { onboardingInvites } from '@/lib/db/schema';
 import { matchEmailPattern } from './match-email-pattern';
 
 export type ActiveInvite = {
-  token: string;
+  tokenHash: string;
+  tokenPrefix: string;
   orgId: string;
   teamId: string | null;
   emailPattern: string | null;
@@ -62,7 +63,8 @@ export const matchActiveInvitesByEmail = async (
   // that wants to inspect null-pattern invites too.
   const rows = await db
     .select({
-      token: onboardingInvites.token,
+      tokenHash: onboardingInvites.tokenHash,
+      tokenPrefix: onboardingInvites.tokenPrefix,
       orgId: onboardingInvites.orgId,
       teamId: onboardingInvites.teamId,
       emailPattern: onboardingInvites.emailPattern,

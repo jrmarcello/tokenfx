@@ -11,8 +11,11 @@
  * provider config carries the nonce check so any such regression
  * fails at typecheck or unit-test time, not at the E2E layer.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { NextRequest } from 'next/server';
+import type { Session } from 'next-auth';
 
+import { buildRootMiddleware } from './localhost-guard';
 import { authConfig, buildAuthConfig } from './auth.config';
 
 describe('authConfig — Okta provider checks (sso-nonce-replay TC-U-10)', () => {
@@ -121,5 +124,158 @@ describe('authConfig — pinned cookie options (review-report-2026-05-14 TC-U-32
     expect(getCookieOptions(prod, key).secure).toBe(true);
     const test = buildAuthConfig({ ...process.env, NODE_ENV: 'test' });
     expect(getCookieOptions(test, key).secure).toBe(false);
+  });
+});
+
+/**
+ * `/api/manager/*` auth gate — security-hardening-lowsev REQ-3 (TASK-4).
+ *
+ * Extending only the middleware `matcher` to `/api/manager/:path*` is a
+ * no-op: `authorized()` short-circuits with `return true` for any path
+ * that does not start with `/manager` (and `/api/manager/*` starts with
+ * `/api`). REQ-3 closes the gap in BOTH places — this block exercises the
+ * `authorized()` half by calling it directly with a hand-built
+ * `{ request, auth }` stub (Edge-safe: no Postgres, no NextAuth runtime).
+ *
+ * SSO mode is forced via `AUTH_REQUIRED='true'` so `isAuthRequired(env)`
+ * is true and the callback runs its full gating logic (rather than the
+ * localhost-mode `return true` at the top).
+ */
+type AuthorizedFn = NonNullable<
+  NonNullable<ReturnType<typeof buildAuthConfig>['callbacks']>['authorized']
+>;
+
+const ssoAuthorized = (): AuthorizedFn => {
+  const cfg = buildAuthConfig({
+    NODE_ENV: 'test',
+    AUTH_REQUIRED: 'true',
+  } as NodeJS.ProcessEnv);
+  const authorized = cfg.callbacks?.authorized;
+  if (!authorized) {
+    throw new Error('authConfig.callbacks.authorized must be defined');
+  }
+  return authorized;
+};
+
+const apiManagerReq = (): NextRequest =>
+  new NextRequest('http://localhost/api/manager/dismiss-anomaly');
+
+const sessionWithRole = (role: 'member' | 'manager' | 'admin'): Session =>
+  ({
+    user: { email: 'u@example.test', role, orgId: 'org-1' },
+    expires: '2099-01-01',
+  }) as Session;
+
+/** Duck-typed Response check — avoids cross-realm `instanceof` pitfalls. */
+const isResponseLike = (value: unknown): value is Response =>
+  typeof value === 'object' &&
+  value !== null &&
+  typeof (value as { status?: unknown }).status === 'number' &&
+  typeof (value as { json?: unknown }).json === 'function';
+
+const expectJsonError = async (
+  result: Awaited<ReturnType<AuthorizedFn>>,
+  status: number,
+  body: unknown,
+): Promise<void> => {
+  expect(
+    isResponseLike(result),
+    'authorized() must return a Response (not a boolean short-circuit)',
+  ).toBe(true);
+  const response = result as Response;
+  expect(response.status).toBe(status);
+  await expect(response.json()).resolves.toEqual(body);
+};
+
+describe('authConfig.authorized() — /api/manager gate (security-hardening-lowsev TC-I-07)', () => {
+  it('TC-I-07 security: SSO mode + no session → 401 JSON {error:{message,code}}', async () => {
+    const result = await ssoAuthorized()({ request: apiManagerReq(), auth: null });
+    await expectJsonError(result, 401, {
+      error: { message: 'unauthorized', code: 'unauthorized' },
+    });
+  });
+
+  it('TC-I-07b security: SSO mode + role=member → 403 JSON {error:{message,code}}', async () => {
+    const result = await ssoAuthorized()({
+      request: apiManagerReq(),
+      auth: sessionWithRole('member'),
+    });
+    await expectJsonError(result, 403, {
+      error: { message: 'forbidden', code: 'forbidden' },
+    });
+  });
+
+  it.each(['manager', 'admin'] as const)(
+    'TC-I-07c happy: SSO mode + role=%s → passes to handler (returns true, no short-circuit)',
+    async (role) => {
+      const result = await ssoAuthorized()({
+        request: apiManagerReq(),
+        auth: sessionWithRole(role),
+      });
+      expect(result).toBe(true);
+    },
+  );
+});
+
+/**
+ * Root middleware localhost-mode Host gate — security-hardening-lowsev
+ * REQ-3 (TASK-4). `buildRootMiddleware` is the Edge-safe dispatcher
+ * extracted from `middleware.ts`: the root middleware itself cannot be
+ * imported here because its top-level `NextAuth(authConfig).auth` pulls
+ * `next-auth`'s main entry (`lib/env.js` → extensionless `import
+ * 'next/server'`), which Vitest's ESM loader cannot resolve — the same
+ * reason `lib/auth/middleware.ts` lazy-imports `./auth`. The factory takes
+ * the SSO handler as a DI seam (mirroring that file's `AuthFn`), so with
+ * `AUTH_REQUIRED=false` the dispatch routes to the localhost host-gate
+ * without ever touching NextAuth. The sentinel SSO handler throws to prove
+ * localhost-mode never delegates to SSO. TC-I-08 asserts the 403 body
+ * matches the `{error:{message,code}}` shape required by security.md
+ * (previously `{error:'forbidden'}`, a bare string).
+ */
+const throwingSso = (): never => {
+  throw new Error('SSO handler must not run in localhost mode');
+};
+
+const runMiddleware = (req: NextRequest): Response =>
+  buildRootMiddleware(throwingSso)(req) as Response;
+
+describe('root middleware — localhost-mode Host gate (security-hardening-lowsev TC-I-08/09)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('TC-I-08 security: localhost-mode + non-loopback Host → 403 JSON {error:{message,code}}', async () => {
+    vi.stubEnv('AUTH_REQUIRED', 'false');
+    const req = new NextRequest('http://localhost/api/manager/dismiss-anomaly', {
+      headers: { host: 'evil.com' },
+    });
+    const res = runMiddleware(req);
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual({
+      error: { message: 'forbidden', code: 'localhost-only' },
+    });
+  });
+
+  it('TC-I-09 happy: localhost-mode + loopback Host → passes (NextResponse.next)', () => {
+    vi.stubEnv('AUTH_REQUIRED', 'false');
+    const req = new NextRequest('http://localhost/api/manager/dismiss-anomaly', {
+      headers: { host: 'localhost' },
+    });
+    const res = runMiddleware(req);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-middleware-next')).toBe('1');
+  });
+
+  it('SSO mode delegates to the injected NextAuth handler (never the localhost gate)', () => {
+    vi.stubEnv('AUTH_REQUIRED', 'true');
+    const sentinel = Symbol('sso-ran');
+    const spySso = (): symbol => sentinel;
+    const req = new NextRequest('http://localhost/api/manager/dismiss-anomaly', {
+      headers: { host: 'evil.com' },
+    });
+    // With AUTH_REQUIRED unset/true the dispatcher must call the SSO handler
+    // and return its value verbatim — a regression that always routed through
+    // the localhost gate would return a 403 Response instead of the sentinel.
+    expect(buildRootMiddleware(spySso)(req)).toBe(sentinel);
   });
 });
