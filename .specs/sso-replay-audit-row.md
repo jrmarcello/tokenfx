@@ -1,6 +1,6 @@
 # Spec: sso-replay-audit-row
 
-## Status: IN_PROGRESS
+## Status: DONE
 
 ## Context
 
@@ -667,3 +667,7 @@ effects); the error page (TASK-4) is a pure render-only page; TASK-5
 (E2E) unchanged in intent, simplified in setup.
 
 
+
+### Fechamento retroativo (2026-07-12)
+
+Status fechado retroativamente — código commitado em 1961b61 (ver .specs/docs-reconciliation.md item 2.4).

@@ -1,6 +1,6 @@
 # Spec: oauth-idp-stub
 
-## Status: IN_PROGRESS
+## Status: DONE
 
 ## Context
 
@@ -790,3 +790,7 @@ Final validation post-fixes:
 - E2E: deferred (`pnpm test:e2e` requires full stack; spec files written + ready)
 
 Status → DONE pending Pause 2 commit approval.
+
+### Fechamento retroativo (2026-07-12)
+
+Status fechado retroativamente — código commitado em c218fb2 (ver .specs/docs-reconciliation.md item 2.4).

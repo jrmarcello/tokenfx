@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **TokenFx** — personal dashboard tracking Claude Code token-effectiveness. Ingests JSONL transcripts from `~/.claude/projects/` and OTEL Prometheus metrics from Claude Code's local endpoint. Surfaces consumption KPIs + effectiveness heuristics + manual ratings. Localhost-only, SQLite-backed.
 
-Stack: Next.js 15 (App Router) + TypeScript strict + Tailwind + shadcn/ui + Recharts + better-sqlite3 + Vitest + Playwright. Managed with pnpm.
+Stack: Next.js 16 (App Router) + TypeScript strict + Tailwind + shadcn/ui + Recharts + better-sqlite3 + Vitest + Playwright. Managed with pnpm.
 
 ## Common Commands
 

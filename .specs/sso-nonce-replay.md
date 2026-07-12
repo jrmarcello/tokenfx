@@ -1,6 +1,6 @@
 # Spec: sso-nonce-replay
 
-## Status: IN_PROGRESS
+## Status: DONE
 
 ## Context
 
@@ -568,3 +568,7 @@ File-overlap analysis:
 ## Execution Log
 
 <!-- Ralph Loop appends here automatically — do not edit manually -->
+
+### Fechamento retroativo (2026-07-12)
+
+Status fechado retroativamente — código commitado em 4eec79e (ver .specs/docs-reconciliation.md item 2.4).

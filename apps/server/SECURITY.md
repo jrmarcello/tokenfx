@@ -157,42 +157,50 @@ See `.specs/central-server-onboarding-v2-sso.threat-model.md`:
 - §Threat 4 (IdP-breach forensics)
 - §Decisão #10 (REVOKE role-name strategy)
 
-## 6. Deferred E2E coverage
+## 6. Live SSO E2E coverage (idp-stub)
 
-The Playwright spec `apps/server/tests/e2e/sso-auto-provision.spec.ts` is
-shipped as a `test.describe.skip` placeholder with a module-level
-`console.warn`. Two cases are deferred:
+The former `test.describe.skip` placeholder
+(`apps/server/tests/e2e/sso-auto-provision.spec.ts`) has been **deleted**.
+Its two deferred cases are now covered by **live** Playwright e2e tests
+driving a real OIDC round-trip against a local IdP stub:
 
-- **TC-E2E-01 / REQ-13** — full Google SSO sign-in completing the OAuth
-  round-trip and provisioning a `users` row. Blocked on the absence of a
-  stubbed Google OAuth IdP in the Playwright harness. The
-  `e2e-bypass-provider` (see `lib/auth/e2e-bypass-provider.ts`) is **not**
-  a valid substitute because it bypasses the `signIn` callback entirely
-  and therefore exercises neither the auto-provision orchestrator
-  (`lib/auth/sso-auto-provision.ts`) nor the audit-log writers.
-  **Compensating coverage:** TC-I-01..15 + TC-I-22..27
-  (`tests/integration/sso-auto-provision-flow.test.ts`) drive the same
-  signIn callback with a synthetic OAuth profile.
+- **IdP stub** — `apps/idp-stub/` is an Okta-compatible OIDC server
+  (Hono + jose, RS256 `id_token`s NextAuth's verifier accepts). Spec:
+  `.specs/oauth-idp-stub.md`. Wiring is env-driven only
+  (`OKTA_ISSUER=http://localhost:3001`, `OKTA_CLIENT_ID`,
+  `OKTA_CLIENT_SECRET`, `TOKENFX_SSO_ISSUERS_OKTA`) — no
+  `auth.config.ts` changes. Scenario claims are set per-test via
+  `POST /admin/scenario`.
 
-- **TC-E2E-02 / REQ-16** — cross-origin POST to `/api/auth/signin`
-  returning HTTP 403 + writing a `rejected-csrf` audit row. Tractable
-  with the existing `global-setup.ts` (which already binds the dev
-  server to `127.0.0.1`) — only blocked on REQ-16 wiring (TASK-9 +
-  TASK-11). **Compensating coverage:** TC-I-28..30 + TC-I-44
-  (`tests/integration/sso-auto-provision-csrf.test.ts`) exercise the
-  same Origin/Referer guard at the integration layer.
+- **TC-E2E-01 / REQ-13** — full SSO sign-in (signin → IdP → callback →
+  session → gated page) with auto-provisioned `users` row. Live in
+  `tests/e2e/sso-flow.spec.ts`. Because the flow goes through the real
+  `signIn` callback, it exercises the auto-provision orchestrator
+  (`lib/auth/sso-auto-provision.ts`) and the audit-log writers — unlike
+  the `e2e-bypass-provider`, which remains unsuitable for this purpose.
 
-**Re-enablement criteria:**
+- **TC-E2E-02 / REQ-16** — cross-origin signin initiation rejected with
+  HTTP 403. Live in `tests/e2e/sso-flow.spec.ts`.
 
-- TC-E2E-02 unlocks the moment the `csrf-origin-guard.ts` helper +
-  `apps/server/middleware.ts` matcher extension merge. Flip the
-  `describe.skip` to `describe`, replace the `expect.fail(...)` with the
-  inline `request.post(...)` block already sketched in the test
-  comments, and drop the module-level `console.warn`.
-- TC-E2E-01 unlocks once a fake-Google OAuth harness is added (likely a
-  separate spike under `tests/e2e/helpers/` that intercepts
-  `accounts.google.com` + token-exchange URLs via Playwright route
-  handlers). Until then, the integration-test layer carries the load.
+Integration coverage (TC-I-01..15, TC-I-22..30, TC-I-44 in
+`tests/integration/sso-auto-provision-flow.test.ts` and
+`tests/integration/sso-auto-provision-csrf.test.ts`) remains in place as
+the fast-feedback layer for the same paths.
+
+**How the stub runs:**
+
+- **Local** — `tests/e2e/global-setup.ts` spawns `@tokenfx/idp-stub`
+  before the dev server and exports the `OKTA_*` env vars; stub stdio is
+  captured (with redaction) to `tests/e2e/.logs/idp-stub.log`.
+- **Docker smoke profile** — the root `docker-compose.yaml` `smoke`
+  profile runs a `tokenfx-idp-stub` service (port bound to
+  `127.0.0.1:3001`); the server container depends on its healthcheck and
+  points `OKTA_ISSUER` at it. The stub's `checkBootEnv` refuses
+  `NODE_ENV=production` at boot, so it cannot ship in a real deployment.
+
+Related specs: `.specs/oauth-idp-stub.md` (stub + TC-E2E-01/02 closure),
+`.specs/sso-e2e-live-execution.md` (remaining manager-ui e2e promoted to
+live), `.specs/sso-replay-audit-row.md` (replay audit-row e2e).
 
 ## 7. Manager UI privacy + safety invariants (spec c)
 

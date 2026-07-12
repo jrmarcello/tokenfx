@@ -17,20 +17,17 @@ cd apps/server && cp .env.example .env
 pnpm dev:server
 ```
 
-The dev server boots on `http://localhost:3232`. Sign in via the configured SSO provider; first user in an org is auto-promoted to `admin` until role assignment ships.
+The dev server boots on `http://localhost:3232`. Sign in via the configured SSO provider; the first user in an org is auto-promoted to `admin`. Role assignment is available to admins at `/manager/admin/users` (`updateUserRoleAction`).
 
-### Re-installing deps from inside `apps/server/`
+### Installing deps (workspace note)
 
-`apps/server` is **not** declared in the root `pnpm-workspace.yaml` `packages:` array (deliberate — the two apps share no code, just a parent directory). This has a sharp edge: running `pnpm install` from inside `apps/server/` is a silent no-op, because pnpm sees the parent's `pnpm-workspace.yaml` and treats `apps/server` as a workspace member of an empty workspace. Result: existing `node_modules` symlinks aren't refreshed, and a `tsc --noEmit` will fail with `Cannot find module 'drizzle-orm'` / `next-auth` / `pg` — even though the packages are physically present in `.pnpm/`.
+Since 2026-05-12 the root `pnpm-workspace.yaml` declares `packages: ['apps/*']`, so `apps/server` **is** a workspace member — a plain `pnpm install` at the repo root installs everything, and running it from inside `apps/server/` also works.
 
-Always use `--ignore-workspace` when installing from this directory:
-
-```bash
-cd apps/server
-pnpm install --ignore-workspace   # treats apps/server as a standalone project
-```
-
-The flag tells pnpm to ignore the parent workspace file and resolve deps using only `apps/server/package.json` + `apps/server/pnpm-lock.yaml`. After this, `pnpm typecheck` and `pnpm lint` should pass cleanly.
+> **Historical note:** before that date `apps/server` lived outside the
+> workspace and required `pnpm install --ignore-workspace` from inside the
+> directory. That ritual is no longer necessary; `apps/server/pnpm-lock.yaml`
+> remains only for the standalone Docker build. If `tsc --noEmit` ever fails
+> with `Cannot find module 'drizzle-orm'`, re-run `pnpm install` at the root.
 
 ## Privacy boundary (REQ-23)
 
@@ -41,7 +38,7 @@ The reporter on each dev's machine ships **sanitized aggregates only**. There
 is no transcript content, no tool input/output, no filesystem path, and no
 free-form note in the wire payload — by construction.
 
-### Allowlist (20 fields permitted to leave the dev's machine)
+### Allowlist (27 fields permitted to leave the dev's machine)
 
 | Field | Type | What it carries |
 | --- | --- | --- |
@@ -65,6 +62,20 @@ free-form note in the wire payload — by construction.
 | `cache_hit_ratio` | number \| null | 0..1 |
 | `output_input_ratio` | number \| null | 0..infinity |
 | `subagent_usage_ratio` | number \| null | 0..1 |
+
+#### Outcome fields (v3, optional)
+
+Added by `manager-dashboard-v3-outcomes` (REQ-7). All 7 are `.optional().nullable()` in the wire schema: **old reporters omit the keys entirely** (`.optional()` keeps `.strict()` from rejecting them) and **new reporters send literal `null`** when the session has no evaluated outcome. Derived exclusively from local git metadata — never from transcript content.
+
+| Field | Type | What it carries |
+| --- | --- | --- |
+| `commit_count` | int \| null | Commits attributed to the session window |
+| `loc_added` | int \| null | Lines added (git numstat sum) |
+| `loc_removed` | int \| null | Lines removed |
+| `files_changed` | int \| null | Distinct files touched |
+| `reverts_within_7d` | int \| null | Reverts of session commits within 7 days |
+| `merged_pr_count` | int \| null | Merged PRs linked to session commits |
+| `outcome_status` | enum \| null | `evaluated` \| `cwd-missing` \| `not-a-git-repo` \| `no-user-email` |
 
 ### NEVER sent (with examples)
 
@@ -108,13 +119,14 @@ zero leakage in the output.
 If a machine's HMAC secret is compromised:
 
 1. Admin runs `UPDATE user_machines SET revoked_at = now() WHERE key_id = '<key>'`
-   (or via the admin UI when the onboarding spec ships).
+   (SQL manual — a dedicated admin UI for revocation is a planned follow-up;
+   see `docs/execution-plan-2026-07.md` item 3.1).
 2. Subsequent push attempts return 401 (`unknown or revoked key`).
 3. Re-onboard the dev (rerun `pnpm reporter:setup` per `central-server-onboarding.md`).
 
 ## Architecture quick-ref
 
-- **Drizzle schema**: `apps/server/lib/db/schema.ts` (9 tables: orgs, teams, users, user_machines, sessions_agg, model_breakdown_agg, tool_count_agg, cost_calibration_per_user, ingestion_log)
+- **Drizzle schema**: `apps/server/lib/db/schema.ts` (23 tables — cost/adoption aggregates, onboarding/invites, auth & audit logs, manager views state; see the schema file for the authoritative list)
 - **Migrations**: `apps/server/lib/db/migrations/` (drizzle-kit generated; commit the SQL)
 - **Reporter sanitizer**: `lib/reporter/sanitizer.ts` (root — single source of truth, also imported by `apps/server/lib/ingest/sanitizer-shared.ts`)
 - **Onboarding**: see `.specs/central-server-onboarding.md` (carved-out spec for invite tokens)

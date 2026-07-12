@@ -21,7 +21,7 @@ Tudo que você precisa pra clonar, rodar e ter o dashboard no ar.
 ### Pra que serve
 
 - **Você paga por token; ninguém te paga por resultado.** `claude /cost` te diz o gasto da sessão aberta. Grafana mostra consumo ao longo do tempo. Nenhum dos dois responde *"essa sessão cara valeu o preço?"*. Aqui você clica na sessão mais cara da semana, lê o transcript, avalia turno a turno — e o score composto te aponta onde o dinheiro virou trabalho entregue.
-- **Efetividade não é opinião.** Quatro sinais alimentam o score (0..100): razão output/input, taxa de cache hit, avaliação manual (Bom/Neutro/Ruim por turno) e densidade de correção — detectada via regex no próximo prompt do usuário. Se você respondeu *"não, isso tá errado"*, o turno anterior perde pontos automaticamente.
+- **Efetividade não é opinião.** Seis sinais alimentam o score (0..100), combinando avaliação manual (Bom/Neutro/Ruim por turno), heurísticas automáticas de correção e erro de tools, métricas OTEL e agregados de token — veja *Como o score é calculado*. Se você respondeu *"não, isso tá errado"*, o turno anterior perde pontos automaticamente.
 - **Zero infra pra manter.** SQLite em arquivo único, Next.js local, porta 3131. Nada pra subir, nada pra derrubar, nada saindo da sua máquina.
 
 ### 5 minutos pra ver rodando
@@ -114,20 +114,14 @@ O raciocínio por trás das features — o problema que cada uma ataca, como a i
 **Como esse dashboard ataca isso.** Três camadas:
 
 1. **Ingestão local**: parser JSONL tolerante + scraper OTEL Prometheus → SQLite idempotente. Sem rede.
-2. **Três views complementares**:
-   - `/` — Visão geral: quanto gastou hoje/7d/30d, cache hit, tokens, top sessões, tendência.
-   - `/sessions/[id]` — Drill-down: metadata + lista de turnos + transcript completo com user prompt, assistant text e tool calls colapsáveis. Cada turno tem rating manual.
-   - `/effectiveness` — Heurísticas: score composto, distribuição de custo por turno, razão output/input semanal, ferramentas mais usadas.
-3. **Score composto de efetividade**: um número (0..100) por sessão, ponderando:
-
-| Sinal | Peso | Fonte |
-| --- | --- | --- |
-| Razão output/input (clipped a 2.0) | 40% | Agregado da sessão |
-| Taxa de cache hit | 20% | Agregado da sessão |
-| Avaliação manual média | 30% | Tabela `ratings` |
-| 1 − densidade de correção | 10% | Regex no próximo prompt |
-
-Sinais ausentes (nulos) são descartados e os pesos se redistribuem proporcionalmente. Matemática completa em [`lib/analytics/scoring.ts`](lib/analytics/scoring.ts).
+2. **As páginas**:
+   - `/` — Visão geral: quanto gastou hoje/7d/30d, cache hit, tokens, top sessões, tendência, timeline heatmap de atividade e breakdown por modelo.
+   - `/sessions` — Lista completa de sessões com paginação, filtros e ordenação por custo/data.
+   - `/sessions/[id]` — Drill-down (subpágina de `/sessions`): metadata + lista de turnos + transcript completo com user prompt, assistant text e tool calls colapsáveis. Cada turno tem rating manual. Dali você exporta a sessão pra compartilhar (markdown ou versão de impressão).
+   - `/effectiveness` — Análise profunda: score composto, distribuição de custo por turno, razão output/input semanal, ferramentas mais usadas, e outcomes (integração git — commits e PRs atribuídos às sessões que os produziram).
+   - `/quota` — Acompanhamento de quota/limites de uso.
+   - `/search` — Busca full-text (FTS) nos transcripts ingeridos.
+3. **Score composto de efetividade**: um número (0..100) por sessão, ponderando seis sinais — pesos, fontes e a redistribuição de nulls estão na seção *Como o score é calculado*, a referência única do score neste README.
 
 **Onde seus dados vivem.**
 
@@ -218,7 +212,7 @@ Não-idempotente por design: `otel_scrapes` é append-only (é um log temporal; 
 
 ### Como avaliar um turno (Bom / Neutro / Ruim)
 
-Avaliação manual é o sinal mais forte do score composto (30% do peso). Critérios objetivos:
+Avaliação manual é o sinal de maior peso do score composto (veja *Como o score é calculado*). Critérios objetivos:
 
 **Bom (+1)** — entregou. Use quando:
 
@@ -289,6 +283,8 @@ docker-compose.yaml  Service definition + volumes + healthcheck
 | `GET /api/health` | — | `{ ok: true }` (200) | Healthcheck simples; não abre DB. Usado pelo Docker healthcheck. |
 | `POST /api/ratings` | `{ turnId, rating: -1\|0\|1, note? }` | `{ ok: true }` ou `400` | Faz lookup do `session_id` via prepared statement, aí chama `revalidatePath('/sessions/${sessionId}')` + `revalidatePath('/')`. |
 | `POST /api/ingest` | — | `{ ok: true, summary }` ou `403` | Allowlist de Host loopback (`localhost` / `127.0.0.1` / `::1`). Revalida `/` e `/effectiveness`. |
+| `GET /api/search` | query string `q` (+ `days`, `limit`, `offset` opcionais) | `{ items, total }` ou `400`/`403` | Busca FTS nos transcripts. Query validada via Zod; mesma allowlist de Host loopback. |
+| `GET /api/sessions/[id]/share` | query string `download=1`, `redact=1` (opcionais) | Markdown da sessão ou `404`/`403` | Exporta a sessão como markdown (transcript + stats + subagents); `redact=1` mascara conteúdo sensível, `download=1` força attachment. Allowlist de Host loopback. |
 
 ---
 
@@ -307,19 +303,20 @@ Palavras com alta taxa de falso-positivo (`bug`, `melhora`, `improve`) estão **
 
 A penalidade cai no turno do assistente **anterior** à correção. Sessões com muitas correções acumulam densidade alta, e o score composto cai.
 
-### A heurística de efetividade
+### Como o score é calculado
 
-Score composto (0..100) combina 5 sinais ponderados:
+**Esta é a referência única dos pesos do score** — toda outra menção neste README aponta pra cá. Score composto (0..100) combina 6 sinais ponderados:
 
-| Sinal | Peso | Tipo | Descrição |
-| --- | --- | --- | --- |
-| Avaliação manual média | 30% | manual | Média dos ratings (-1..1) mapeada pra 0..1 |
-| (1 − densidade de correção) | 20% | auto | Proporção de turnos seguidos por prompt de correção |
-| Razão output/input | 20% | auto | Clipped em 2.0; sinal fraco, intencionalmente pouco ponderado |
-| (1 − taxa de erro de tool) | 15% | auto | Proporção de tool calls com `is_error=1` |
-| Taxa de cache hit | 15% | auto | Reaproveitamento de cache |
+| Sinal | Peso | Fonte |
+| --- | --- | --- |
+| Avaliação manual média (`avgRating`) | 30% | Tabela `ratings` — média (-1..1) mapeada pra 0..1 |
+| (1 − densidade de correção) | 20% | Regex bilíngue no próximo prompt do usuário |
+| (1 − taxa de erro de tool) (`toolErrorRate`) | 15% | Proporção de tool calls com `is_error=1` |
+| Accept rate de Edit/Write | 15% | Métricas OTEL (quando telemetria ativa) |
+| Taxa de cache hit | 10% | Agregado de tokens da sessão |
+| Razão output/input (clipped a 2.0) | 10% | Agregado de tokens da sessão; sinal ruidoso, intencionalmente pouco ponderado |
 
-Quando algum sinal é nulo (ex.: sessão sem tool calls → sem `toolErrorRate`), os pesos se redistribuem proporcionalmente. Peso manual é o mais alto porque julgamento humano capta o que regex e agregados não pegam.
+Quando algum sinal é nulo (ex.: sessão sem tool calls → sem `toolErrorRate`; OTEL desligado → sem accept rate), ele é descartado e os pesos restantes se redistribuem proporcionalmente. Peso manual é o mais alto porque julgamento humano capta o que regex e agregados não pegam. A implementação (clipping, normalização, redistribuição) vive em [`lib/analytics/scoring.ts`](lib/analytics/scoring.ts).
 
 ### Atualizar a tabela de preços
 

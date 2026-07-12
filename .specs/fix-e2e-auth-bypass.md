@@ -1,6 +1,6 @@
 # Spec: fix-e2e-auth-bypass
 
-## Status: DONE (pending commit)
+## Status: DONE
 
 ## Context
 
@@ -357,3 +357,7 @@ Module-scope boot guard em `auth.ts` (espelha `AUTH_SECRET` em linhas 18-26) ref
 ### TASK-2 (2026-05-11 16:05)
 
 TDD: RED(31 fail) → GREEN(31 pass). Pure-function-of-env provider builder + standalone `createAuthorize(loadUser)` extraído pra testes (necessário porque `Credentials()` do NextAuth v5 é só type-config helper que stuffa user-config em `provider.options` — chamar `provider.authorize` direto pega o no-op default). Host regex `^localhost(:\d{1,5})?$` aceita só literal `localhost` (rejeita `127.0.0.1`, `localhost.evil.com`). Zod email max 254 (RFC 5321). Implementation note adicionado ao spike comment block.
+
+### Fechamento retroativo (2026-07-12)
+
+Status fechado retroativamente — código commitado em 48bbe6b (ver .specs/docs-reconciliation.md item 2.4).

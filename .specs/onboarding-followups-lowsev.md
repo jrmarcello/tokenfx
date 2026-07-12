@@ -1,6 +1,6 @@
 # Spec: onboarding-followups-lowsev
 
-## Status: IN_PROGRESS
+## Status: DONE
 
 ## Context
 
@@ -387,3 +387,7 @@ Adicionados 4 novos TCs ao `auth-bearer.test.ts` (skipDescribe gated em SKIP_PG_
 - TC-I-07 (alias delegation) — `__resetHealthRateLimit` clears via `__resetRateLimits`.
 
 Validação: typecheck + lint clean. 372 pass + 281 skip (4 novos sob skipDescribe + existing skips). Live val pendente abaixo.
+
+### Fechamento retroativo (2026-07-12)
+
+Status fechado retroativamente — código commitado em f37afa5 (ver .specs/docs-reconciliation.md item 2.4).

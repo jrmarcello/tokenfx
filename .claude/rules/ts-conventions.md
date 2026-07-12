@@ -33,7 +33,7 @@ applies-to: "**/*.{ts,tsx}"
 ## Logging
 
 - No `console.log` in library (`lib/**`) or UI (`components/**`, `app/**`) code.
-- Use `lib/logger.ts` with `debug` / `info` / `warn` / `error`. The logger is a no-op in tests.
+- Use `lib/logger.ts` with `debug` / `info` / `warn` / `error`. The logger emits in tests unless `LOG_LEVEL` suppresses the level; tests that capture logs stub `log.warn`/`log.error` by property mutation (hand-written stub).
 
 ## Functions
 
