@@ -20,7 +20,8 @@ import { asc, eq } from 'drizzle-orm';
 import { auth } from '@/lib/auth/auth';
 import { getDb } from '@/lib/db/client';
 import { users } from '@/lib/db/schema';
-import { updateUserRoleAction } from './actions';
+import { offboardUserAction, updateUserRoleAction } from './actions';
+import { OffboardButton } from './offboard-button';
 
 export default async function AdminUsersPage() {
   const session = await auth();
@@ -72,6 +73,9 @@ export default async function AdminUsersPage() {
                 <th scope="col" className="px-4 py-2 font-medium">
                   Update
                 </th>
+                <th scope="col" className="px-4 py-2 font-medium">
+                  Offboard
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800">
@@ -106,6 +110,17 @@ export default async function AdminUsersPage() {
                         Save
                       </button>
                     </form>
+                  </td>
+                  <td className="px-4 py-3">
+                    {u.email.endsWith('@anonymized.invalid') ? (
+                      <span className="text-xs text-neutral-400">departed</span>
+                    ) : (
+                      <OffboardButton
+                        userId={u.id}
+                        email={u.email}
+                        action={offboardUserAction}
+                      />
+                    )}
                   </td>
                 </tr>
               ))}

@@ -18,37 +18,55 @@ import {
   escapeLikePattern,
   loadAuditLogPage,
   writeAuditMachineRevoked,
+  writeAuditUserOffboarded,
 } from './audit-log';
 
+const captureStub = (): { db: unknown; get: () => Record<string, unknown> | undefined } => {
+  let captured: Record<string, unknown> | undefined;
+  const db = {
+    insert: () => ({
+      values: async (v: Record<string, unknown>) => {
+        captured = v;
+      },
+    }),
+  };
+  return { db, get: () => captured };
+};
+
 describe('writeAuditMachineRevoked', () => {
-  // TC-I-07 (REQ-6): param → insert mapping, via a hand-written stub db (no
-  // Postgres). End-to-end DB coverage is TC-I-07 in machines.test.ts; this is
-  // the unit-level param-mapping guard.
-  it('maps params to a prefix-only machine-revoked audit row', async () => {
-    let captured: Record<string, unknown> | undefined;
-    const stubDb = {
-      insert: () => ({
-        values: async (v: Record<string, unknown>) => {
-          captured = v;
-        },
-      }),
-    } as unknown as Parameters<typeof writeAuditMachineRevoked>[0];
-
-    await writeAuditMachineRevoked(stubDb, {
+  // TC-I-07 / TC-I-18 (REQ-6/REQ-4b): metadata is prefix-only + userId — NEVER
+  // a plaintext email — so offboarding can anonymize without PII residue.
+  it('maps params to a prefix-only, email-free machine-revoked audit row', async () => {
+    const { db, get } = captureStub();
+    await writeAuditMachineRevoked(db as Parameters<typeof writeAuditMachineRevoked>[0], {
       orgId: 'org-1',
       actorUserId: 'admin-1',
       targetTokenPrefix: 'k_a1b2c3',
-      metadata: { keyPrefix: 'k_a1b2c3', machineId: 'm-1', userEmail: 'dev@x.example' },
+      metadata: { keyPrefix: 'k_a1b2c3', machineId: 'm-1', userId: 'user-9' },
     });
+    expect(get()).toMatchObject({ action: 'machine-revoked', targetTokenPrefix: 'k_a1b2c3' });
+    const meta = JSON.stringify(get()?.metadata);
+    expect(meta).toContain('user-9');
+    expect(meta).not.toContain('@'); // no email
+  });
+});
 
-    expect(captured).toMatchObject({
+describe('writeAuditUserOffboarded', () => {
+  it('maps params to a user-offboarded row with only actor + targetUserId (no email)', async () => {
+    const { db, get } = captureStub();
+    await writeAuditUserOffboarded(db as Parameters<typeof writeAuditUserOffboarded>[0], {
       orgId: 'org-1',
       actorUserId: 'admin-1',
-      action: 'machine-revoked',
-      targetTokenPrefix: 'k_a1b2c3',
+      targetTokenPrefix: 'a1b2c3d4',
+      metadata: { targetUserId: 'user-9' },
     });
-    // Metadata is prefix-only — no full key_id.
-    expect(JSON.stringify(captured?.metadata)).toContain('k_a1b2c3');
+    expect(get()).toMatchObject({
+      orgId: 'org-1',
+      actorUserId: 'admin-1',
+      action: 'user-offboarded',
+      targetTokenPrefix: 'a1b2c3d4',
+    });
+    expect(JSON.stringify(get()?.metadata)).not.toContain('@');
   });
 });
 

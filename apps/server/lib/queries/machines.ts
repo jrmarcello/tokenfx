@@ -143,7 +143,7 @@ export const revokeMachineCore = async (
         keyId: userMachines.keyId,
         machineId: userMachines.machineId,
         revokedAt: userMachines.revokedAt,
-        userEmail: users.email,
+        userId: userMachines.userId,
       })
       .from(userMachines)
       .innerJoin(users, eq(users.id, userMachines.userId))
@@ -173,7 +173,7 @@ export const revokeMachineCore = async (
       metadata: {
         keyPrefix: params.keyPrefix,
         machineId: row.machineId,
-        userEmail: row.userEmail,
+        userId: row.userId,
       },
     });
 

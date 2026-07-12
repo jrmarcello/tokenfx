@@ -233,9 +233,14 @@ skipDescribe('machine-revocation query layer', () => {
     expect(audit).toHaveLength(1);
     expect(audit[0].actorUserId).toBe(admin);
     expect(audit[0].targetTokenPrefix).toBe(prefix);
-    // Metadata is prefix-only — full key id must not appear.
-    expect(JSON.stringify(audit[0].metadata)).not.toContain(keyId);
-    expect(JSON.stringify(audit[0].metadata)).toContain(prefix);
+    const meta = JSON.stringify(audit[0].metadata);
+    // Prefix-only: full key id must not appear.
+    expect(meta).not.toContain(keyId);
+    expect(meta).toContain(prefix);
+    // TC-I-18 / REQ-4b: metadata carries userId, NOT a plaintext email — so an
+    // offboarding sweep can anonymize it. Proves machines.ts passes userId.
+    expect(meta).toContain(dev);
+    expect(meta).not.toContain('@');
   });
 
   it('rolls back the revoke when the UPDATE throws — no partial state (TC-I-11a)', async () => {

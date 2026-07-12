@@ -242,6 +242,9 @@ export const onboardingAuditActionEnum = pgEnum('onboarding_audit_action', [
   // to the Postgres enum by migration 0009 — kept in lockstep here so the
   // Drizzle typed insert accepts the literal (no TS↔Postgres drift).
   'machine-revoked',
+  // data-retention-policy (REQ-7): admin offboarding (identity anonymized in
+  // place). Added by migration 0010; kept in lockstep here.
+  'user-offboarded',
 ]);
 
 // REQ-1: onboarding_invites — manager-issued invite tokens for new dev machines.

@@ -22,6 +22,11 @@ import { and, eq, type SQL } from 'drizzle-orm';
 import type { Session } from 'next-auth';
 import { getDb } from '@/lib/db/client';
 import { users } from '@/lib/db/schema';
+import {
+  offboardUserCore,
+  type OffboardUserParams,
+  type OffboardUserResult,
+} from '@/lib/queries/offboard';
 
 const RoleEnum = z.enum(['member', 'manager', 'admin']);
 
@@ -105,6 +110,59 @@ export const updateUserRoleAction = async (formData: FormData): Promise<void> =>
     lazyDefaultAuth,
     getDb() as unknown as UserRoleDb,
   );
+  if (!result.ok && result.code === 'unauthorized') {
+    throw new Error('Unauthorized');
+  }
+  revalidatePath('/manager/admin/users');
+};
+
+// ---------------------------------------------------------------------------
+// Offboarding — data-retention-policy (REQ-4, REQ-5, REQ-7). Admin-strict,
+// irreversible identity anonymization. Split impl/action like machine-revoke.
+// ---------------------------------------------------------------------------
+
+const OffboardSchema = z.object({ userId: z.string().uuid() });
+
+export type OffboardImplResult =
+  | { ok: true; kind: OffboardUserResult['kind'] }
+  | { ok: false; code: 'unauthorized' | 'invalid_input' };
+
+export type OffboardImplDeps = {
+  authFn: AuthFn;
+  core?: (db: ReturnType<typeof getDb>, params: OffboardUserParams) => Promise<OffboardUserResult>;
+  db?: ReturnType<typeof getDb>;
+};
+
+export const offboardUserImpl = async (
+  formData: FormData,
+  deps: OffboardImplDeps,
+): Promise<OffboardImplResult> => {
+  const session = await deps.authFn();
+  const role = session?.user?.role;
+  const orgId = session?.user?.orgId;
+  const actorUserId = session?.user?.id;
+  // Admin-strict (not manager|admin) — offboarding is destructive/irreversible.
+  if (role !== 'admin' || !orgId || !actorUserId) {
+    return { ok: false, code: 'unauthorized' };
+  }
+
+  const parsed = OffboardSchema.safeParse({ userId: formData.get('userId') });
+  if (!parsed.success) {
+    return { ok: false, code: 'invalid_input' };
+  }
+
+  const coreFn = deps.core ?? offboardUserCore;
+  const db = deps.db ?? getDb();
+  const result = await coreFn(db, {
+    orgId,
+    actorUserId,
+    targetUserId: parsed.data.userId,
+  });
+  return { ok: true, kind: result.kind };
+};
+
+export const offboardUserAction = async (formData: FormData): Promise<void> => {
+  const result = await offboardUserImpl(formData, { authFn: lazyDefaultAuth });
   if (!result.ok && result.code === 'unauthorized') {
     throw new Error('Unauthorized');
   }

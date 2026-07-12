@@ -82,12 +82,14 @@ export type WriteAuditMachineRevokedParams = {
    * `length = 8` CHECK is still satisfied. The full key_id is never stored.
    */
   targetTokenPrefix: string;
-  metadata: { keyPrefix: string; machineId: string | null; userEmail: string };
+  // Prefix-only + userId (NOT plaintext email) so an offboarding anonymization
+  // sweep can null the identity without leaving PII behind in the audit log.
+  metadata: { keyPrefix: string; machineId: string | null; userId: string };
 };
 
 /**
  * machine-revocation-ui (REQ-6): audit a machine credential revocation with
- * parity to invite-revoked. Prefix-only — no secret, no full key_id.
+ * parity to invite-revoked. Prefix-only — no secret, no full key_id, no email.
  */
 export const writeAuditMachineRevoked = async (
   db: Db | DrizzleTx,
@@ -97,6 +99,31 @@ export const writeAuditMachineRevoked = async (
     orgId: params.orgId,
     actorUserId: params.actorUserId,
     action: 'machine-revoked',
+    targetTokenPrefix: params.targetTokenPrefix,
+    metadata: params.metadata,
+  });
+};
+
+export type WriteAuditUserOffboardedParams = {
+  orgId: string;
+  actorUserId: string | null;
+  /** First 8 hex chars of the target user's UUID (satisfies the length-8 CHECK). */
+  targetTokenPrefix: string;
+  metadata: { targetUserId: string };
+};
+
+/**
+ * data-retention-policy (REQ-7): audit an admin offboarding. Records only the
+ * actor and the target's UUID — never the (now-anonymized) email.
+ */
+export const writeAuditUserOffboarded = async (
+  db: Db | DrizzleTx,
+  params: WriteAuditUserOffboardedParams,
+): Promise<void> => {
+  await db.insert(onboardingAuditLog).values({
+    orgId: params.orgId,
+    actorUserId: params.actorUserId,
+    action: 'user-offboarded',
     targetTokenPrefix: params.targetTokenPrefix,
     metadata: params.metadata,
   });

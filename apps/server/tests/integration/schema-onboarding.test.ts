@@ -98,11 +98,13 @@ skipDescribe('schema onboarding migration (Postgres integration)', () => {
       WHERE t.typname = 'onboarding_audit_action'
       ORDER BY e.enumsortorder
     `);
-    // machine-revoked added by migration 0009 (machine-revocation-ui, REQ-6).
+    // machine-revoked added by 0009 (machine-revocation-ui); user-offboarded
+    // added by 0010 (data-retention-policy, REQ-7).
     expect(rows.rows.map((r) => r.enumlabel)).toEqual([
       'invite-created',
       'invite-revoked',
       'machine-revoked',
+      'user-offboarded',
     ]);
   });
 

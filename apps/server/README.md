@@ -280,4 +280,40 @@ ORDER BY al.occurred_at, rl.received_at;
 
 ## Cron endpoints
 
-`POST /api/admin/cleanup` (daily, `x-internal-cron-secret`) — nulls `request_ip` for rows older than 30 days (REQ-27).
+All cron endpoints authenticate with the shared `x-internal-cron-secret` header (constant-time compare) and record a `cron_runs` row.
+
+- `POST /api/admin/cleanup` (daily) — nulls `request_ip` for rows older than 30 days (REQ-27).
+- `POST /api/internal/cron/cleanup-audit-ips` (daily) — truncates drilldown-audit IPs at 30 days **and** deletes `manager_notifications` older than **90 days** (this is the owner of notification pruning — `retention-prune` intentionally skips that table).
+- `POST /api/internal/cron/retention-prune` (daily) — deletes time-series rows older than `RETENTION_MONTHS` (default **24**). See below.
+
+## Data retention & offboarding
+
+### Retention prune
+
+`retention-prune` deletes rows older than the retention window from every time-series table (`sessions_agg` + its session-keyed children, `team_metrics_daily`, `team_outcomes_daily`, `ingestion_log`, `onboarding_redemption_log`, `auth_event_log`, `manager_drilldown_audit`, `manager_anomalies`, `manager_dismissed_anomalies`, `onboarding_audit_log`, and old `cron_runs`). Identity/config tables (`orgs`, `teams`, `users`, `user_machines`, invites, settings) are **not** pruned — they age out via offboarding or their own TTLs.
+
+- **Window**: `RETENTION_MONTHS` env var, default **24**, **floor 12**. A value below 12 or any non-integer falls back to 24 with a loud warning — so a stray `RETENTION_MONTHS=1` can't turn into a global mass-delete. The effective window is logged at the start of every run.
+- **`sessions_agg` + its child tables** (`model_breakdown_agg`, `tool_count_agg`, `session_outcomes_agg`) are pruned in a **single transaction** (parent delete + anti-join orphan sweep) so no query ever sees orphaned child rows. Other tables are individually idempotent — a partial failure is completed by the next daily run.
+- **Cutoff column** is `dismissed_at` for `manager_dismissed_anomalies` (NOT `dismissed_until`, which is a near-future expiry), `occurred_at` for the audit/auth logs, `day` for the daily rollups, and the natural timestamp elsewhere.
+
+Schedule it daily via your platform's scheduler, e.g.:
+
+```bash
+curl -fsS -X POST https://<server>/api/internal/cron/retention-prune \
+  -H "x-internal-cron-secret: $INTERNAL_CRON_SECRET"
+```
+
+### Offboarding a departed dev
+
+When a dev leaves, an **admin** clicks **Offboard** on their row in `/manager/admin/users`. In one transaction this **anonymizes the identity in place** (it does NOT delete the user — deleting would cascade away their aggregates):
+
+- `email` → `departed-<user-uuid>@anonymized.invalid` (`.invalid` TLD is non-routable; the full UUID guarantees uniqueness).
+- `display_name`, `sso_provider`, `sso_subject` → `NULL` (breaks the SSO login binding — a future SSO login with the old corporate email auto-provisions a **new** user, correct for re-hire).
+- `role` → `member` (de-privileges).
+- All of the dev's machines are **revoked**.
+- Residual PII is scrubbed: the `userEmail` key is removed from any prior `machine-revoked` audit metadata for the dev, and `reason_text` is nulled on their drilldown-audit rows.
+- A `user-offboarded` audit row is written (actor + `targetUserId` only — no old email).
+
+The dev's **aggregate rows stay** (same `user_id`), so org/team historical totals don't change; dashboards show the fallback label `departed-<8 hex>`.
+
+**Irreversible** — there is no un-offboard; a returning dev is provisioned as a new user. **Limitation**: free-text fields outside `manager_drilldown_audit.reason_text` are not scrubbed; avoid typing PII into other free-text surfaces.

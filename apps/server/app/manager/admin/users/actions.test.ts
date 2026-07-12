@@ -194,3 +194,68 @@ describe('updateUserRoleImpl', () => {
     expect(rec.whereSql).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// offboardUserImpl — data-retention-policy (REQ-4, REQ-5, REQ-7).
+// ---------------------------------------------------------------------------
+import {
+  offboardUserImpl,
+  type OffboardImplDeps,
+} from './actions';
+import type { OffboardUserResult } from '@/lib/queries/offboard';
+
+const ORG = 'org-1';
+const ACTOR = '11111111-1111-4111-8111-111111111111';
+const TARGET = '22222222-2222-4222-8222-222222222222';
+
+const sessionWith = (over: Partial<Session['user']>): Session =>
+  ({ user: { id: ACTOR, email: 'a@x', role: 'admin', orgId: ORG, ...over }, expires: '2099-01-01' } as Session);
+
+const coreStub = (result: OffboardUserResult): { fn: OffboardImplDeps['core']; calls: () => number } => {
+  let calls = 0;
+  const fn: OffboardImplDeps['core'] = async () => {
+    calls += 1;
+    return result;
+  };
+  return { fn, calls: () => calls };
+};
+
+describe('offboardUserImpl — authorization (TC-I-11)', () => {
+  it.each<[string, Session | null]>([
+    ['member', sessionWith({ role: 'member' })],
+    ['manager', sessionWith({ role: 'manager' })],
+    ['admin without orgId', sessionWith({ orgId: undefined })],
+    ['admin without user.id', sessionWith({ id: undefined })],
+    ['null session', null],
+  ])('rejects %s and never calls core', async (_label, session) => {
+    const core = coreStub({ kind: 'offboarded' });
+    const res = await offboardUserImpl(formData({ userId: TARGET }), {
+      authFn: stubAuth(session),
+      core: core.fn,
+    });
+    expect(res).toEqual({ ok: false, code: 'unauthorized' });
+    expect(core.calls()).toBe(0);
+  });
+});
+
+describe('offboardUserImpl — validation + mapping (TC-U-03)', () => {
+  it('rejects a non-UUID userId as invalid_input; core NOT called', async () => {
+    const core = coreStub({ kind: 'offboarded' });
+    const res = await offboardUserImpl(formData({ userId: 'not-a-uuid' }), {
+      authFn: stubAuth(sessionWith({})),
+      core: core.fn,
+    });
+    expect(res).toEqual({ ok: false, code: 'invalid_input' });
+    expect(core.calls()).toBe(0);
+  });
+
+  it('passes a valid UUID to core and surfaces its kind', async () => {
+    const core = coreStub({ kind: 'already-offboarded' });
+    const res = await offboardUserImpl(formData({ userId: TARGET }), {
+      authFn: stubAuth(sessionWith({})),
+      core: core.fn,
+    });
+    expect(res).toEqual({ ok: true, kind: 'already-offboarded' });
+    expect(core.calls()).toBe(1);
+  });
+});

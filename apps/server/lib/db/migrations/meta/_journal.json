@@ -71,6 +71,13 @@
       "when": 1779200000000,
       "tag": "0009_machine_revoked_audit_action",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1779400000000,
+      "tag": "0010_user_offboarded_audit_action",
+      "breakpoints": true
     }
   ]
 }
