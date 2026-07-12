@@ -14,7 +14,43 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { escapeLikePattern, loadAuditLogPage } from './audit-log';
+import {
+  escapeLikePattern,
+  loadAuditLogPage,
+  writeAuditMachineRevoked,
+} from './audit-log';
+
+describe('writeAuditMachineRevoked', () => {
+  // TC-I-07 (REQ-6): param → insert mapping, via a hand-written stub db (no
+  // Postgres). End-to-end DB coverage is TC-I-07 in machines.test.ts; this is
+  // the unit-level param-mapping guard.
+  it('maps params to a prefix-only machine-revoked audit row', async () => {
+    let captured: Record<string, unknown> | undefined;
+    const stubDb = {
+      insert: () => ({
+        values: async (v: Record<string, unknown>) => {
+          captured = v;
+        },
+      }),
+    } as unknown as Parameters<typeof writeAuditMachineRevoked>[0];
+
+    await writeAuditMachineRevoked(stubDb, {
+      orgId: 'org-1',
+      actorUserId: 'admin-1',
+      targetTokenPrefix: 'k_a1b2c3',
+      metadata: { keyPrefix: 'k_a1b2c3', machineId: 'm-1', userEmail: 'dev@x.example' },
+    });
+
+    expect(captured).toMatchObject({
+      orgId: 'org-1',
+      actorUserId: 'admin-1',
+      action: 'machine-revoked',
+      targetTokenPrefix: 'k_a1b2c3',
+    });
+    // Metadata is prefix-only — no full key_id.
+    expect(JSON.stringify(captured?.metadata)).toContain('k_a1b2c3');
+  });
+});
 
 describe('escapeLikePattern', () => {
   // TC-I-15 (REQ-4): literal % in user input must NOT act as a wildcard.

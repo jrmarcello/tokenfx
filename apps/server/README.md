@@ -128,13 +128,20 @@ redeemable by their original URL. See
 
 ### Revocation procedure
 
-If a machine's HMAC secret is compromised:
+If a machine's HMAC secret is compromised (e.g. stolen laptop):
 
-1. Admin runs `UPDATE user_machines SET revoked_at = now() WHERE key_id = '<key>'`
-   (SQL manual — a dedicated admin UI for revocation is a planned follow-up;
-   see `docs/execution-plan-2026-07.md` item 3.1).
+1. An **admin** opens `/manager/admin/machines`, finds the machine (listed by
+   its 8-char key-id prefix, owner email, and last-seen), and clicks **Revoke**.
+   This sets `revoked_at` and writes a `machine-revoked` row to
+   `onboarding_audit_log` (actor + prefix, no secret). Revocation is idempotent
+   and org-scoped — an admin can only revoke machines in their own org.
 2. Subsequent push attempts return 401 (`unknown or revoked key`).
 3. Re-onboard the dev (rerun `pnpm reporter:setup` per `central-server-onboarding.md`).
+
+**Emergency fallback (SQL):** if two machines in the org share the same 8-char
+key-id prefix, the UI reports a `collision` and cannot disambiguate — revoke by
+full key-id directly:
+`UPDATE user_machines SET revoked_at = now() WHERE key_id = '<full-key>'`.
 
 ## Architecture quick-ref
 

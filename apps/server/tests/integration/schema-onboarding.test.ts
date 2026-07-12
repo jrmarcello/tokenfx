@@ -89,7 +89,7 @@ skipDescribe('schema onboarding migration (Postgres integration)', () => {
     }
   });
 
-  it('TC-I-01: enum onboarding_audit_action includes invite-created and invite-revoked', async () => {
+  it('TC-I-01: enum onboarding_audit_action includes invite-created, invite-revoked, machine-revoked', async () => {
     const db = getDb();
     const rows = await db.execute<{ enumlabel: string }>(sql`
       SELECT e.enumlabel
@@ -98,7 +98,12 @@ skipDescribe('schema onboarding migration (Postgres integration)', () => {
       WHERE t.typname = 'onboarding_audit_action'
       ORDER BY e.enumsortorder
     `);
-    expect(rows.rows.map((r) => r.enumlabel)).toEqual(['invite-created', 'invite-revoked']);
+    // machine-revoked added by migration 0009 (machine-revocation-ui, REQ-6).
+    expect(rows.rows.map((r) => r.enumlabel)).toEqual([
+      'invite-created',
+      'invite-revoked',
+      'machine-revoked',
+    ]);
   });
 
   it('TC-I-01: idx_onboarding_invites_prefix index exists (plain column index on token_prefix)', async () => {

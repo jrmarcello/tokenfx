@@ -238,6 +238,10 @@ export const onboardingOutcomeEnum = pgEnum('onboarding_outcome', [
 export const onboardingAuditActionEnum = pgEnum('onboarding_audit_action', [
   'invite-created',
   'invite-revoked',
+  // machine-revocation-ui (REQ-6): admin machine-credential revocation. Added
+  // to the Postgres enum by migration 0009 — kept in lockstep here so the
+  // Drizzle typed insert accepts the literal (no TS↔Postgres drift).
+  'machine-revoked',
 ]);
 
 // REQ-1: onboarding_invites — manager-issued invite tokens for new dev machines.

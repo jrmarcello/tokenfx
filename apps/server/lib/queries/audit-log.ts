@@ -73,6 +73,35 @@ export const writeAuditRevoke = async (
   });
 };
 
+export type WriteAuditMachineRevokedParams = {
+  orgId: string;
+  actorUserId: string | null;
+  /**
+   * The 8-char key-id prefix (`k_` + 6 hex). NOTE: unlike invite actions whose
+   * prefixes are pure hex, `machine-revoked` prefixes are `k_`-prefixed — the
+   * `length = 8` CHECK is still satisfied. The full key_id is never stored.
+   */
+  targetTokenPrefix: string;
+  metadata: { keyPrefix: string; machineId: string | null; userEmail: string };
+};
+
+/**
+ * machine-revocation-ui (REQ-6): audit a machine credential revocation with
+ * parity to invite-revoked. Prefix-only — no secret, no full key_id.
+ */
+export const writeAuditMachineRevoked = async (
+  db: Db | DrizzleTx,
+  params: WriteAuditMachineRevokedParams,
+): Promise<void> => {
+  await db.insert(onboardingAuditLog).values({
+    orgId: params.orgId,
+    actorUserId: params.actorUserId,
+    action: 'machine-revoked',
+    targetTokenPrefix: params.targetTokenPrefix,
+    metadata: params.metadata,
+  });
+};
+
 // =============================================================================
 // READER — central-server-onboarding-v2-sso.manager-ui REQ-4
 // =============================================================================
