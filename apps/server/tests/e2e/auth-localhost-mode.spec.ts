@@ -106,4 +106,42 @@ test.describe('AUTH_REQUIRED=false localhost-only mode', () => {
     });
     expect(response.status()).toBe(403);
   });
+
+  // ---------------------------------------------------------------------------
+  // fix-local-mode-synthetic-user-uuid — the four dashboard surfaces that
+  // bound `session.user.id` against a `uuid` column and returned HTTP 500
+  // ("invalid input syntax for type uuid") before LOCAL_USER_ID was a real
+  // UUID + a seeded users row. Each must now render (status < 400).
+  // ---------------------------------------------------------------------------
+
+  // TC-IDs are UUID-prefixed to avoid colliding with this file's other spec
+  // (auth-optional-mode) which also numbers TC-E2E-01..; these belong to
+  // fix-local-mode-synthetic-user-uuid's Test Plan.
+  test('TC-E2E-UUID-01: /manager renders without a 500', async ({ page }) => {
+    const response = await page.goto(`${BASE_URL}/manager`);
+    expect(response?.status()).toBeLessThan(400);
+  });
+
+  test('TC-E2E-UUID-02: /me/visibility renders without a 500', async ({ page }) => {
+    const response = await page.goto(`${BASE_URL}/me/visibility`);
+    expect(response?.status()).toBeLessThan(400);
+  });
+
+  test('TC-E2E-UUID-03: /manager/health renders without a 500', async ({ page }) => {
+    const response = await page.goto(`${BASE_URL}/manager/health`);
+    expect(response?.status()).toBeLessThan(400);
+  });
+
+  test('TC-E2E-UUID-04: /manager reloads cleanly for the seeded local admin (render-survives-reload only)', async ({
+    page,
+  }) => {
+    // Scope note: this asserts the render path survives a reload — NOT the
+    // FK-dependent ack WRITE, which is exhaustively covered at the
+    // integration layer (TC-I-07). Driving a real ack UI action here would
+    // need a seeded ackable alert in the E2E harness; the write path is
+    // already proven, so this E2E only guards the read/render surface.
+    await page.goto(`${BASE_URL}/manager`);
+    const response = await page.reload();
+    expect(response?.status()).toBeLessThan(400);
+  });
 });

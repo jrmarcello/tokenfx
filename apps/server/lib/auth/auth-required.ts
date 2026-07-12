@@ -25,13 +25,30 @@
 
 /**
  * Fixed UUID for the auto-seeded `local-org` row.
- * Migration `0005_local_org_seed.sql` inserts a row with this id. The
+ * Migration `0006_local_org_seed.sql` inserts a row with this id. The
  * value is referenced by `buildLocalDevSession()` so every query scoped
  * on `auth.user.orgId` in localhost mode resolves to this org.
  *
  * Stable across environments; safe to commit. NOT a secret.
  */
 export const LOCAL_ORG_ID = '00000000-0000-0000-0000-000000000001';
+
+/**
+ * Fixed UUID for the auto-seeded synthetic local user.
+ * Migration `0008_local_user_seed.sql` inserts a `users` row with this id,
+ * `org_id = LOCAL_ORG_ID`, and `role = 'admin'`. `buildLocalDevSession()`
+ * uses it as `user.id` so that every query binding `session.user.id`
+ * against a `uuid` column (e.g. `/manager`, `/me/visibility`,
+ * `/manager/health`) resolves to a real, valid UUID instead of a bare
+ * non-UUID string — which Postgres rejects with
+ * `invalid input syntax for type uuid`, producing HTTP 500. The seeded row
+ * also makes FK-dependent writes (manager alert acks, drilldown audit)
+ * succeed for the local admin.
+ *
+ * Sequential to `LOCAL_ORG_ID` (`...0001`). Stable across environments;
+ * safe to commit. NOT a secret.
+ */
+export const LOCAL_USER_ID = '00000000-0000-0000-0000-000000000002';
 
 /**
  * Returns true when SSO middleware should enforce auth, false when
@@ -94,7 +111,7 @@ export const isLocalhostHost = (hostHeader: string | null): boolean => {
  */
 export const buildLocalDevSession = () => ({
   user: {
-    id: 'local-dev',
+    id: LOCAL_USER_ID,
     email: 'dev@localhost',
     role: 'admin' as const,
     orgId: LOCAL_ORG_ID,

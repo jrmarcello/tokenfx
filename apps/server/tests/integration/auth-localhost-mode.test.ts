@@ -20,9 +20,12 @@
  *   - The demo session carries `orgId = LOCAL_ORG_ID` so query-layer
  *     org-scoping continues to function.
  */
+import { execSync } from 'node:child_process';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   LOCAL_ORG_ID,
+  LOCAL_USER_ID,
   buildLocalDevSession,
   isAuthRequired,
   isLocalhostHost,
@@ -43,12 +46,29 @@ describe('auth-localhost-mode wiring (TC-I-LOCAL)', () => {
     expect(isAuthRequired(process.env)).toBe(true);
   });
 
-  it('TC-I-LOCAL-3: demo session carries the LOCAL_ORG_ID UUID (REQ-4)', () => {
+  it('TC-I-LOCAL-3: demo session carries the LOCAL_ORG_ID + LOCAL_USER_ID UUIDs (REQ-1/4)', () => {
     const session = buildLocalDevSession();
     expect(session.user.orgId).toBe(LOCAL_ORG_ID);
+    expect(session.user.id).toBe(LOCAL_USER_ID);
     expect(session.user.role).toBe('admin');
-    // UUID v4-shaped (any UUID per RFC 4122)
-    expect(LOCAL_ORG_ID).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    // Both are UUID-shaped (any UUID per RFC 4122) so Postgres uuid casts succeed.
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    expect(LOCAL_ORG_ID).toMatch(uuidRe);
+    expect(LOCAL_USER_ID).toMatch(uuidRe);
+  });
+
+  it('TC-U-21: no residual "local-dev" user id literal in production source (lib/app/scripts)', () => {
+    // The synthetic session must never fall back to the non-UUID string that
+    // caused the uuid-cast 500s. Grep production dirs (excluding tests) — a
+    // stray 'local-dev' in a seed/smoke script would slip past unit coverage.
+    const roots = ['lib', 'app', 'scripts'];
+    const hits = execSync(
+      `grep -rIl "local-dev" ${roots.join(' ')} ` +
+        `--include='*.ts' --include='*.tsx' ` +
+        `--exclude='*.test.ts' --exclude='*.test.tsx' || true`,
+      { cwd: path.resolve(__dirname, '..', '..'), encoding: 'utf8' },
+    ).trim();
+    expect(hits).toBe('');
   });
 
   it.each([

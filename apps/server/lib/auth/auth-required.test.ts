@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   type AuthRequiredEnv,
   LOCAL_ORG_ID,
+  LOCAL_USER_ID,
   buildLocalDevSession,
   isAuthRequired,
   isLocalhostHost,
 } from './auth-required';
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 describe('isAuthRequired', () => {
   it.each<{
@@ -64,12 +68,26 @@ describe('isAuthRequired', () => {
 describe('buildLocalDevSession', () => {
   it('TC-U-08: returns the demo session with the fixed local org id', () => {
     const session = buildLocalDevSession();
-    expect(session.user.id).toBe('local-dev');
     expect(session.user.email).toBe('dev@localhost');
     expect(session.user.role).toBe('admin');
     expect(session.user.orgId).toBe(LOCAL_ORG_ID);
     // expires set ~1y out (Session contract requires it)
     expect(Date.parse(session.expires)).toBeGreaterThan(Date.now());
+  });
+
+  it('TC-U-18: user.id is the constant LOCAL_USER_ID (not the "local-dev" string)', () => {
+    const session = buildLocalDevSession();
+    expect(session.user.id).toBe(LOCAL_USER_ID);
+    expect(session.user.id).not.toBe('local-dev');
+  });
+
+  it('TC-U-19: LOCAL_USER_ID is a well-formed UUID distinct from LOCAL_ORG_ID', () => {
+    expect(LOCAL_USER_ID).toMatch(UUID_RE);
+    expect(LOCAL_USER_ID).not.toBe(LOCAL_ORG_ID);
+  });
+
+  it('TC-U-20: the synthetic user id is stable across calls (no randomness)', () => {
+    expect(buildLocalDevSession().user.id).toBe(buildLocalDevSession().user.id);
   });
 });
 
