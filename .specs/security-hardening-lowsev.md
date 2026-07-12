@@ -1,6 +1,6 @@
 # Spec: security-hardening-lowsev
 
-## Status: DONE (pending commit)
+## Status: DONE
 
 ## Context
 
