@@ -41,7 +41,6 @@ export type SessionScore = {
 
 const DAY_MS = 86_400_000;
 const WEEK_MS = 7 * DAY_MS;
-const MAX_SCORED_SESSIONS = 50;
 
 type KpiRow = {
   avgCacheHitRatio: number | null;
@@ -87,7 +86,7 @@ type PreparedSet = {
   weeklyRatio: import('better-sqlite3').Statement<[number]>;
   costPerTurn: import('better-sqlite3').Statement<[number]>;
   toolLeaderboard: import('better-sqlite3').Statement<[number, number]>;
-  topSessions: import('better-sqlite3').Statement<[number, number]>;
+  topSessions: import('better-sqlite3').Statement<[number]>;
   turnsForSessions: import('better-sqlite3').Statement<[string]>;
   modelBreakdown: import('better-sqlite3').Statement<[number]>;
   toolErrorTrend: import('better-sqlite3').Statement<[number]>;
@@ -151,9 +150,11 @@ function getPrepared(db: DB): PreparedSet {
        LIMIT ?`,
     ),
     topSessions: db.prepare(
-      // Orders by authoritative cost (OTEL when present, else local sum) so
-      // sessions with hybrid provenance are ranked on the same axis the UI
-      // eventually renders.
+      // Scores EVERY session in the window (no cap). Ordered by authoritative
+      // cost (OTEL when present, else local sum) purely for a deterministic,
+      // stable row order — there is no LIMIT: the 50-session cap was an
+      // orphaned guard against a since-removed N+1 (see
+      // .specs/fix-score-sampling-transparency.md).
       `SELECT s.id AS id,
               s.project AS project,
               v.cache_hit_ratio AS cacheHitRatio,
@@ -171,8 +172,7 @@ function getPrepared(db: DB): PreparedSet {
          s.total_cost_usd_otel,
          s.total_cost_usd * (SELECT effective_rate FROM cost_calibration WHERE family='global' LIMIT 1),
          s.total_cost_usd
-       ) DESC
-       LIMIT ?`,
+       ) DESC`,
     ),
     turnsForSessions: db.prepare(
       // Single round-trip for all top-N sessions. `?` binds a JSON array of
@@ -313,7 +313,7 @@ export function getToolLeaderboard(
 export function getSessionScores(db: DB, days: number): SessionScore[] {
   const p = getPrepared(db);
   const cutoff = Date.now() - days * DAY_MS;
-  const sessions = p.topSessions.all(cutoff, MAX_SCORED_SESSIONS) as TopSessionRow[];
+  const sessions = p.topSessions.all(cutoff) as TopSessionRow[];
   if (sessions.length === 0) return [];
   const acceptRates = getAcceptRatesBySession(db, days);
 
@@ -336,8 +336,11 @@ export function getSessionScores(db: DB, days: number): SessionScore[] {
   return sessions.map((s) => {
     const turns = turnsBySession.get(s.id) ?? [];
     const penalties = correctionPenalties(turns);
+    // Contract of effectivenessScore: null when there are no turns (absent
+    // signal — its 20% weight is redistributed). 0 would mean "zero
+    // corrections", which is information we don't have for a turn-less session.
     const correctionDensity =
-      turns.length > 0 ? penalties.size / turns.length : 0;
+      turns.length > 0 ? penalties.size / turns.length : null;
     const score = effectivenessScore({
       outputInputRatio: s.outputInputRatio,
       cacheHitRatio: s.cacheHitRatio,

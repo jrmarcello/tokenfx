@@ -5,6 +5,7 @@ import {
   getOverviewKpis,
   getDailySpend,
   getTopSessions,
+  getTopSessionsByScore,
   getTokenBreakdown,
 } from '@/lib/queries/overview';
 
@@ -527,5 +528,77 @@ describe('overview queries', () => {
         total: 500_000,
       });
     });
+  });
+});
+
+// fix-score-sampling-transparency — getTopSessionsByScore no longer capped by cost.
+describe('getTopSessionsByScore (uncapped candidate set)', () => {
+  let db: DB;
+  const now = Date.now();
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  // Score is driven purely by cacheHitRatio (turn-independent): a session
+  // with cache_read=input → ratio 1.0 → score 100; cache_read=0 with input>0
+  // → ratio 0 → score 0. Cost is set independently so rank-by-cost differs
+  // from rank-by-score.
+  const seedScored = (
+    id: string,
+    opts: { costUsd: number; cacheRatio: 0 | 1 },
+  ): void => {
+    insertSession(db, {
+      id,
+      startedAt: now - 1 * DAY_MS,
+      costUsd: opts.costUsd,
+      turnCount: 1,
+      inputTokens: opts.cacheRatio === 1 ? 0 : 100,
+      outputTokens: 0,
+      cacheReadTokens: opts.cacheRatio === 1 ? 100 : 0,
+      cacheCreationTokens: 0,
+    });
+  };
+
+  it('surfaces the cheapest, worst-scored session among 60 (TC-I-10)', () => {
+    // 59 expensive sessions with perfect cache (score 100) + 1 cheap worst.
+    for (let i = 0; i < 59; i++) {
+      seedScored(`s${i}`, { costUsd: (60 - i) * 1.0, cacheRatio: 1 });
+    }
+    seedScored('cheapWorst', { costUsd: 0.01, cacheRatio: 0 });
+    const top = getTopSessionsByScore(db, 1, 30);
+    expect(top).toHaveLength(1);
+    expect(top[0].id).toBe('cheapWorst');
+  });
+
+  it('pins the 50/51 boundary — cheapest-and-worst at cost-rank 51 still surfaces (TC-I-10b)', () => {
+    for (let i = 0; i < 50; i++) {
+      seedScored(`s${i}`, { costUsd: (51 - i) * 1.0, cacheRatio: 1 });
+    }
+    seedScored('cheapWorst', { costUsd: 0.01, cacheRatio: 0 });
+    const top = getTopSessionsByScore(db, 1, 30);
+    expect(top[0].id).toBe('cheapWorst');
+  });
+
+  it('returns [] for an empty window (TC-I-11)', () => {
+    expect(getTopSessionsByScore(db, 5, 30)).toEqual([]);
+  });
+
+  it('returns all available sessions when limit exceeds the count (TC-I-13)', () => {
+    seedScored('a', { costUsd: 3, cacheRatio: 1 });
+    seedScored('b', { costUsd: 2, cacheRatio: 0 });
+    seedScored('c', { costUsd: 1, cacheRatio: 1 });
+    const top = getTopSessionsByScore(db, 5, 30);
+    expect(top).toHaveLength(3);
+  });
+
+  it('breaks score ties deterministically by sessionId ascending (TC-I-14)', () => {
+    // Two sessions, identical score (both cacheRatio 0 → 0), different ids.
+    seedScored('zeta', { costUsd: 5, cacheRatio: 0 });
+    seedScored('alpha', { costUsd: 1, cacheRatio: 0 });
+    const first = getTopSessionsByScore(db, 2, 30).map((s) => s.id);
+    const second = getTopSessionsByScore(db, 2, 30).map((s) => s.id);
+    expect(first).toEqual(['alpha', 'zeta']); // sessionId asc on tie
+    expect(second).toEqual(first); // stable across calls
   });
 });

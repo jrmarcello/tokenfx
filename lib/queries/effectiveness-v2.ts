@@ -586,8 +586,9 @@ const computeAvgMetrics = (
   const errorVals: Array<number | null> = [];
 
   // cache_hit_ratio comes from the existing view via a memoized per-id lookup.
-  // Quartile size is bounded (≤25% of MAX_SCORED_SESSIONS = ≤13) so per-id
-  // reads here cost < 1ms total in practice.
+  // Quartile size scales with the number of sessions in the window (n/4,
+  // uncapped since fix-score-sampling-transparency); TC-I-12 confirms the whole
+  // score pipeline stays well under the 5s budget at 500 sessions.
   for (const id of sessionIds) {
     const cacheRow = p.cacheHitRatioForSession.get(id) as
       | { v: number | null }

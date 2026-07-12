@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { execSync } from 'node:child_process';
+import path from 'node:path';
 import { openDatabase, type DB } from '@/lib/db/client';
 import { migrate } from '@/lib/db/migrate';
 import {
@@ -7,10 +9,17 @@ import {
   getCostPerTurnValues,
   getToolLeaderboard,
   getSessionScores,
+  getSessionScoreDistribution,
   getModelBreakdown,
   getToolErrorTrend,
   getSubagentUsage,
 } from '@/lib/queries/effectiveness';
+import { effectivenessScore } from '@/lib/analytics/scoring';
+import { getTopSessionsByScore } from '@/lib/queries/overview';
+import {
+  getQuartileComparison,
+  getDailyEffectivenessHeatmap,
+} from '@/lib/queries/effectiveness-v2';
 
 const DAY_MS = 86_400_000;
 
@@ -915,5 +924,221 @@ describe('getSubagentUsage', () => {
     const usage = getSubagentUsage(db, 30);
     expect(usage.tokensTotal).toBe(100_000); // NOT 1_100_000
     expect(usage.tokensFromAgentSessions).toBe(100_000);
+  });
+});
+
+// fix-score-sampling-transparency — cap removal + correctionDensity null fix.
+describe('score KpiCard copy no longer describes the cap (TC-U-02)', () => {
+  const repoRoot = path.resolve(__dirname, '..', '..');
+  const run = (cmd: string): string =>
+    execSync(cmd, { cwd: repoRoot, encoding: 'utf8' }).trim();
+
+  it('no stale "top 50"/"50 sessões"/"performance cap" copy in app/ or components/', () => {
+    const hits = run(
+      `grep -rIl -e "top 50" -e "50 sessões" -e "performance cap" app components ` +
+        `--include='*.tsx' --include='*.ts' --exclude='*.test.ts' --exclude='*.test.tsx' || true`,
+    );
+    expect(hits).toBe('');
+  });
+
+  it('the new "todas as sessões da janela" hint is present in both pages (TC-U-02 positive)', () => {
+    const files = run(
+      `grep -rIl "0..100 · todas as sessões da janela" app --include='*.tsx' || true`,
+    )
+      .split('\n')
+      .filter(Boolean)
+      .map((f) => path.basename(path.dirname(f)) + '/' + path.basename(f));
+    expect(files).toContain('app/page.tsx');
+    expect(files).toContain('effectiveness/page.tsx');
+  });
+});
+
+describe('correctionDensity null contract (TC-U-01)', () => {
+  const base = {
+    outputInputRatio: null,
+    cacheHitRatio: null,
+    avgRating: -1,
+    toolErrorRate: null,
+    acceptRate: null,
+  } as const;
+
+  it('null correctionDensity (absent signal) scores 0; density 0 (perfect) scores 40', () => {
+    // null → only avgRating(-1) present → (0.3/0.3)*0 = 0.
+    expect(effectivenessScore({ ...base, correctionDensity: null })).toBe(0);
+    // 0 → avgRating(0) + density(1) → (0.2/0.5)*1 = 0.4 → 40.
+    expect(effectivenessScore({ ...base, correctionDensity: 0 })).toBe(40);
+  });
+});
+
+describe('getSessionScores without the 50-session cap', () => {
+  let db: DB;
+  const now = Date.now();
+
+  beforeEach(() => {
+    db = fresh();
+  });
+
+  // Seed N sessions with descending cost so ranks are deterministic.
+  const seedN = (n: number): void => {
+    for (let i = 0; i < n; i++) {
+      insertSession(db, {
+        id: `s${i}`,
+        startedAt: now - 1 * DAY_MS,
+        costUsd: (n - i) * 0.5, // s0 most expensive … s(n-1) cheapest
+        turnCount: 1,
+        inputTokens: 100,
+        outputTokens: 50,
+      });
+      insertTurn(db, { id: `t${i}`, sessionId: `s${i}`, sequence: 1, userPrompt: 'go' });
+    }
+  };
+
+  it('scores all 51 sessions — proves the cap is gone, not just raised (TC-I-01)', () => {
+    seedN(51);
+    expect(getSessionScores(db, 30).length).toBe(51);
+  });
+
+  it('scores all 200 sessions — no hardcoded ceiling anywhere in the chain (TC-I-01b)', () => {
+    seedN(200);
+    expect(getSessionScores(db, 30).length).toBe(200);
+  });
+
+  it('the cheapest session (outside the old top-50) still appears with a real score (TC-I-02)', () => {
+    seedN(60);
+    const scores = getSessionScores(db, 30);
+    const cheapest = scores.find((s) => s.sessionId === 's59');
+    expect(cheapest).toBeDefined();
+    // Real composite: cache 0 (no cache tokens), outputInput 50/100=0.5→0.25,
+    // density 0 (1 turn, no correction) → (0.1*0 + 0.1*0.25 + 0.2*1)/0.4 = 56.25.
+    expect(cheapest!.score).toBeCloseTo(56.25, 1);
+  });
+
+  it('returns [] for an empty window (TC-I-03)', () => {
+    expect(getSessionScores(db, 30)).toEqual([]);
+  });
+
+  it('a session with zero turns scores with correctionDensity absent (TC-I-04)', () => {
+    // Only cacheHitRatio present (0.5), no turns/ratings/tool-calls/OTEL.
+    insertSession(db, {
+      id: 'noTurns',
+      startedAt: now - 1 * DAY_MS,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 500,
+      cacheCreationTokens: 500,
+      turnCount: 0,
+    });
+    const score = getSessionScores(db, 30).find((s) => s.sessionId === 'noTurns');
+    expect(score).toBeDefined();
+    // null density → only cache(0.1) counts → 0.5*100 = 50 (NOT 83.33).
+    expect(score!.score).toBeCloseTo(50, 5);
+  });
+
+  it('a real zero-correction session (A) scores higher than a turn-less one (B) (TC-I-05)', () => {
+    // A: 1 turn, no correction prompt → density 0 (valid), cache 0.5.
+    insertSession(db, {
+      id: 'A',
+      startedAt: now - 1 * DAY_MS,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 500,
+      cacheCreationTokens: 500,
+      turnCount: 1,
+    });
+    insertTurn(db, { id: 'tA', sessionId: 'A', sequence: 1, userPrompt: 'go' });
+    // B: no turns → density null, cache 0.5.
+    insertSession(db, {
+      id: 'B',
+      startedAt: now - 1 * DAY_MS,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 500,
+      cacheCreationTokens: 500,
+      turnCount: 0,
+    });
+    const scores = getSessionScores(db, 30);
+    const a = scores.find((s) => s.sessionId === 'A')!;
+    const b = scores.find((s) => s.sessionId === 'B')!;
+    // A: (0.1/0.3)*0.5 + (0.2/0.3)*1 = 0.8333 → 83.33.
+    expect(a.score).toBeCloseTo(83.33, 1);
+    // B: cache only → 50. The bug would have made B == A.
+    expect(b.score).toBeCloseTo(50, 1);
+    expect(a.score).toBeGreaterThan(b.score);
+  });
+});
+
+describe('score consumers aggregate over all sessions (no cap)', () => {
+  let db: DB;
+  const now = Date.now();
+
+  beforeEach(() => {
+    db = fresh();
+  });
+
+  const seedN = (n: number): void => {
+    for (let i = 0; i < n; i++) {
+      insertSession(db, {
+        id: `s${i}`,
+        startedAt: now - 1 * DAY_MS,
+        costUsd: (n - i) * 0.5,
+        turnCount: 1,
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadTokens: 100,
+        cacheCreationTokens: 100,
+      });
+      insertTurn(db, { id: `t${i}`, sessionId: `s${i}`, sequence: 1, userPrompt: 'go' });
+    }
+  };
+
+  it('getEffectivenessKpis.avgScore averages over all 60 sessions (TC-I-06)', () => {
+    seedN(60);
+    const scores = getSessionScores(db, 30);
+    expect(scores.length).toBe(60);
+    const manualAvg =
+      scores.reduce((acc, s) => acc + s.score, 0) / scores.length;
+    const kpis = getEffectivenessKpis(db, 30);
+    expect(kpis.avgScore).not.toBeNull();
+    expect(kpis.avgScore!).toBeCloseTo(manualAvg, 5);
+  });
+
+  it('getSessionScoreDistribution bucket counts sum to all 60 sessions (TC-I-07)', () => {
+    seedN(60);
+    const buckets = getSessionScoreDistribution(db, 30);
+    const total = buckets.reduce((acc, b) => acc + b.count, 0);
+    expect(total).toBe(60);
+  });
+
+  it('an equivalent page render over 500 sessions × 20 turns stays under 5s (TC-I-12)', () => {
+    const N = 500;
+    for (let i = 0; i < N; i++) {
+      insertSession(db, {
+        id: `v${i}`,
+        startedAt: now - 1 * DAY_MS,
+        costUsd: (N - i) * 0.1,
+        turnCount: 20,
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheReadTokens: 200,
+        cacheCreationTokens: 100,
+      });
+      for (let j = 0; j < 20; j++) {
+        insertTurn(db, {
+          id: `v${i}-t${j}`,
+          sessionId: `v${i}`,
+          sequence: j + 1,
+          userPrompt: 'work',
+        });
+      }
+    }
+    const start = performance.now();
+    // The 5 independent getSessionScores callers a page render triggers.
+    getEffectivenessKpis(db, 30);
+    getSessionScoreDistribution(db, 30);
+    getQuartileComparison(db, 30);
+    getDailyEffectivenessHeatmap(db, 30);
+    getTopSessionsByScore(db, 5, 30);
+    const elapsedMs = performance.now() - start;
+    expect(elapsedMs).toBeLessThan(5000);
   });
 });

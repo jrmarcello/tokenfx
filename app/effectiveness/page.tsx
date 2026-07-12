@@ -114,11 +114,11 @@ export default async function EffectivenessPage() {
           <KpiCard
             title="Score médio"
             value={fmtScore(kpis.avgScore)}
-            hint="0..100 · top 50 por custo"
+            hint="0..100 · todas as sessões da janela"
             info={
               <>
-                Média dos scores compostos das{' '}
-                <strong>50 sessões mais caras</strong> da janela. Score (0..100)
+                Média dos scores compostos de{' '}
+                <strong>todas as sessões</strong> da janela. Score (0..100)
                 pondera avaliação manual, accept rate, taxa de erro de tool,
                 cache hit, output/input ratio e densidade de correção.
               </>

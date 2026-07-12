@@ -946,4 +946,66 @@ describe('effectiveness-v2 queries', () => {
       expect(prepareCount).toBe(0);
     });
   });
+
+  // fix-score-sampling-transparency — quartile + heatmap now score ALL
+  // sessions in the window (no top-50-by-cost cap).
+  describe('score cap removal (quartile + heatmap)', () => {
+    it('getQuartileComparison uses all 60 sessions — quartileSize 15, not 12 (TC-I-08)', () => {
+      // 60 sessions → floor(60/4)=15 per quartile. Under the old cap (50) it
+      // would have been floor(50/4)=12. A distinct rating spread gives real
+      // score separation so top≠bottom.
+      for (let i = 0; i < 60; i++) {
+        const id = `q${i}`;
+        insertSession(db, {
+          id,
+          startedAt: now - DAY_MS,
+          costUsd: (60 - i) * 0.5,
+          inputTokens: 1000,
+          outputTokens: 500,
+          cacheReadTokens: 100 + i * 10,
+          turnCount: 1,
+        });
+        insertTurn(db, { id: `${id}t1`, sessionId: id, sequence: 1 });
+        insertRating(db, { turnId: `${id}t1`, rating: i < 20 ? -1 : i < 40 ? 0 : 1 });
+      }
+      const r = getQuartileComparison(db, 30);
+      expect(r).not.toBeNull();
+      expect(r!.topQuartile.sampleSize).toBe(15);
+      expect(r!.bottomQuartile.sampleSize).toBe(15);
+    });
+
+    it('getDailyEffectivenessHeatmap scores a cheap session on an isolated day (no sampling gap) (TC-I-09)', () => {
+      // 55 expensive sessions on day-1 + 1 cheap session on day-2. Under the
+      // old top-50-by-cost cap the cheap day-2 session would never be scored,
+      // leaving day-2's heatmap score null. Uncapped, it gets a score.
+      for (let i = 0; i < 55; i++) {
+        insertSession(db, {
+          id: `d1s${i}`,
+          startedAt: now - 1 * DAY_MS,
+          costUsd: (100 - i) * 1.0,
+          inputTokens: 1000,
+          outputTokens: 500,
+          cacheReadTokens: 500,
+          turnCount: 1,
+        });
+        insertTurn(db, { id: `d1s${i}t1`, sessionId: `d1s${i}`, sequence: 1 });
+      }
+      insertSession(db, {
+        id: 'cheapDay2',
+        startedAt: now - 2 * DAY_MS,
+        costUsd: 0.01,
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheReadTokens: 500, // cache ratio present → scorable signal
+        turnCount: 1,
+      });
+      insertTurn(db, { id: 'cheapDay2t1', sessionId: 'cheapDay2', sequence: 1 });
+
+      const heatmap = getDailyEffectivenessHeatmap(db, 30);
+      // The day-2 point is the one with exactly 1 session.
+      const day2 = heatmap.find((p) => p.sessionCount === 1);
+      expect(day2).toBeDefined();
+      expect(day2!.score).not.toBeNull();
+    });
+  });
 });

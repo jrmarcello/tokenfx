@@ -273,11 +273,11 @@ export default async function Home({
           <KpiCard
             title="Score médio"
             value={fmtScore(effKpis.avgScore)}
-            hint="0..100 · top 50 por custo"
+            hint="0..100 · todas as sessões da janela"
             info={
               <>
-                Média dos scores compostos das <strong>50 sessões mais caras</strong>{' '}
-                da janela (performance cap). Score (0..100) pondera: avaliação
+                Média dos scores compostos de <strong>todas as sessões</strong>{' '}
+                da janela. Score (0..100) pondera: avaliação
                 manual 30%, (1 − densidade de correção) 20%, accept rate do
                 OTEL 15%, (1 − taxa de erro de tool) 15%, cache hit 10%, razão
                 output/input 10%. Sinais nulos são descartados e os pesos se

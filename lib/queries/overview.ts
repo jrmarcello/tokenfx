@@ -1,6 +1,7 @@
 import type { DB } from '@/lib/db/client';
 
 import type { CostSource } from '@/lib/analytics/cost-calibration';
+import { getSessionScores } from '@/lib/queries/effectiveness';
 export type { CostSource };
 
 export type OverviewKpis = {
@@ -97,6 +98,7 @@ type PreparedSet = {
   costSourcesSince: import('better-sqlite3').Statement<[number]>;
   dailySpend: import('better-sqlite3').Statement<[number]>;
   topSessions: import('better-sqlite3').Statement<[number, number]>;
+  sessionsByIds: import('better-sqlite3').Statement<[string]>;
   tokenBreakdown: import('better-sqlite3').Statement<[number]>;
 };
 
@@ -156,6 +158,21 @@ function getPrepared(db: DB): PreparedSet {
        WHERE started_at >= ?
        ORDER BY totalCostUsd DESC
        LIMIT ?`
+    ),
+    // Metadata for an arbitrary set of session ids (bound as a JSON array),
+    // used by getTopSessionsByScore to fetch rows chosen by SCORE rank —
+    // which a cost-ordered LIMIT could never surface. Reuses the shared cost
+    // expressions (never a third inline copy). Same json_each pattern as
+    // effectiveness.ts's turnsForSessions.
+    sessionsByIds: db.prepare(
+      `SELECT sessions.id AS id,
+              sessions.project AS project,
+              sessions.started_at AS startedAt,
+              ${EFFECTIVE_COST_EXPR} AS totalCostUsd,
+              sessions.turn_count AS turnCount,
+              ${COST_SOURCE_EXPR} AS cost_source
+       FROM sessions
+       JOIN json_each(?) j ON j.value = sessions.id`
     ),
     // 4-way split of token usage for sessions in the window. Powers the
     // "Tokens (30d)" KPI tooltip — `total` is derived in TS to preserve the
@@ -333,29 +350,44 @@ export function getDailyAcceptRate(
 
 /**
  * Top-N sessions by score ascending (worst first — these are the most
- * valuable to drill into: expensive but poorly rated). Pulls top-50
- * scored sessions from `getSessionScores` and sorts by score asc, then
- * takes `limit`. Reuses prepared query behind getTopSessions to map
- * metadata.
+ * valuable to drill into: poorly rated regardless of cost). Scores EVERY
+ * session in the window (`getSessionScores` is uncapped), sorts by score asc
+ * with a deterministic `sessionId asc` tie-break, takes `limit` ids, and
+ * fetches their metadata by id via `sessionsByIds` (so a cheap-but-bad
+ * session is never dropped by a cost-ordered candidate cap — the previous
+ * bug). All returned fields come from the metadata row, not from
+ * `SessionScore`.
  */
 export function getTopSessionsByScore(
   db: DB,
   limit: number,
   days: number,
 ): TopSession[] {
-  // Lazy-import to avoid circular refs at module load (effectiveness imports
-  // from overview too in sibling files).
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { getSessionScores } = require('./effectiveness') as typeof import('./effectiveness');
   const scored = getSessionScores(db, days);
   if (scored.length === 0) return [];
-  const scoreById = new Map(scored.map((s) => [s.sessionId, s.score]));
-  // Pull a large candidate set by cost, then re-sort by score asc in-place.
-  const candidates = getTopSessions(db, Math.max(50, limit), days).filter((s) =>
-    scoreById.has(s.id),
-  );
-  candidates.sort((a, b) => (scoreById.get(a.id) ?? 0) - (scoreById.get(b.id) ?? 0));
-  return candidates.slice(0, limit);
+  const worst = [...scored]
+    .sort((a, b) => a.score - b.score || a.sessionId.localeCompare(b.sessionId))
+    .slice(0, limit);
+  const ids = worst.map((s) => s.sessionId);
+  const p = getPrepared(db);
+  const rows = p.sessionsByIds.all(JSON.stringify(ids)) as TopSessionRow[];
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  // Final order = worst (score asc); every field comes from the metadata row.
+  return worst.flatMap((s) => {
+    const r = byId.get(s.sessionId);
+    return r
+      ? [
+          {
+            id: r.id,
+            project: r.project,
+            startedAt: r.startedAt,
+            totalCostUsd: r.totalCostUsd,
+            turnCount: r.turnCount,
+            costSource: r.cost_source as CostSource,
+          },
+        ]
+      : [];
+  });
 }
 
 /**

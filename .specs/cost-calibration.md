@@ -8,7 +8,7 @@ A spec anterior `.specs/pricing-otel-source-of-truth.md` fez OTEL a fonte autori
 
 No DB atual do autor: list price 30d = **$9.037**, efetivo 30d = **~$2.083** (ratio 0.23, coerente com Claude Max). Gap de **4.3×**. E métricas derivadas herdam esse erro:
 
-- **Score de efetividade via seleção indireta** — `effectivenessScore` em si não usa cost (pondera output/input, cache hit, rating, correção, tool error, accept rate). Mas `getSessionScores` usa `topSessions` ordenado por custo pra escolher as 50 sessões a pontuar. Calibração muda a ordem → muda quais entram no top-50 → muda `avgScore`.
+- **Score de efetividade** — `effectivenessScore` não usa cost (pondera output/input, cache hit, rating, correção, tool error, accept rate). ~~Antes, `getSessionScores` amostrava as 50 sessões mais caras, então a calibração mudava quais entravam no top-50 → mudava `avgScore`.~~ **Desde `fix-score-sampling-transparency` (2026-07) o cap de 50 foi removido: `getSessionScores` pontua TODAS as sessões da janela, então a calibração não afeta mais o conjunto scorado nem `avgScore`.**
 - `getTopSessions` ordena por `total_cost_usd` — ordem pode mudar
 - Heatmap de atividade colore por quartil de spend → distribuição distorcida
 - Cost per line (cost ÷ lines) → 4× inflado
