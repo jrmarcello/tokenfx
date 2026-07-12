@@ -1,1 +1,2 @@
 - [TokenFx schema overview](project_schema_overview.md) — SQLite schema, PRAGMA config, idempotency, reconcile patterns and known gaps
+- [Analytics/metrics correctness findings](analytics_metrics_findings.md) — cache-hit-ratio drift, README score mismatch, silent zero-cost, sampling bias (2026-07-11)

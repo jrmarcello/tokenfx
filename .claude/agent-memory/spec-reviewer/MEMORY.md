@@ -4,3 +4,4 @@
 - [User profile](user_profile.md) — senior engineer, pt-BR responses, quality over speed
 - [SSO threat model — v2 onboarding](project_sso_threat_model.md) — locked decisions, schema gaps, open Qs that block the impl spec
 - [fix-sso-issuer-host-bridge review](project_sso_issuer_host_bridge.md) — IDP_STUB_BASE_URL gap, port already shipped, container-localhost caveat, missing TOKENFX_SSO_ISSUERS_OKTA
+- [security-hardening-lowsev review](project_security_hardening_lowsev.md) — auth.config.ts /api/manager gap, migrations/meta/_journal.json requirement (reusable), hidden token-prefix consumers

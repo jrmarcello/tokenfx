@@ -43,3 +43,7 @@ type: project
 **Why these matter:** The journal gap means auth_event_log, manager_alert_acks, and the SSO-auto column additions don't exist in the server DB. Any code path that writes to those tables will fail at runtime.
 
 **How to apply:** In reviews, always check that new .sql migration files are also registered in _journal.json. Flag missing turns.timestamp index as the top performance item on the root app.
+
+## Root tokenfx — analytics/metrics correctness (2026-07-11 review)
+
+See [[analytics_metrics_findings]] for the full findings list (cache-hit-ratio formula drift, README/score-weight mismatch, unknown-model silent-zero-cost risk, MAX_SCORED_SESSIONS=50 sampling bias). Re-check these are still open before re-flagging in a future review — some may get fixed between sessions.
