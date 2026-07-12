@@ -7,6 +7,10 @@ Sibling app to the personal dashboard at the repo root.
 - **Port (dev)**: 3232.
 - **Auth**: SSO via Google Workspace + Okta. Role gating at middleware: `member`/`manager`/`admin`.
 
+> **Deploying to production?** See [`docs/production-deploy.md`](docs/production-deploy.md)
+> — required env, the least-privilege Postgres app-role, migrations, crons, and a
+> post-deploy smoke checklist. (Localhost `AUTH_REQUIRED=false` mode is dev-only.)
+
 ## Quick start
 
 ```bash

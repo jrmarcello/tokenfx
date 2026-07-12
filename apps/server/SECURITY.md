@@ -33,32 +33,40 @@ This satisfies:
 
 ## 2. Migration role-name convention
 
-Migration `0004_sso_auto_provision_schema.sql` and all future migrations that
-`REVOKE` privileges on audit tables use the psql variable `:"app_role"` for the
-role name (see threat model §Decisão #10).
+The runtime DB role is named **`app_runtime`**. Migration
+`0004_sso_auto_provision_schema.sql` `REVOKE`s `UPDATE`/`DELETE` on the audit
+tables from that role via a **hardcoded literal** (not a psql variable):
 
-**Migration runner contract:**
-
-```bash
-psql --variable=app_role="${TOKENFX_APP_DB_ROLE:-app_role}" \
-  --file=apps/server/lib/db/migrations/0004_sso_auto_provision_schema.sql
+```sql
+-- migrations/0004_sso_auto_provision_schema.sql:297-302
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'app_runtime') THEN
+    REVOKE UPDATE, DELETE ON onboarding_redemption_log FROM app_runtime;
+    REVOKE UPDATE, DELETE ON onboarding_audit_log      FROM app_runtime;
+    REVOKE UPDATE, DELETE ON auth_event_log            FROM app_runtime;
+  END IF;
+END $$;
 ```
 
-Via the Drizzle migrator: the runner script (or the `pnpm db:server:migrate`
-invocation) must inject `--variable=app_role=...` derived from the
-`TOKENFX_APP_DB_ROLE` environment variable.
+**Migration runner contract:** `pnpm db:server:migrate` (Drizzle) applies the
+above, then `lib/db/migrate.ts` runs a self-heal + invariant assertion keyed on
+`TOKENFX_APP_RUNTIME_ROLE` (default `app_runtime`) and **fails the migration**
+if the REVOKE didn't land — so a mis-named role is caught loudly, not silently.
 
 **Default values:**
 
-- `TOKENFX_APP_DB_ROLE` unset → falls back to the literal `app_role`.
+- `TOKENFX_APP_RUNTIME_ROLE` unset → the migrate.ts step uses `app_runtime`.
+- **Non-default role name**: you must BOTH edit the hardcoded `app_runtime`
+  literal in `0004_...sql` AND set `TOKENFX_APP_RUNTIME_ROLE=<role>`. Using the
+  default `app_runtime` avoids both — recommended.
 - Local dev + testcontainers: create the role explicitly so the `REVOKE`
   resolves:
 
   ```sql
-  CREATE ROLE app_role LOGIN PASSWORD 'dev-only';
-  GRANT INSERT, SELECT ON onboarding_redemption_log TO app_role;
-  GRANT INSERT, SELECT ON onboarding_audit_log TO app_role;
-  GRANT INSERT, SELECT ON auth_event_log TO app_role;
+  CREATE ROLE app_runtime LOGIN PASSWORD 'dev-only';
+  GRANT INSERT, SELECT ON onboarding_redemption_log TO app_runtime;
+  GRANT INSERT, SELECT ON onboarding_audit_log TO app_runtime;
+  GRANT INSERT, SELECT ON auth_event_log TO app_runtime;
   ```
 
   Migration 0004's `REVOKE UPDATE, DELETE` then takes precedence on those
@@ -69,30 +77,35 @@ invocation) must inject `--variable=app_role=...` derived from the
 
 When deploying to a new environment:
 
-1. Provision the app-role:
+1. Provision the runtime role — it **must** be named `app_runtime` (migration
+   0004's REVOKE targets that literal), unless you also edit the migration:
 
    ```sql
-   CREATE ROLE app_role LOGIN PASSWORD '<from-secret-store>';
+   CREATE ROLE app_runtime LOGIN PASSWORD '<from-secret-store>';
    ```
 
 2. Grant base privileges:
 
    ```sql
-   GRANT CONNECT ON DATABASE <db> TO app_role;
-   GRANT USAGE ON SCHEMA public TO app_role;
+   GRANT CONNECT ON DATABASE <db> TO app_runtime;
+   GRANT USAGE ON SCHEMA public TO app_runtime;
    GRANT INSERT, SELECT, UPDATE, DELETE
-     ON ALL TABLES IN SCHEMA public TO app_role;
+     ON ALL TABLES IN SCHEMA public TO app_runtime;
    ```
 
    These broad UPDATE/DELETE grants are intentional for non-audit tables.
 
-3. Apply migrations as a superuser (or table owner). Pass
-   `--variable=app_role=<the-role-from-step-1>` so the `REVOKE` statements in
-   `0004` (and any future audit-touching migrations) target the correct role:
+3. Apply migrations as a superuser (or table owner). With the default
+   `app_runtime` role, no variable is needed — migration 0004 REVOKEs from the
+   hardcoded literal and `migrate.ts` asserts it landed:
 
    ```bash
-   TOKENFX_APP_DB_ROLE=app_role pnpm db:server:migrate
+   pnpm db:server:migrate
    ```
+
+   For a non-default role name, edit the `app_runtime` literal in
+   `0004_...sql` AND set `TOKENFX_APP_RUNTIME_ROLE=<role>` (the migrate.ts
+   assertion reads it).
 
 4. Verify post-migration. In `psql`:
 
@@ -102,9 +115,10 @@ When deploying to a new environment:
    \dp auth_event_log
    ```
 
-   Each must show `INSERT, SELECT` for `app_role` and **no** `UPDATE` or
-   `DELETE`. If any of those appears, the variable was not injected — re-run
-   step 3 with the correct value.
+   Each must show `INSERT, SELECT` for `app_runtime` and **no** `UPDATE` or
+   `DELETE`. If any of those appears, the role name didn't match — recreate it
+   as `app_runtime` and re-run step 3 (the migrate.ts assertion should also
+   have failed loudly).
 
 ## 4. Forensic query examples
 
