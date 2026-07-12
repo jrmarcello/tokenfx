@@ -1,6 +1,6 @@
 # Spec: data-retention-policy
 
-## Status: DONE (pending commit)
+## Status: DONE
 
 ## Context
 

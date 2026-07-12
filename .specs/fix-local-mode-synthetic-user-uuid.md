@@ -1,6 +1,6 @@
 # Spec: fix-local-mode-synthetic-user-uuid
 
-## Status: DONE (pending commit)
+## Status: DONE
 
 ## Context
 
@@ -262,6 +262,7 @@ Batch 3: [TASK-SMOKE]       — e2e
 Executado inline sequencial (não worktrees): apps/server tem deps nativas
 (`pg`/testcontainers) que worktrees sem `node_modules` quebrariam; arquivos
 disjuntos → zero risco de conflito.
+
 - TASK-1: `LOCAL_USER_ID` (`...0002`) + `buildLocalDevSession()`; assertions
   `'local-dev'` editadas (não duplicadas); grep TC-U-21 (lib/app/scripts, sem
   resíduos — scripts já estavam limpos). TDD: RED(1 fail: id ≠ local-dev) → GREEN(37 pass).

@@ -1,6 +1,6 @@
 # Spec: fix-score-sampling-transparency
 
-## Status: DONE (pending commit)
+## Status: DONE
 
 ## Context
 
