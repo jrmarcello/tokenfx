@@ -75,7 +75,7 @@ You receive a path to a spec file. Read it end-to-end first, then audit:
 - Zod at every external/ingestion boundary (JSONL parser, OTEL parser, API route bodies, CLI args)
 - Prepared statements (no template-literal SQL) — verify in Design
 - Server Components by default; `'use client'` only when necessary
-- Logger via `lib/logger.ts` (no `console.log` in `lib/`, `app/`, `components/`)
+- Logger via `@tokenfx/shared/logger` (no `console.log` in `lib/`, `app/`, `components/`)
 - Path-traversal guard for any user-controlled filesystem read
 - Tests colocated with the production file (`foo.ts` + `foo.test.ts`), hand-written stubs in same `*.test.ts`
 

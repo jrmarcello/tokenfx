@@ -80,7 +80,7 @@ Agent(spec-reviewer): Review .specs/<name>.md for gaps, ambiguity, missing tests
 
 Agent(test-reviewer): Audit the Test Plan section of .specs/<name>.md for coverage gaps — every REQ has TC, every error class has TC, every Zod-validated field has boundary TCs, every external dep has an infra-failure TC, every conditional branch has TCs for both paths.
 
-Agent(code-reviewer): Audit the Design section of .specs/<name>.md for project-rule adherence — does the approach respect the project conventions (Server Components by default, Result pattern at boundaries, Zod at every external boundary, prepared statements, named exports, colocated tests, no mocking framework, logger via lib/logger.ts)?
+Agent(code-reviewer): Audit the Design section of .specs/<name>.md for project-rule adherence — does the approach respect the project conventions (Server Components by default, Result pattern at boundaries, Zod at every external boundary, prepared statements, named exports, colocated tests, no mocking framework, logger via @tokenfx/shared/logger)?
 ```
 
 Wait for all three. Aggregate findings:

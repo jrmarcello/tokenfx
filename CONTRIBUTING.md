@@ -164,7 +164,7 @@ Regras completas em `.claude/rules/sdd.md`. Spec modelo em `.specs/TEMPLATE.md`.
 - **TS strict** — sem `any`, `unknown` + narrowing nos boundaries
 - **Named exports** preferidos; default só onde Next exige (`page.tsx`, `layout.tsx`, `route.ts`)
 - **Prepared statements reusados** (WeakMap-cached por DB) — nunca `db.prepare()` dentro de loops
-- **`console.*`** só em `lib/logger.ts`
+- **`console.*`** só no logger compartilhado (`@tokenfx/shared/logger`)
 - **Zod** em toda fronteira de ingestão / API
 - **Result pattern** nos parsers: `{ ok: true, value } | { ok: false, error }`
 

@@ -41,7 +41,7 @@ You are a senior TypeScript/React engineer reviewing code for a Next.js 15 (App 
 
 - Result-like pattern for ingestion pipeline (parsers, writers) — don't throw at module boundaries
 - When throwing is unavoidable, use `throw new Error(msg, { cause })` to preserve chains
-- No `console.log` in production code — use `lib/logger.ts`
+- No `console.log` in production code — use `@tokenfx/shared/logger`
 
 ### Data Layer
 

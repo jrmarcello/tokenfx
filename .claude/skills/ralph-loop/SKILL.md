@@ -115,7 +115,7 @@ Format spec: `.claude/rules/sdd.md` §Merge Strategy (accumulator pattern).
 - Result pattern at boundaries (lib/result.ts)
 - Zod at every external/ingestion boundary
 - Hand-written stubs in *.test.ts (no mocking framework)
-- Logger via lib/logger.ts (no console.log in lib/, app/, components/)
+- Logger via @tokenfx/shared/logger (no console.log in lib/, app/, components/)
 - Prepared statements via WeakMap when memoizable
 
 Report back: list files created/modified, RED count → GREEN count, any deviations

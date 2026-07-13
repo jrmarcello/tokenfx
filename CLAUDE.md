@@ -41,8 +41,9 @@ Layered, but deliberately flat — this is a single-user local tool, not a distr
   - `components/<domain>/` — feature components.
 - **`lib/db/`** — better-sqlite3 client, `schema.sql`, `migrate.ts`, shared types.
 - **`lib/ingest/`** — JSONL transcript parser, OTEL Prometheus parser, writer (idempotent).
-- **`lib/analytics/`** — scoring heuristics, pricing table.
+- **`lib/analytics/`** — scoring heuristics, pricing table. (Note: the pricing-model classifier `model.ts` and `cost-calibration.ts` moved to `@tokenfx/shared/analytics/*`.)
 - **`lib/queries/`** — server-side SQLite queries, grouped by domain.
+- **`packages/shared/`** — the `@tokenfx/shared` workspace package: code shared by both the root dashboard and `apps/server`. Subpaths: `@tokenfx/shared/logger`, `@tokenfx/shared/reporter/types` (wire envelope + the single-source `SanitizedSessionPayload`), `@tokenfx/shared/reporter/canonical-json`, `@tokenfx/shared/analytics/model`, `@tokenfx/shared/analytics/cost-calibration`. Source-only (its `exports` point at `.ts`; consumers use `transpilePackages`) — no build step. This replaced the old `@root/*` tsconfig alias; there is no more `@root/*` and a single root `pnpm-lock.yaml` governs the whole workspace.
 - **`scripts/`** — CLI entry points (`ingest.ts`, `seed-dev.ts`) run via `tsx`.
 - **`tests/`** — Vitest unit/integration + Playwright e2e. Fixtures under `tests/fixtures/`.
 - **`data/dashboard.db`** — gitignored runtime SQLite database.
@@ -63,7 +64,7 @@ Layered, but deliberately flat — this is a single-user local tool, not a distr
 - **Named exports** preferred; defaults only where Next requires (`page.tsx`, `layout.tsx`, `route.ts`, etc.).
 - **Tests colocated**: `foo.ts` + `foo.test.ts`.
 - **No mocking frameworks** — hand-written stubs in the same test file.
-- **Logging**: use `lib/logger.ts`, not `console.log`, in library/UI code.
+- **Logging**: use the shared logger (`@tokenfx/shared/logger`), not `console.log`, in library/UI code.
 - **Zod** at every external/ingestion boundary.
 - **Commit messages**: `type(scope): description` (feat, fix, refactor, docs, test, chore).
 

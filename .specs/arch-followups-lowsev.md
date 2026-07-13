@@ -1,6 +1,6 @@
 # Spec: arch-followups-lowsev
 
-## Status: DONE (pending commit)
+## Status: DONE
 
 ## Context
 

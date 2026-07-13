@@ -246,6 +246,10 @@ Camadas do projeto, schema do DB, e rotas expostas.
 
 ### Estrutura do repo
 
+Monorepo pnpm com 3 pacotes: `tokenfx` (o dashboard local, raiz), `@tokenfx/server`
+(`apps/server` — servidor central opcional de reporting), e `@tokenfx/shared`
+(`packages/shared` — código compartilhado pelos dois).
+
 ```text
 app/             Next.js App Router routes + api handlers + loading states
 components/      UI (Server Components + alguns Client pra interatividade)
@@ -255,9 +259,14 @@ lib/
   analytics/     tabela de preços + scoring de efetividade
   queries/       queries SQLite server-side agrupadas por página
   fs-paths.ts    guardas de path traversal pra ~/.claude/projects
-  logger.ts      wrapper console com níveis (único lugar onde console.* é permitido)
   fmt.ts         formatters Intl centralizados
   result.ts      Result<T,E> discriminated union
+packages/shared/ pacote workspace @tokenfx/shared — logger, wire types +
+                 canonical-json (reporter/), pricing model + cost-calibration
+                 (analytics/). Consumido por raiz E apps/server via subpaths
+                 (@tokenfx/shared/logger, …). Source-only, sem build step.
+apps/server/     @tokenfx/server — servidor central de reporting (Next + Postgres)
+apps/idp-stub/   IdP OIDC de mentira pra e2e de SSO
 scripts/         CLIs ingest + seed-dev (tsx)
 tests/           Vitest unit/integration + Playwright E2E
 .claude/         hooks, rules, agents, skills pro Claude Code
@@ -266,6 +275,9 @@ data/            SQLite runtime (gitignored)
 Dockerfile       Multi-stage build pra container local
 docker-compose.yaml  Service definition + volumes + healthcheck
 ```
+
+> O logger (`@tokenfx/shared/logger`) é o único lugar onde `console.*` é
+> permitido — vale pros três pacotes.
 
 ### Schema SQLite (resumo)
 
@@ -368,7 +380,7 @@ Rode `pnpm validate && pnpm test:e2e` pra exercer tudo.
 - TS strict — sem `any`, `unknown` + narrowing nos boundaries.
 - Named exports preferidos; default só onde Next exige (`page.tsx`, `layout.tsx`, `route.ts`).
 - Prepared statements reusados (WeakMap-cached por DB).
-- `console.*` só em `lib/logger.ts`.
+- `console.*` só no logger (`@tokenfx/shared/logger`).
 - Testes colocados (`foo.ts` + `foo.test.ts`), com exceção da suíte cross-module em `tests/integration/`.
 - Zod em toda fronteira de ingestão/API.
 
