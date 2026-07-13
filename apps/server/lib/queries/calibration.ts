@@ -21,8 +21,8 @@ import {
   MIN_RATE,
   MAX_RATE,
   type CalibrationFamily,
-} from '@root/analytics/cost-calibration';
-import { deriveModelFamily } from '@root/analytics/model';
+} from '@tokenfx/shared/analytics/cost-calibration';
+import { deriveModelFamily } from '@tokenfx/shared/analytics/model';
 import {
   costCalibrationPerUser,
   modelBreakdownAgg,

@@ -371,12 +371,12 @@ skipDescribe('POST /api/onboarding/redeem-invite (HTTP integration)', () => {
     // row.
     const t = make64HexToken('tc33b-token');
 
-    // Stub logger.warn — capture invocations from the `@root/logger`
+    // Stub logger.warn — capture invocations from the `@tokenfx/shared/logger`
     // module that the route uses. Hand-rolled stub via vi.spyOn to fit the
     // project's "no mocking framework" rule (vitest's vi.spyOn is allowed
     // because it's part of vitest, not a separate mocking lib — same
     // reasoning as `vi.useFakeTimers` in `rate-limit.test.ts`).
-    const loggerModule = await import('@root/logger');
+    const loggerModule = await import('@tokenfx/shared/logger');
     const warnSpy = vi.spyOn(loggerModule.log, 'warn').mockImplementation(() => {});
 
     try {
@@ -415,7 +415,7 @@ skipDescribe('POST /api/onboarding/redeem-invite (HTTP integration)', () => {
 
   it('TC-I-33c: Zod validation failure emits logger.warn but writes ZERO rows to onboarding_redemption_log', async () => {
     const db = getDb();
-    const loggerModule = await import('@root/logger');
+    const loggerModule = await import('@tokenfx/shared/logger');
     const warnSpy = vi.spyOn(loggerModule.log, 'warn').mockImplementation(() => {});
 
     try {

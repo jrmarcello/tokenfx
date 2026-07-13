@@ -15,7 +15,7 @@
  * suite.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import type { Session } from 'next-auth';
 import { NextRequest } from 'next/server';
 import {

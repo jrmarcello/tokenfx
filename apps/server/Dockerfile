@@ -3,17 +3,20 @@ ARG NODE_VERSION=22
 
 # ---------------------------------------------------------------------------
 # Build context is the REPO ROOT (compose: `build.context: .`,
-# `dockerfile: apps/server/Dockerfile`). The repo root is needed because
-# apps/server's tsconfig.json includes `../../lib/*` via the `@root/*`
-# path alias. The pnpm install runs against apps/server's own
-# pnpm-lock.yaml — the app is designed to install standalone (no root
-# workspace install required).
+# `dockerfile: apps/server/Dockerfile`). apps/server is a member of the pnpm
+# workspace and depends on `@tokenfx/shared` (packages/shared) via
+# `workspace:*`. The install runs at the WORKSPACE ROOT against the single
+# root `pnpm-lock.yaml` — no more per-app lockfile, no more `@root/*` alias,
+# no more `COPY lib` + `ln -s node_modules` symlink hack. `@tokenfx/shared`
+# resolves natively through the workspace and is inlined into the Next bundle
+# via `transpilePackages` + traced into the standalone output via
+# `outputFileTracingRoot` (see apps/server/next.config.ts).
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Stage 1 — builder: native toolchain for bcrypt rebuild + standalone pnpm
-# install + Next.js build + tsc compile of lib/db/migrate.ts so the runner
-# stage runs pure Node (no tsx).
+# Stage 1 — builder: native toolchain for bcrypt rebuild + workspace pnpm
+# install + Next.js build + esbuild compile of migrate.ts / smoke scripts so
+# the runner stage runs pure Node (no tsx).
 # ---------------------------------------------------------------------------
 FROM node:${NODE_VERSION}-slim AS builder
 
@@ -26,55 +29,36 @@ RUN apt-get update \
 
 RUN corepack enable
 
-# Mirror the host repo layout so apps/server's tsconfig `../../lib/*`
-# alias resolves correctly during `next build`.
 WORKDIR /repo
 
-# Source trees first. They're light (the build context excludes node_modules
-# and .next). We copy them before install so that any postinstall hook (in
-# our case there are none — see --ignore-scripts) wouldn't surprise us.
-# - apps/server/: the server itself.
-# - lib/ (root tokenfx): apps/server's tsconfig.json includes
-#   `../../lib/analytics`, `../../lib/reporter/*`, `../../lib/result.ts`
-#   and aliases them via `@root/*` → `../../lib/*`.
-COPY apps/server ./apps/server
-COPY lib ./lib
+# Workspace manifests + lockfile first (cache-friendly), then the member
+# source trees. `.dockerignore` strips **/node_modules, **/.next, **/dist so
+# the COPY layers stay light. Root `lib/`/`app/` source is NOT copied — the
+# server no longer imports root `lib/*`; the only shared code is
+# `packages/shared` (@tokenfx/shared).
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY packages ./packages
+COPY apps ./apps
 
-WORKDIR /repo/apps/server
-
-# Standalone pnpm install against apps/server's own lockfile.
-# --ignore-scripts: pnpm v11 errors out (ERR_PNPM_IGNORED_BUILDS) when
-# native deps aren't allow-listed in pnpm-workspace.yaml. The workspace
-# allow-list lives at the repo root and isn't visible here. Skipping
-# build scripts and rebuilding bcrypt explicitly below is both faster
-# and matches the spec ("`pnpm rebuild bcrypt` explicit").
-RUN pnpm install --frozen-lockfile --ignore-scripts
+# Workspace install filtered to the server + its dependency graph
+# (`@tokenfx/shared`). --ignore-scripts: pnpm requires native deps to be
+# allow-listed in the root pnpm-workspace.yaml's `onlyBuiltDependencies`;
+# we skip build scripts here and rebuild bcrypt explicitly below.
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter @tokenfx/server...
 
 # Explicit bcrypt build against the runner's libc/abi (debian slim, glibc 2.36).
-# `pnpm rebuild` is a no-op here because pnpm v11 requires the package to be
-# explicitly allow-listed in pnpm-workspace.yaml's `onlyBuiltDependencies`,
-# which lives at the repo root and isn't visible to this standalone install.
-# Workaround: drive the install script directly from inside the bcrypt
-# package via npm (node-pre-gyp downloads the pre-built binding for the
-# active platform/abi when available, falls back to source build).
+# Drive the install script directly from inside the (workspace-hoisted) bcrypt
+# package via npm (node-pre-gyp downloads the pre-built binding for the active
+# platform/abi when available, falls back to source build).
 RUN cd node_modules/.pnpm/bcrypt@5.1.1/node_modules/bcrypt \
  && npm run install --foreground-scripts
 
-# Webpack resolves modules referenced from /repo/lib/* (pulled in via the
-# `@root/*` tsconfig alias) by walking up node_modules. /repo/lib has no
-# node_modules of its own — but apps/server's node_modules contains every
-# dep root-lib needs (zod, etc., transitive through apps/server). Symlink
-# /repo/node_modules → apps/server/node_modules so the walk-up resolves.
-RUN ln -s /repo/apps/server/node_modules /repo/node_modules
-
-# Build-time env. Next.js's "Collecting page data" phase loads every
-# route module top-level, triggering apps/server's production boot guards
+# Build-time env. Next.js's "Collecting page data" phase loads every route
+# module top-level, triggering apps/server's production boot guards
 # (INTERNAL_CRON_SECRET, ONBOARDING_EMAIL_HASH_PEPPER, AUTH_SECRET, etc).
-# `next build` always evaluates those modules in NODE_ENV=production mode
-# regardless of the build-time env. We provide dummy placeholders so the
-# guards pass at build time; the real secrets are injected at container
-# start via docker compose. These placeholders are NEVER used at runtime —
-# the runner stage's ENV is overridden by compose for every guarded var.
+# Dummy placeholders let the guards pass at build time; the real secrets are
+# injected at container start via docker compose. NEVER used at runtime — the
+# runner stage's ENV is overridden by compose for every guarded var.
 ENV NEXT_TELEMETRY_DISABLED=1 \
     INTERNAL_CRON_SECRET=build-placeholder-not-used-at-runtime \
     ONBOARDING_EMAIL_HASH_PEPPER=build-placeholder-not-used-at-runtime \
@@ -87,15 +71,18 @@ ENV NEXT_TELEMETRY_DISABLED=1 \
     DATABASE_URL=postgres://build:placeholder@localhost:5432/build \
     NEXTAUTH_URL=http://localhost:3232
 
-# Next.js production build (writes .next/standalone via next.config.ts output: 'standalone').
+WORKDIR /repo/apps/server
+
+# Next.js production build. `transpilePackages: ['@tokenfx/shared']` inlines the
+# shared source into the webpack bundle; `outputFileTracingRoot` (= repo root)
+# makes the standalone output root at /repo, so server.js lands at
+# `.next/standalone/apps/server/server.js` and packages/shared is traced in.
 RUN pnpm build
 
-# Bundle migrate.ts → dist/migrate.js as a SELF-CONTAINED CJS file via
-# esbuild. Includes all runtime deps (drizzle-orm + pg + transitive)
-# inlined; only `pg-native` is externalized because it's an OPTIONAL
-# native dep we never use (pg's pure-JS path is the default). Single
-# file means the runner stage doesn't need to copy node_modules trees
-# — significantly slimmer image + no resolution fragility.
+# Bundle migrate.ts → dist/migrate.js as a SELF-CONTAINED CJS file via esbuild.
+# Includes all runtime deps (drizzle-orm + pg + transitive) inlined; only
+# `pg-native` is externalized (optional native dep we never use). Single file
+# means the runner stage doesn't need node_modules trees for migration.
 RUN pnpm dlx esbuild@0.24 lib/db/migrate.ts \
       --bundle \
       --platform=node \
@@ -104,10 +91,9 @@ RUN pnpm dlx esbuild@0.24 lib/db/migrate.ts \
       --external:pg-native \
       --outfile=dist/migrate.js
 
-# Also bundle smoke-reset.ts AND smoke-seed.ts (called via docker exec
-# from the host-side orchestrators). Same self-contained bundle pattern.
-# bcrypt is externalized — its native binding must resolve at runtime;
-# we add it via npm install in the runner stage below.
+# Also bundle smoke-reset.ts AND smoke-seed.ts (called via docker exec from
+# host-side orchestrators). Same self-contained pattern. bcrypt is externalized
+# — its native binding must resolve at runtime; added via COPY in the runner.
 RUN pnpm dlx esbuild@0.24 scripts/smoke-reset.ts \
       --bundle \
       --platform=node \
@@ -139,31 +125,29 @@ WORKDIR /app
 # MEDIUM-2 hardening). The smoke compose profile overrides to `development`
 # explicitly via the `environment:` block, which is the ONLY place where
 # `E2E_AUTH_BYPASS=1` is paired with a dev env. Standalone `docker run` of
-# this image (without the smoke profile's env) will boot in production
-# mode — the bypass provider's `assertNotProductionWithBypass` guard
-# refuses to wire the bypass and the server requires real SSO.
+# this image (without the smoke profile's env) boots in production mode — the
+# bypass provider's `assertNotProductionWithBypass` guard refuses to wire it.
 ENV NODE_ENV=production \
     PORT=3232 \
     HOSTNAME=0.0.0.0
 
-# Next.js standalone bundle = server.js + trimmed node_modules + .next/server.
-# For a build whose CWD is /repo/apps/server, standalone preserves the
-# repo-relative layout under .next/standalone: apps/server/server.js,
-# apps/server/.next/server, etc.
+# Next.js standalone bundle. With outputFileTracingRoot = repo root, the
+# standalone tree is rooted at /repo, so it contains apps/server/server.js,
+# packages/shared/ (traced), a root-level node_modules/, and package.json.
+# Copying it to /app preserves that layout: /app/apps/server/server.js, etc.
 COPY --from=builder --chown=tokenfx-server:tokenfx-server \
      /repo/apps/server/.next/standalone/ ./
 COPY --from=builder --chown=tokenfx-server:tokenfx-server \
-     /repo/apps/server/.next/static ./.next/static
+     /repo/apps/server/.next/static ./apps/server/.next/static
 
-# Drizzle migrations: migrate.ts loads them from disk via the drizzle
-# migrator; the compiled migrate.js (commonjs) resolves paths relative
-# to its own location, so we mirror the source layout.
+# Drizzle migrations: migrate.js resolves `./lib/db/migrations` relative to the
+# CWD it runs in (apps/server — see ENTRYPOINT), so mirror the source layout.
 COPY --from=builder --chown=tokenfx-server:tokenfx-server \
      /repo/apps/server/lib/db/migrations ./apps/server/lib/db/migrations
 
 # Compiled migrate + smoke-reset + smoke-seed — self-contained CJS bundles
 # via esbuild (built in stage 1). No node_modules trees needed at runtime
-# EXCEPT for bcrypt (native binding) which the smoke-seed needs.
+# EXCEPT for bcrypt (native binding) which smoke-seed needs.
 COPY --from=builder --chown=tokenfx-server:tokenfx-server \
      /repo/apps/server/dist/migrate.js ./dist/migrate.js
 COPY --from=builder --chown=tokenfx-server:tokenfx-server \
@@ -171,11 +155,12 @@ COPY --from=builder --chown=tokenfx-server:tokenfx-server \
 COPY --from=builder --chown=tokenfx-server:tokenfx-server \
      /repo/apps/server/dist/scripts/smoke-seed.js ./dist/scripts/smoke-seed.js
 
-# bcrypt native binding for smoke-seed.js (externalized in the esbuild
-# bundle because the napi-v3 .node file can't be inlined). Copy from
-# builder where it was rebuilt against the slim runtime's glibc/abi.
+# bcrypt native binding for smoke-seed.js (externalized in the esbuild bundle
+# because the napi-v3 .node file can't be inlined). Copy from the builder where
+# it was rebuilt against the slim runtime's glibc/abi. Workspace-hoisted store,
+# so the path is /repo/node_modules/.pnpm (not apps/server/node_modules).
 COPY --from=builder --chown=tokenfx-server:tokenfx-server \
-     /repo/apps/server/node_modules/.pnpm/bcrypt@5.1.1/node_modules/bcrypt \
+     /repo/node_modules/.pnpm/bcrypt@5.1.1/node_modules/bcrypt \
      ./node_modules/bcrypt
 
 # Healthcheck against /api/health (Next.js route inside the standalone bundle).
@@ -185,10 +170,9 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
 USER tokenfx-server
 EXPOSE 3232
 
-# ENTRYPOINT — migrate then serve. Two CWDs:
-#  1. migrate.js uses `migrationsFolder: './lib/db/migrations'` (relative).
-#     The migrations live at /app/apps/server/lib/db/migrations.
-#  2. server.js (Next.js standalone) lives at /app/server.js — the
-#     standalone trimmed node_modules + .next are sibling to it.
-# So: cd into apps/server for migrate, then cd back to /app for serve.
-ENTRYPOINT ["sh", "-c", "cd /app/apps/server && node /app/dist/migrate.js && cd /app && node server.js"]
+# ENTRYPOINT — migrate then serve, both from /app/apps/server:
+#  1. migrate.js uses `migrationsFolder: './lib/db/migrations'` (relative to
+#     CWD); migrations live at /app/apps/server/lib/db/migrations.
+#  2. server.js (Next.js standalone) lives at /app/apps/server/server.js; its
+#     traced node_modules sit at /app/node_modules (Node walks up to find them).
+ENTRYPOINT ["sh", "-c", "cd /app/apps/server && node /app/dist/migrate.js && node server.js"]

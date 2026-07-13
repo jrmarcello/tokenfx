@@ -47,7 +47,7 @@
  */
 import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import { getDb } from '@/lib/db/client';
 import { redeemInvite, type RedeemError } from '@/lib/queries/redeem';
 import { truncateIpForAudit } from '@/lib/util/ip';

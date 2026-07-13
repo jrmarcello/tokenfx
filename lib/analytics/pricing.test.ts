@@ -384,7 +384,7 @@ import {
   warnIfUnknownModel,
   __resetUnknownModelWarnings,
 } from "./pricing";
-import { log } from "@/lib/logger";
+import { log } from "@tokenfx/shared/logger";
 
 describe("Claude 5 pricing (fable/mythos)", () => {
   const CLAUDE5 = {

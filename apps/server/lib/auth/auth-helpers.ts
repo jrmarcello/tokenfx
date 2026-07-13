@@ -28,7 +28,7 @@ import type {
 } from './auth-event-log-writer';
 import type { SignInDecision } from './load-user';
 import { isStateReplayAuthError } from './replay-detector';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 
 /**
  * REQ-7 (H3): cap on the `iss` claim length before it flows into

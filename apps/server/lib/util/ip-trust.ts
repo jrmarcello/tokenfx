@@ -30,7 +30,7 @@
  * /48 CIDR in the audit log; `null` becomes `unknown-ip` for rate-limit
  * keying upstream.
  */
-import { log } from '@root/logger';
+import { log } from '@tokenfx/shared/logger';
 
 export const getTrustedClientIp = (
   req: { headers: { get(name: string): string | null } },

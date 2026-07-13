@@ -6,7 +6,7 @@ import {
   STALE_THRESHOLD_DAYS,
   getPricingAgeDays,
 } from '@/lib/analytics/pricing';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 
 const DEFAULT_OTEL_URL = 'http://localhost:9464/metrics';
 

@@ -19,7 +19,7 @@
  *   - Auth:     member-role → 403; unauthenticated → 401
  */
 import { describe, expect, it, vi } from 'vitest';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import type { Session } from 'next-auth';
 
 import { exportAuditLogImpl, type AuthFn, type LoadAuditLogPageFn } from './route';

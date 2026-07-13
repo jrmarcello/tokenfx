@@ -33,7 +33,7 @@
 import type { NextRequest } from 'next/server';
 import type { Session } from 'next-auth';
 import { z } from 'zod';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import { toCsvRow } from '@/lib/csv/format';
 import {
   checkSameOriginGet,

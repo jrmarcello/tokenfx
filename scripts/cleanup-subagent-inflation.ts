@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 
 import { openDatabase, type DB } from '@/lib/db/client';
 import { migrate } from '@/lib/db/migrate';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 
 /**
  * Tables wiped by `cleanupSubagentInflation`, listed in delete order.

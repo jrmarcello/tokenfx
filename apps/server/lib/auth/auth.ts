@@ -23,7 +23,7 @@ import { writeReplayAuditRow } from './auth-event-log-writer';
 import { ipToCity } from './ip-to-city';
 import { isStateReplayAuthError } from './replay-detector';
 import { evaluateAutoProvision } from './sso-auto-provision';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import {
   createInvalidCheckHandler,
   extractAudience,

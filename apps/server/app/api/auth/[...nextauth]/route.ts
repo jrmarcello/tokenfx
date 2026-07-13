@@ -38,7 +38,7 @@ import {
   extractRequestContext,
   __resetWarnedForExtractionFailure,
 } from './request-context-extract';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 
 // Re-export so the spec's public surface (`extractRequestContext` exported
 // from the route handler module) is preserved, and integration tests that

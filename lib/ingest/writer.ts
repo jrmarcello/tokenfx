@@ -19,7 +19,7 @@ import {
   evaluateSessionOutcome,
   type EvaluatorSession,
 } from '@/lib/ingest/git/evaluator';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 
 export type IngestSummary = {
   filesProcessed: number;

@@ -4,7 +4,7 @@ import {
   sanitizeSession,
   type SessionWithAggs,
 } from './sanitizer';
-import { SanitizedSessionPayload } from './types';
+import { SanitizedSessionPayload } from '@tokenfx/shared/reporter/types';
 
 // ---------- Helpers ----------
 

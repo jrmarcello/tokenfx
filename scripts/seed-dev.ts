@@ -1,7 +1,7 @@
 import { openDatabase } from '@/lib/db/client';
 import { migrate } from '@/lib/db/migrate';
 import { computeCost } from '@/lib/analytics/pricing';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 
 const MODELS = ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'] as const;
 const PROJECTS = ['dashboard', 'cli-tool', 'api-service', 'docs-site'] as const;

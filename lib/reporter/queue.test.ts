@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { openQueue, type Queue } from './queue';
-import type { SanitizedSessionPayload } from './types';
-import { log } from '@/lib/logger';
+import type { SanitizedSessionPayload } from '@tokenfx/shared/reporter/types';
+import { log } from '@tokenfx/shared/logger';
 
 // ---------- Helpers ----------
 

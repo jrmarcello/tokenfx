@@ -1,7 +1,7 @@
 import {
   MODEL_FAMILY_COLORS,
   type ModelBreakdownItem,
-} from '@/lib/analytics/model';
+} from '@tokenfx/shared/analytics/model';
 import { fmtUsdFine, fmtPct } from '@/lib/fmt';
 
 type Props = { items: ModelBreakdownItem[] };

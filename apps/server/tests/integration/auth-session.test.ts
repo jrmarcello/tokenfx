@@ -34,7 +34,7 @@ import {
   loadUserByEmail,
   type SignInDecision,
 } from '@/lib/auth/load-user';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 
 const SKIP = process.env.SKIP_PG_TESTS === '1';
 const skipDescribe = SKIP ? describe.skip : describe;

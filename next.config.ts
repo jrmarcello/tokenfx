@@ -1,6 +1,14 @@
 import type { NextConfig } from "next";
+import path from "node:path";
 
 const nextConfig: NextConfig = {
+  // Transpile the source-only workspace package (its `exports` point at .ts).
+  // Without this, Next does not transpile TS coming from node_modules and the
+  // build/runtime fails to resolve `@tokenfx/shared/*`.
+  transpilePackages: ['@tokenfx/shared'],
+  // The shared package lives outside this app's dir; anchor the standalone
+  // file-tracing at the workspace root so it's traced correctly.
+  outputFileTracingRoot: path.join(__dirname, '.'),
   // Next 16 blocks cross-origin dev requests by default. Allow loopback hosts
   // so Playwright (http://127.0.0.1:3123) can exercise client-side fetches
   // against the dev server.

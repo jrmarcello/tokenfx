@@ -4,7 +4,7 @@ import type { Database } from 'better-sqlite3';
 import { getDb } from '@/lib/db/client';
 import { claudeProjectsRoot } from '@/lib/fs-paths';
 import { ingestAll, ingestSingleFile } from '@/lib/ingest/writer';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 
 /**
  * Resolve `rawPath` and verify it stays within `allowedRoot` (both after

@@ -2,7 +2,7 @@ import type { DB } from '@/lib/db/client';
 import {
   effectiveCostForSession,
   type Calibration,
-} from '@/lib/analytics/cost-calibration';
+} from '@tokenfx/shared/analytics/cost-calibration';
 import { getCostCalibration } from '@/lib/queries/calibration';
 import type { OutcomeStatus } from '@/lib/ingest/git/types';
 

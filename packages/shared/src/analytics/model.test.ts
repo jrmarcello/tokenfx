@@ -5,7 +5,7 @@ import {
   MODEL_FAMILY_COLORS,
   type ModelBreakdownItem,
   type ModelFamily,
-} from '@/lib/analytics/model';
+} from './model';
 
 describe('deriveModelFamily', () => {
   it.each([

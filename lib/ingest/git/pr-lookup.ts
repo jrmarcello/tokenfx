@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import type { Result } from '../../result';
-import { log } from '../../logger';
+import { log } from '@tokenfx/shared/logger';
 
 /**
  * Per-SHA lookup of merged PRs via `gh api repos/{owner}/{repo}/commits/{sha}/pulls`.

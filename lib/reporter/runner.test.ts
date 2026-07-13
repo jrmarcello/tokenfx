@@ -7,10 +7,10 @@ import type { Database as DatabaseType } from 'better-sqlite3';
 import { runReporter } from './runner';
 import { readConfig, type ReporterConfig } from './config';
 import type { IngestEnvelope } from './client';
-import { WIRE_VERSION } from './types';
-import { canonicalJSON } from './canonical-json';
+import { WIRE_VERSION } from '@tokenfx/shared/reporter/types';
+import { canonicalJSON } from '@tokenfx/shared/reporter/canonical-json';
 import { createHash } from 'node:crypto';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 
 // ---------- Fixtures ----------
 

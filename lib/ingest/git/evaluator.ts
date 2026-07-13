@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import type { Statement } from 'better-sqlite3';
 import type { DB } from '@/lib/db/client';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 import type { Result } from '@/lib/result';
 import { parseNumstat } from './numstat';
 import { parseRevertGrep } from './reverts';

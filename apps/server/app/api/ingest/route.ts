@@ -35,8 +35,8 @@ import { createHash } from 'node:crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
-import { canonicalJSON } from '@root/reporter/canonical-json';
-import { WIRE_VERSION_MIN, WIRE_VERSION_MAX } from '@root/reporter/types';
+import { canonicalJSON } from '@tokenfx/shared/reporter/canonical-json';
+import { WIRE_VERSION_MIN, WIRE_VERSION_MAX } from '@tokenfx/shared/reporter/types';
 import { SanitizedSessionPayload } from '@/lib/ingest/sanitizer-shared';
 import { getDb } from '@/lib/db/client';
 import {

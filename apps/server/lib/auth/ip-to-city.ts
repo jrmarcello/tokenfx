@@ -36,7 +36,7 @@
  */
 import { isIP } from 'node:net';
 
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import { open as openMaxmindDb, type Reader, type CityResponse } from 'maxmind';
 
 /**

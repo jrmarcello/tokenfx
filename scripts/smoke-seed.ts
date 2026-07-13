@@ -12,7 +12,7 @@
 
 import { openDatabase, type DB } from '@/lib/db/client';
 import { migrate } from '@/lib/db/migrate';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 import type { Result } from '@/lib/result';
 
 /**

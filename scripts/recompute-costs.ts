@@ -38,7 +38,7 @@ import {
 } from '@/lib/ingest/reconcile';
 import { getOtelCostBySession } from '@/lib/queries/otel';
 import { recomputeCostCalibration } from '@/lib/queries/calibration';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 
 // ---------------------------------------------------------------------------
 // Public types

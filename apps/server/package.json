@@ -16,6 +16,7 @@
     "smoke:seed": "tsx scripts/smoke-seed.ts"
   },
   "dependencies": {
+    "@tokenfx/shared": "workspace:*",
     "bcrypt": "^5.1.1",
     "drizzle-orm": "^0.36.0",
     "maxmind": "^5.0.6",

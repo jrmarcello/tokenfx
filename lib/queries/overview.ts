@@ -1,6 +1,6 @@
 import type { DB } from '@/lib/db/client';
 
-import type { CostSource } from '@/lib/analytics/cost-calibration';
+import type { CostSource } from '@tokenfx/shared/analytics/cost-calibration';
 import { getSessionScores } from '@/lib/queries/effectiveness';
 export type { CostSource };
 

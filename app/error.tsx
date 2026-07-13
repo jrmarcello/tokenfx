@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import Link from 'next/link';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 
 export default function Error({
   error,

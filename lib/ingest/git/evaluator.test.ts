@@ -13,7 +13,7 @@ import path from 'node:path';
 import { openDatabase, type DB } from '@/lib/db/client';
 import { migrate } from '@/lib/db/migrate';
 import { evaluateSessionOutcome, type EvaluatorSession } from './evaluator';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 import { lookupMergedPrCount, type PrRunResult } from './pr-lookup';
 import { runGit } from './run-git';
 

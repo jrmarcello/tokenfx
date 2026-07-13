@@ -25,13 +25,21 @@ The dev server boots on `http://localhost:3232`. Sign in via the configured SSO 
 
 ### Installing deps (workspace note)
 
-Since 2026-05-12 the root `pnpm-workspace.yaml` declares `packages: ['apps/*']`, so `apps/server` **is** a workspace member — a plain `pnpm install` at the repo root installs everything, and running it from inside `apps/server/` also works.
+The root `pnpm-workspace.yaml` declares `packages: ['apps/*', 'packages/*']`, so the repo is a three-project workspace: `tokenfx` (root dashboard), `@tokenfx/server` (this app), and `@tokenfx/shared` (`packages/shared`). A single `pnpm install` at the repo root installs everything against the **one** root `pnpm-lock.yaml`; running it from inside `apps/server/` also works.
 
-> **Historical note:** before that date `apps/server` lived outside the
-> workspace and required `pnpm install --ignore-workspace` from inside the
-> directory. That ritual is no longer necessary; `apps/server/pnpm-lock.yaml`
-> remains only for the standalone Docker build. If `tsc --noEmit` ever fails
-> with `Cannot find module 'drizzle-orm'`, re-run `pnpm install` at the root.
+> **Shared code (`@tokenfx/shared`):** the wire types/envelope
+> (`reporter/types`), `canonical-json`, `logger`, and the pricing/calibration
+> analytics live in `packages/shared` and are imported by both root and server
+> via stable subpaths (`@tokenfx/shared/logger`, `@tokenfx/shared/reporter/types`,
+> …). This replaced the old `@root/*` tsconfig alias (which reached into the
+> root `lib/` tree) — there is no more `@root/*`, no more per-app
+> `apps/server/pnpm-lock.yaml`, and the Dockerfile no longer needs the
+> `COPY lib` + `ln -s node_modules` symlink hack. `@tokenfx/shared` is a
+> source-only package (its `exports` point at `.ts`); Next transpiles it via
+> `transpilePackages` and traces it into the standalone bundle via
+> `outputFileTracingRoot`. If `tsc --noEmit` ever fails with a missing
+> `@tokenfx/shared/*` module, re-run `pnpm install` at the root so the
+> workspace symlink is recreated.
 
 ## Privacy boundary (REQ-23)
 

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import { err } from '@/lib/result';
 import {
   sendEmail as stubSendEmail,

@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { SanitizedSessionPayload } from '@/lib/reporter/types';
+import { SanitizedSessionPayload } from '@tokenfx/shared/reporter/types';
 
 /**
  * Docs↔code consistency guards (.specs/docs-reconciliation.md REQ-1/REQ-3).

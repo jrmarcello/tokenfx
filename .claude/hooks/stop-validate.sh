@@ -79,6 +79,16 @@ if [ "$STOP_HOOK_ACTIVE" != "true" ]; then
     # it, pnpm itself swallows `--run` and errors out (`Unknown option`).
     TEST_OUT=$(pnpm test -- --run --silent 2>&1) || ERRORS="${ERRORS}TEST FAILURES:\n${TEST_OUT}\n\n"
   fi
+  # ── packages/shared: its own vitest suite (not covered by root vitest
+  # include). Without this, regressions in the 5 moved shared modules
+  # (logger/model/cost-calibration/reporter-types/canonical-json) would pass
+  # the Stop gate silently. Gated on the package being installed.
+  if [ -z "$ERRORS" ] \
+     && [ -f "${REPO_ROOT}/packages/shared/package.json" ] \
+     && [ -d "${REPO_ROOT}/packages/shared/node_modules" ]; then
+    SHARED_OUT=$(pnpm --filter @tokenfx/shared test 2>&1) \
+      || ERRORS="${ERRORS}PACKAGES/SHARED TEST FAILURES:\n${SHARED_OUT}\n\n"
+  fi
 else
   # ── Tier 2: typecheck only ───────────────────────────────────────
   if has_script typecheck; then

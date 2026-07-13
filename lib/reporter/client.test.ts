@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { pushBatch, type IngestEnvelope, type PushBatchInput } from './client';
-import { canonicalJSON } from './canonical-json';
-import type { SanitizedSessionPayload } from './types';
+import { canonicalJSON } from '@tokenfx/shared/reporter/canonical-json';
+import type { SanitizedSessionPayload } from '@tokenfx/shared/reporter/types';
 
 // ---------- helpers (hand-written stubs, no mocking framework) ----------
 

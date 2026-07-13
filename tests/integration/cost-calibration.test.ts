@@ -5,7 +5,7 @@ import {
   getCostCalibration,
   recomputeCostCalibration,
 } from '@/lib/queries/calibration';
-import type { CalibrationFamily } from '@/lib/analytics/cost-calibration';
+import type { CalibrationFamily } from '@tokenfx/shared/analytics/cost-calibration';
 
 /**
  * Integration tests for `lib/queries/calibration.ts`.

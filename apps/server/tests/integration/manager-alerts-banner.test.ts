@@ -25,7 +25,7 @@
  *   - Natural-English `it` names, TC-ID embedded for traceability.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import { and, eq, sql } from 'drizzle-orm';
 
 import { closeDb, getDb } from '@/lib/db/client';

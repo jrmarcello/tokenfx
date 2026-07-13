@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import nodemailer from 'nodemailer';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import { err, ok } from '@/lib/result';
 import type { EmailError, EmailResult, SendEmailFn } from './send-email-stub';
 

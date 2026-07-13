@@ -5,7 +5,7 @@ import {
   type Calibration,
   type CalibrationEntry,
   type CalibrationFamily,
-} from '@/lib/analytics/cost-calibration';
+} from '@tokenfx/shared/analytics/cost-calibration';
 
 // Prepared-statement cache (per-DB) so callers that hit this in tight loops
 // (e.g. `getCostRatingScatter` over many sessions) don't re-prepare the same

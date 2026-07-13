@@ -76,11 +76,11 @@ const freshIpToCity = async (): Promise<(ip: string) => Promise<string | null>> 
 
 /**
  * Spy on `log.warn` for warn-once assertions. The logger module is at
- * `@root/logger` (repo-root `lib/logger.ts`). After `vi.resetModules()`
+ * `@tokenfx/shared/logger` (repo-root `lib/logger.ts`). After `vi.resetModules()`
  * the consumer module sees the spied import.
  */
 const spyOnLogWarn = async (): Promise<ReturnType<typeof vi.spyOn>> => {
-  const loggerMod = await import('@root/logger');
+  const loggerMod = await import('@tokenfx/shared/logger');
   return vi.spyOn(loggerMod.log, 'warn').mockImplementation(() => {});
 };
 

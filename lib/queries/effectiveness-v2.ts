@@ -4,7 +4,7 @@ import {
   LOW_TOOL_ERROR_RATE_THRESHOLD,
   MIN_FUNNEL_SESSIONS,
 } from '@/lib/analytics/effectiveness-v2';
-import { effectiveCostForSession } from '@/lib/analytics/cost-calibration';
+import { effectiveCostForSession } from '@tokenfx/shared/analytics/cost-calibration';
 import { getSessionScores } from '@/lib/queries/effectiveness';
 // Calibration cascade is owned by `lib/queries/calibration.ts:getCostCalibration`,
 // which WeakMap-caches its prepared statement. Single source of truth for the

@@ -14,7 +14,7 @@
  */
 import { and, eq, lt, ne, sql } from 'drizzle-orm';
 import type { getDb } from '@/lib/db/client';
-import { log } from '@root/logger';
+import { log } from '@tokenfx/shared/logger';
 import {
   authEventLog,
   cronRuns,

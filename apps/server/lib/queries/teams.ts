@@ -26,7 +26,7 @@ import {
   effectiveCostForSession,
   type Calibration,
   type CalibrationFamily,
-} from '@root/analytics/cost-calibration';
+} from '@tokenfx/shared/analytics/cost-calibration';
 import { hashEmail } from '@/lib/auth/email-hash';
 import {
   costCalibrationPerUser,

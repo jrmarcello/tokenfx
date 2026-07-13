@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import { __resetDispatcher, sendEmail } from './send-email';
 import type { SendEmailFn } from './send-email-stub';
 

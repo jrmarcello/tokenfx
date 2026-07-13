@@ -7,7 +7,7 @@ import {
 import {
   groupByFamily,
   type ModelBreakdownItem,
-} from '@/lib/analytics/model';
+} from '@tokenfx/shared/analytics/model';
 import {
   buildTrend,
   type RawTrendRow,
@@ -16,7 +16,7 @@ import {
 import { getAcceptRatesBySession } from '@/lib/queries/otel';
 import { SUBAGENT_TOOL_NAME } from '@/lib/analytics/subagent';
 
-export type { ModelBreakdownItem } from '@/lib/analytics/model';
+export type { ModelBreakdownItem } from '@tokenfx/shared/analytics/model';
 export type { ToolTrendResult } from '@/lib/analytics/tool-trend';
 
 export type EffectivenessKpis = {

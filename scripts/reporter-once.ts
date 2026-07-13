@@ -11,7 +11,7 @@
  * never touching the network or DB.
  */
 import { runReporter } from '@/lib/reporter/runner';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');

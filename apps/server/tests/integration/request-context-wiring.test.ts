@@ -52,7 +52,7 @@ import {
   __resetWarnedForExtractionFailure,
   extractRequestContext,
 } from '@/app/api/auth/[...nextauth]/request-context-extract';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 
 // ---------------------------------------------------------------------------
 // XFF trust gate (review M1): `getTrustedClientIp` only honors `x-forwarded-for`

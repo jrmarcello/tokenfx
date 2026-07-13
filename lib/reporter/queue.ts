@@ -2,8 +2,8 @@ import Database from 'better-sqlite3';
 import type { Database as DatabaseType, Statement } from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
-import { log } from '@/lib/logger';
-import { SanitizedSessionPayload } from './types';
+import { log } from '@tokenfx/shared/logger';
+import { SanitizedSessionPayload } from '@tokenfx/shared/reporter/types';
 
 /**
  * Bounded offline queue for the central reporter.

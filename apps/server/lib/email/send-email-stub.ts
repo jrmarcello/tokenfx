@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import { ok, type Result } from '@/lib/result';
 
 export type EmailInput = {

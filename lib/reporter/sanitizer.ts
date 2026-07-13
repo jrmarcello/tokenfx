@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { type Result } from '@/lib/result';
-import { SanitizedSessionPayload, type SanitizeError } from './types';
+import { SanitizedSessionPayload, type SanitizeError } from '@tokenfx/shared/reporter/types';
 
 /**
  * Input shape consumed by the sanitizer — the raw DB row joined with its

@@ -19,7 +19,7 @@ import type {
 } from './transcript/types';
 import type { OtelScrape } from './otel/parser';
 import { __resetUnknownModelWarnings } from '@/lib/analytics/pricing';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 
 // ---- subagent-inflation fixture helpers (TASK-2 of fix-ingest-skip-subagent-jsonls) ----
 //

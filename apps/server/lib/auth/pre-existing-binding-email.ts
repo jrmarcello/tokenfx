@@ -34,7 +34,7 @@
  * through: callers (decision-engine on the `rejected-pre-existing-binding`
  * outcome) receive a typed `SendResult` and decide how to log it.
  */
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import { sendEmail as defaultSendEmail, type SendEmailFn } from '@/lib/email/send-email';
 import { hashEmail } from './email-hash';
 

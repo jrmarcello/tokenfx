@@ -1,7 +1,6 @@
-// Relative import (not '@/lib/logger'): this module is consumed by
-// apps/server via '@root/analytics/*', whose tsconfig maps '@/' to its own
-// tree — a root-alias import would break the server typecheck.
-import { log } from '../logger';
+// Logger comes from the shared workspace package (@tokenfx/shared), consumed
+// identically by root and apps/server — no more root-alias / @root gymnastics.
+import { log } from '@tokenfx/shared/logger';
 
 export type ModelPricing = {
   input: number; // $ per 1M tokens

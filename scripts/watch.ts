@@ -9,7 +9,7 @@
  */
 import type { WatcherOptions } from '@/lib/ingest/watcher';
 import { startWatcher } from '@/lib/ingest/watcher';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 
 async function main(): Promise<void> {
   // Envs for integration testing — both are no-ops for normal CLI use.

@@ -21,7 +21,7 @@
  *     because context extraction failed (REQ-13a).
  */
 import type { NextRequest } from 'next/server';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import type { RequestContext } from '@/lib/auth/request-context';
 import { getTrustedClientIp } from '@/lib/util/ip-trust';
 

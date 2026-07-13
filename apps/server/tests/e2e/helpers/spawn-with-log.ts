@@ -29,7 +29,7 @@ import { createWriteStream, type WriteStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import type { ChildProcess, StdioOptions } from 'node:child_process';
 
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 
 import { redactIdTokenLine } from './redact-id-token';
 

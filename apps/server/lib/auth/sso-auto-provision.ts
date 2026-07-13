@@ -55,7 +55,7 @@
  *   integration suite.
  */
 import { and, eq, isNull, sql } from 'drizzle-orm';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 
 import { getDb } from '@/lib/db/client';
 import { onboardingInvites, users } from '@/lib/db/schema';

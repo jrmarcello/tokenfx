@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 import {
   classifyGhResult,
   lookupMergedPrCount,

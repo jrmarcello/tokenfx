@@ -66,6 +66,7 @@ apps/server/playwright-report/
 
 # Sibling workspace apps — node_modules + per-workspace .claude artifacts
 apps/idp-stub/node_modules/
+packages/shared/node_modules/
 apps/idp-stub/.next/
 apps/*/.claude/
 

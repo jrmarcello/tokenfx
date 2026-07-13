@@ -3,7 +3,7 @@ import { statSync } from 'node:fs';
 import { getDb, type DB } from '@/lib/db/client';
 import { listTranscriptFiles } from '@/lib/fs-paths';
 import { ingestAll, type IngestSummary } from '@/lib/ingest/writer';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 
 /**
  * Default Prometheus endpoint served by Claude Code when

@@ -22,7 +22,7 @@ import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { centralUrlSchema } from '@/lib/reporter/config';
-import { log } from '@/lib/logger';
+import { log } from '@tokenfx/shared/logger';
 
 const CONFIG_PATH = path.resolve(process.cwd(), 'data/reporter-config.json');
 

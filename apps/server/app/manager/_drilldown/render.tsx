@@ -39,7 +39,7 @@ import { notFound, redirect } from 'next/navigation';
 import { after } from 'next/server';
 import { eq } from 'drizzle-orm';
 import type { Session } from 'next-auth';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 // `auth` is lazy-loaded inside `loadDrilldownData` (default `authFn` path)
 // so vitest doesn't pull next-auth into integration tests that inject
 // `opts.authFn`. Mirrors the `lazyDefaultAuth` pattern in

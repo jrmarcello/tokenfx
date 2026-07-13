@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { log as logger } from '@root/logger';
+import { log as logger } from '@tokenfx/shared/logger';
 import { createSmtpSender, type SmtpConfig } from './send-email-smtp';
 
 /**

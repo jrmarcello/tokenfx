@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { canonicalJSON } from './canonical-json';
-import type { IngestEnvelope } from './types';
+import { canonicalJSON } from '@tokenfx/shared/reporter/canonical-json';
+import type { IngestEnvelope } from '@tokenfx/shared/reporter/types';
 
 /**
  * Push client for the reporter — POSTs an ingest envelope to the central
@@ -27,7 +27,7 @@ export type IngestSuccessBody = {
   errors: ReadonlyArray<{ session_id: string; reason: string }>;
 };
 
-export type { IngestEnvelope } from './types';
+export type { IngestEnvelope } from '@tokenfx/shared/reporter/types';
 
 export type PushBatchInput = {
   centralUrl: string;

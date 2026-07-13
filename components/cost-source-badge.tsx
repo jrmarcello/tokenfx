@@ -1,5 +1,5 @@
 import { cn } from '@/lib/cn';
-import type { CostSource } from '@/lib/analytics/cost-calibration';
+import type { CostSource } from '@tokenfx/shared/analytics/cost-calibration';
 
 type PerItemProps = { source: CostSource };
 type AggregateProps = {

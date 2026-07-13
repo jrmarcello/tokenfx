@@ -20,7 +20,7 @@ import {
   type CalibrationEntry,
   type CalibrationFamily,
   type CostSource,
-} from '@root/analytics/cost-calibration';
+} from '@tokenfx/shared/analytics/cost-calibration';
 import {
   costCalibrationPerUser,
   sessionsAgg,
