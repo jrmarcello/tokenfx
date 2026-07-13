@@ -282,6 +282,15 @@ ORDER BY al.occurred_at, rl.received_at;
 
 `POST /api/ingest`: 100 requests/minute per machine_id. 429 with `Retry-After: 60`.
 
+> **Operational premise — single-instance.** Both the ingest limiter
+> (`rateLimitBuckets`) and the onboarding-redeem limiter
+> (`lib/queries/rate-limit.ts`) are **in-memory, per-process** Maps. They are
+> correct only for a **single-replica** deploy: behind N replicas each instance
+> keeps its own counters, so the effective limit becomes `limit × N`. Scaling
+> out horizontally requires moving these to a shared store (Redis/Postgres) —
+> that is intentionally deferred (a bigger change), so run this server
+> single-instance until then.
+
 ## Cron endpoints
 
 All cron endpoints authenticate with the shared `x-internal-cron-secret` header (constant-time compare) and record a `cron_runs` row.

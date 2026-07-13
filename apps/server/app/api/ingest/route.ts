@@ -56,6 +56,12 @@ import {
 } from '@/lib/auth/bearer-auth';
 
 // --- Rate limiter (in-memory, per-machine, per-minute) ------------------------
+// SINGLE-INSTANCE ASSUMPTION: `rateLimitBuckets` is a per-process Map. This is
+// correct only for a single-replica deploy — behind N replicas each instance
+// keeps its own Map, so the effective limit is RATE_LIMIT × N. Scaling out
+// requires a shared store (Redis/Postgres); documented as an operational
+// premise in apps/server/README.md and mirrors the same note on the redeem
+// limiter in lib/queries/rate-limit.ts.
 const RATE_LIMIT = 100;
 const RATE_WINDOW_MS = 60_000;
 const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();

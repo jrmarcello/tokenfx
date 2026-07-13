@@ -26,27 +26,47 @@ export function openDatabase(dbPath?: string): DB {
   return db;
 }
 
-let singleton: DB | null = null;
-let singletonKey: string | null = null;
+/**
+ * The DB singleton lives on `globalThis` (not a module-level `let`) so it
+ * survives Next.js HMR reloads and the RSC / route / edge module-graph
+ * duplication — a module-level binding would open a fresh handle on every
+ * reload and leak the old WAL writer. Same pattern as `globalThis.__tokenfxWatcher`
+ * in `lib/ingest/watcher.ts`. See `.specs/arch-followups-lowsev.md`.
+ */
+type DbSingleton = { db: DB; key: string };
+declare global {
+  var __tokenfxDb: DbSingleton | undefined;
+}
 
-export function getDb(): DB {
+export function getDb(deps: { migrate?: typeof migrate } = {}): DB {
+  // Optional deps seam (default = real migrate) so a test can inject a
+  // throwing migrate without a mocking framework. `getDb()` (no args) is
+  // unchanged.
+  const migrateFn = deps.migrate ?? migrate;
   const key = process.env.DASHBOARD_DB_PATH ?? './data/dashboard.db';
-  if (singleton && singletonKey === key) {
-    return singleton;
+  const existing = globalThis.__tokenfxDb;
+  if (existing && existing.key === key) {
+    return existing.db;
   }
-  if (singleton) {
-    singleton.close();
+  if (existing) {
+    existing.db.close(); // re-key: close the old handle before opening a new one
   }
-  singleton = openDatabase(key);
-  migrate(singleton);
-  singletonKey = key;
-  return singleton;
+  const db = openDatabase(key);
+  try {
+    migrateFn(db);
+  } catch (err) {
+    // Migrate failed → close the just-opened handle and clear the global so no
+    // orphaned WAL writer leaks and a stale/unmigrated handle can never be
+    // handed back by a later getDb() with a matching key. Then rethrow.
+    db.close();
+    globalThis.__tokenfxDb = undefined;
+    throw err;
+  }
+  globalThis.__tokenfxDb = { db, key };
+  return db;
 }
 
 export function resetDbSingleton(): void {
-  if (singleton) {
-    singleton.close();
-  }
-  singleton = null;
-  singletonKey = null;
+  globalThis.__tokenfxDb?.db.close();
+  globalThis.__tokenfxDb = undefined;
 }
