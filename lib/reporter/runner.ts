@@ -5,6 +5,7 @@ import type { Database as DatabaseType, Statement } from 'better-sqlite3';
 import { log } from '@/lib/logger';
 import { sanitizeSession, type SessionWithAggs } from './sanitizer';
 import type { IngestEnvelope, SanitizedSessionPayload } from './types';
+import { WIRE_VERSION } from './types';
 import { canonicalJSON } from './canonical-json';
 import { pushBatch } from './client';
 import { openQueue, type Queue } from './queue';
@@ -491,7 +492,7 @@ export const runReporter = async (
       const chunk = prepared.slice(i, i + BATCH_SIZE);
       const payloads = chunk.map((p) => p.payload);
       const envelope: IngestEnvelope = {
-        version: 1,
+        version: WIRE_VERSION,
         key_id: config.key_id,
         machine_id: config.machine_id,
         payload: payloads,
@@ -526,7 +527,26 @@ export const runReporter = async (
         break;
       }
 
-      // 6. Permanent failure (4xx etc) → log, do NOT enqueue, do NOT mark.
+      if (result.kind === 'unsupported_version') {
+        // 6. Wire-protocol mismatch → the server can't accept what this reporter
+        // emits (or vice-versa). Not transient, not a silent contract bug: an
+        // actionable "upgrade the reporter" signal. Log loud, do NOT enqueue
+        // (a retry with the same version would fail identically), do NOT mark.
+        log.error(
+          '[reporter] unsupported wire protocol version — upgrade the reporter',
+          {
+            status: result.status,
+            sent: WIRE_VERSION,
+            serverAccepts: `${result.supportedMin ?? '?'}..${result.supportedMax ?? '?'}`,
+            received: result.received,
+            batchSize: chunk.length,
+          },
+        );
+        failed += chunk.length;
+        break;
+      }
+
+      // 7. Permanent failure (4xx etc) → log, do NOT enqueue, do NOT mark.
       log.error('[reporter] permanent push failure — dropped', {
         status: result.status,
         body: result.body,

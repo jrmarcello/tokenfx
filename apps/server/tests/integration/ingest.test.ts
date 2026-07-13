@@ -157,6 +157,121 @@ const makeRequest = (
   });
 };
 
+// Wire-version pre-check (wire-protocol-versioning spec). These paths return
+// BEFORE any DB access — the version check precedes `Envelope.safeParse` and
+// the credential lookup — so they run WITHOUT Postgres (no `skipDescribe`).
+// Keeping them un-gated ensures this security-relevant path never silently
+// vanishes on a dev box without Docker.
+describe('POST /api/ingest — wire-version pre-check (no DB)', () => {
+  const validPayload = [makeSession({ session_id: 'sess-ver-1' })];
+
+  // Build a raw envelope body with an arbitrary `version` (or omit it entirely).
+  const rawEnvelope = (
+    version: unknown,
+    opts: { omitVersion?: boolean; payload?: unknown[] } = {},
+  ): string => {
+    const base: Record<string, unknown> = {
+      key_id: KEY_ID,
+      machine_id: MACHINE_ID,
+      payload: opts.payload ?? validPayload,
+    };
+    if (!opts.omitVersion) base.version = version;
+    return JSON.stringify(base);
+  };
+
+  type ErrJson = {
+    error: {
+      message: string;
+      code?: string;
+      supported_min?: number;
+      supported_max?: number;
+      received?: number | null;
+    };
+  };
+
+  it('TC-I-02: version:2 → 400 unsupported_version with range + received', async () => {
+    const res = await POST(makeRequest([], { raw: rawEnvelope(2) }) as never);
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as ErrJson;
+    expect(json.error.code).toBe('unsupported_version');
+    expect(json.error.supported_min).toBe(1);
+    expect(json.error.supported_max).toBe(1);
+    expect(json.error.received).toBe(2);
+  });
+
+  it('TC-I-03: version:0 (MIN−1) → 400 unsupported_version, received:0', async () => {
+    const res = await POST(makeRequest([], { raw: rawEnvelope(0) }) as never);
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as ErrJson;
+    expect(json.error.code).toBe('unsupported_version');
+    expect(json.error.received).toBe(0);
+  });
+
+  it('TC-I-04: version:2 AND malformed payload → unsupported_version precedes generic 400', async () => {
+    // 60 items exceeds the .max(50) envelope cap — but the version check runs first.
+    const tooMany = Array.from({ length: 60 }, (_, i) => makeSession({ session_id: `x-${i}` }));
+    const res = await POST(makeRequest([], { raw: rawEnvelope(2, { payload: tooMany }) }) as never);
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as ErrJson;
+    expect(json.error.code).toBe('unsupported_version');
+  });
+
+  it('TC-I-05: version:"1" (string) → 400 unsupported_version, received:null', async () => {
+    const res = await POST(makeRequest([], { raw: rawEnvelope('1') }) as never);
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as ErrJson;
+    expect(json.error.code).toBe('unsupported_version');
+    expect(json.error.received).toBeNull();
+  });
+
+  it('TC-I-06: version key omitted → 400 unsupported_version, received:null', async () => {
+    const res = await POST(
+      makeRequest([], { raw: rawEnvelope(undefined, { omitVersion: true }) }) as never,
+    );
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as ErrJson;
+    expect(json.error.code).toBe('unsupported_version');
+    expect(json.error.received).toBeNull();
+  });
+
+  it('TC-I-06b: version:null explicit → 400 unsupported_version, received:null', async () => {
+    const res = await POST(makeRequest([], { raw: rawEnvelope(null) }) as never);
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as ErrJson;
+    expect(json.error.code).toBe('unsupported_version');
+    expect(json.error.received).toBeNull();
+  });
+
+  it('TC-I-07: version:1.5 (float) → 400 unsupported_version, received:1.5', async () => {
+    const res = await POST(makeRequest([], { raw: rawEnvelope(1.5) }) as never);
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as ErrJson;
+    expect(json.error.code).toBe('unsupported_version');
+    expect(json.error.received).toBe(1.5);
+  });
+
+  it('TC-I-09a: version:2 with NO Authorization header → 401 (auth-format precedes version)', async () => {
+    const res = await POST(
+      makeRequest([], { raw: rawEnvelope(2), authorization: null }) as never,
+    );
+    expect(res.status).toBe(401);
+    const json = (await res.json()) as ErrJson;
+    expect(json.error.code).toBe('unauthorized');
+  });
+
+  it('TC-I-09b: version:2 with well-formed bearer but no valid credential → 400 unsupported_version (version precedes credential)', async () => {
+    const res = await POST(
+      makeRequest([], {
+        raw: rawEnvelope(2),
+        authorization: 'Bearer some-nonexistent-secret',
+      }) as never,
+    );
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as ErrJson;
+    expect(json.error.code).toBe('unsupported_version');
+  });
+});
+
 skipDescribe('POST /api/ingest (Postgres integration)', () => {
   // TASK-M1 (review-report-2026-05-14-fixes): `getTrustedClientIp` ignores
   // `x-forwarded-for` unless `TOKENFX_TRUSTED_PROXY=1` is set. The test
@@ -229,7 +344,10 @@ skipDescribe('POST /api/ingest (Postgres integration)', () => {
     await db.delete(ingestionLog);
   });
 
-  it('TC-I-21: valid Bearer-authenticated batch of 5 sessions → 200 accepted=5', async () => {
+  // Also satisfies wire-protocol-versioning TC-I-01 (REQ-2): a version:1 envelope
+  // with a valid bearer still ingests → 200. The v1 flow is unchanged by the
+  // version pre-check.
+  it('TC-I-21 / TC-I-01: valid Bearer-authenticated batch of 5 sessions → 200 accepted=5', async () => {
     const payload = Array.from({ length: 5 }, (_, i) =>
       makeSession({ session_id: `sess-tc21-${i}` }),
     );
@@ -243,6 +361,18 @@ skipDescribe('POST /api/ingest (Postgres integration)', () => {
     const db = getDb();
     const rows = await db.select().from(sessionsAgg).where(eq(sessionsAgg.userId, testUserId));
     expect(rows).toHaveLength(5);
+  });
+
+  it('TC-I-08: version:1 but malformed payload → generic "envelope validation failed" (NOT unsupported_version)', async () => {
+    // version passes the pre-check; the strict envelope parse then rejects the
+    // >50-item payload. The error must be the generic one, distinguishable from
+    // a version mismatch (no `unsupported_version` code).
+    const tooMany = Array.from({ length: 60 }, (_, i) => makeSession({ session_id: `tc08-${i}` }));
+    const res = await POST(makeRequest(tooMany) as never);
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as { error: { message: string; code?: string } };
+    expect(json.error.message).toBe('envelope validation failed');
+    expect(json.error.code).toBeUndefined();
   });
 
   it('TC-I-22 (legacy → Bearer): wrong bearer secret → 401', async () => {

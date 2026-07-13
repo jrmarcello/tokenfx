@@ -36,6 +36,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { canonicalJSON } from '@root/reporter/canonical-json';
+import { WIRE_VERSION_MIN, WIRE_VERSION_MAX } from '@root/reporter/types';
 import { SanitizedSessionPayload } from '@/lib/ingest/sanitizer-shared';
 import { getDb } from '@/lib/db/client';
 import {
@@ -97,8 +98,13 @@ type RejectedItem = { session_id: string; reason: string };
 const errorBody = (
   message: string,
   code?: string,
-): { error: { message: string; code?: string } } =>
-  code ? { error: { message, code } } : { error: { message } };
+  extra?: Record<string, unknown>,
+): { error: { message: string; code?: string } } => {
+  const error: { message: string; code?: string } = code
+    ? { message, code }
+    : { message };
+  return { error: extra ? { ...error, ...extra } : error };
+};
 
 export const POST = async (req: NextRequest): Promise<NextResponse> => {
   // Auth header parse FIRST. We don't even read the body if the bearer is
@@ -117,6 +123,36 @@ export const POST = async (req: NextRequest): Promise<NextResponse> => {
     body = await req.json();
   } catch {
     return NextResponse.json(errorBody('invalid JSON body'), { status: 400 });
+  }
+
+  // Wire-version pre-check (wire-protocol-versioning spec). Runs BEFORE the
+  // strict envelope parse so a version mismatch returns a distinguishable
+  // `unsupported_version` error (with the accepted range) instead of a generic
+  // "envelope validation failed" 400 — the reporter needs to tell "upgrade me"
+  // apart from "the server rejected my payload shape". Runs before credential
+  // validation too: a protocol mismatch is not a secret, so surfacing the range
+  // early leaks nothing sensitive.
+  const rawVersion = z.object({ version: z.unknown() }).safeParse(body).data
+    ?.version;
+  const receivedVersion = typeof rawVersion === 'number' ? rawVersion : null;
+  if (
+    receivedVersion === null ||
+    !Number.isInteger(receivedVersion) ||
+    receivedVersion < WIRE_VERSION_MIN ||
+    receivedVersion > WIRE_VERSION_MAX
+  ) {
+    return NextResponse.json(
+      errorBody(
+        `unsupported wire protocol version: server accepts ${WIRE_VERSION_MIN}..${WIRE_VERSION_MAX}`,
+        'unsupported_version',
+        {
+          supported_min: WIRE_VERSION_MIN,
+          supported_max: WIRE_VERSION_MAX,
+          received: receivedVersion,
+        },
+      ),
+      { status: 400 },
+    );
   }
 
   // Level 1: envelope strict

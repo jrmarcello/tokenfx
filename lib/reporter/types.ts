@@ -98,3 +98,17 @@ export type IngestEnvelope = {
   machine_id: string;
   payload: SanitizedSessionPayload[];
 };
+
+/**
+ * Wire-protocol version single source of truth (wire-protocol-versioning spec).
+ *
+ * `WIRE_VERSION` is the version this reporter EMITS. `WIRE_VERSION_MIN`..`MAX`
+ * is the inclusive range the central server ACCEPTS. Today all three are `1`;
+ * a future protocol bump edits this one place. The server returns a structured
+ * `unsupported_version` error (with this range) when an envelope's version is
+ * outside it, so an old reporter hitting a new server (or vice versa) gets an
+ * actionable "upgrade" signal instead of a silent dropped batch.
+ */
+export const WIRE_VERSION = 1 as const;
+export const WIRE_VERSION_MIN = 1 as const;
+export const WIRE_VERSION_MAX = 1 as const;

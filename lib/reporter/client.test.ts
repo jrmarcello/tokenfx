@@ -248,6 +248,84 @@ describe('pushBatch — TC-I-04 — REQ-8 — 4xx no retry', () => {
   });
 });
 
+describe('pushBatch — unsupported_version kind — REQ-5/REQ-6', () => {
+  it('maps a structured unsupported_version 400 to its own kind with the range (TC-U-03)', async () => {
+    const errBody = {
+      error: {
+        message: 'unsupported wire protocol version',
+        code: 'unsupported_version',
+        supported_min: 1,
+        supported_max: 1,
+        received: 2,
+      },
+    };
+    const { fetchFn, calls } = makeFetchStub([
+      { status: 400, statusText: 'Bad Request', body: errBody },
+    ]);
+    const { sleepFn, delays } = makeSleepStub();
+
+    const result = await pushBatch(callInputs({ fetchFn, sleepFn }));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.kind === 'unsupported_version') {
+      expect(result.status).toBe(400);
+      expect(result.supportedMin).toBe(1);
+      expect(result.supportedMax).toBe(1);
+      expect(result.received).toBe(2);
+    } else {
+      throw new Error(`expected unsupported_version, got ${JSON.stringify(result)}`);
+    }
+    expect(calls).toHaveLength(1);
+    expect(delays).toEqual([]);
+  });
+
+  it('keeps a generic 400 (no code) as permanent (TC-U-04)', async () => {
+    const errBody = { error: { message: 'envelope validation failed' } };
+    const { fetchFn } = makeFetchStub([
+      { status: 400, statusText: 'Bad Request', body: errBody },
+    ]);
+    const { sleepFn } = makeSleepStub();
+
+    const result = await pushBatch(callInputs({ fetchFn, sleepFn }));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.kind).toBe('permanent');
+  });
+
+  it('keeps a 401 with an unrelated code as permanent (TC-U-05)', async () => {
+    const { fetchFn } = makeFetchStub([
+      { status: 401, statusText: 'Unauthorized', body: { error: { code: 'unauthorized' } } },
+    ]);
+    const { sleepFn } = makeSleepStub();
+
+    const result = await pushBatch(callInputs({ fetchFn, sleepFn }));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.kind).toBe('permanent');
+  });
+
+  it('coerces omitted range fields to null, never undefined (TC-U-06)', async () => {
+    const errBody = {
+      error: { message: 'unsupported', code: 'unsupported_version', received: 3 },
+    };
+    const { fetchFn } = makeFetchStub([
+      { status: 400, statusText: 'Bad Request', body: errBody },
+    ]);
+    const { sleepFn } = makeSleepStub();
+
+    const result = await pushBatch(callInputs({ fetchFn, sleepFn }));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.kind === 'unsupported_version') {
+      expect(result.supportedMin).toBeNull();
+      expect(result.supportedMax).toBeNull();
+      expect(result.received).toBe(3);
+    } else {
+      throw new Error(`expected unsupported_version, got ${JSON.stringify(result)}`);
+    }
+  });
+});
+
 describe('pushBatch — TC-I-05 — REQ-8 — 429 honors Retry-After', () => {
   it('429 with Retry-After: 5 → waits 5s, retries, succeeds', async () => {
     const successBody = {

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import { canonicalJSON } from './canonical-json';
 import type { IngestEnvelope } from './types';
 
@@ -48,7 +49,32 @@ export type PushBatchResult =
       attempts: number;
       lastError: string;
     }
-  | { ok: false; kind: 'permanent'; status: number; body: unknown };
+  | { ok: false; kind: 'permanent'; status: number; body: unknown }
+  | {
+      ok: false;
+      kind: 'unsupported_version';
+      status: number;
+      /** Inclusive version range the server accepts (null if the server omitted it). */
+      supportedMin: number | null;
+      supportedMax: number | null;
+      /** The version this reporter sent, echoed by the server (null if omitted). */
+      received: number | null;
+    };
+
+/**
+ * Narrows an arbitrary 4xx error body to the server's structured
+ * `unsupported_version` shape without an `as` cast. The server emits
+ * `{ error: { code: 'unsupported_version', supported_min, supported_max, received } }`
+ * (wire-protocol-versioning spec). Any field the server omits narrows to null.
+ */
+const UnsupportedVersionBody = z.object({
+  error: z.object({
+    code: z.literal('unsupported_version'),
+    supported_min: z.number().nullish(),
+    supported_max: z.number().nullish(),
+    received: z.number().nullish(),
+  }),
+});
 
 const BACKOFF_DELAYS_MS = [1000, 2000, 4000, 8000, 16000, 32000] as const;
 const MAX_RETRY_AFTER_MS = 60_000;
@@ -148,7 +174,24 @@ export const pushBatch = async (
 
     // 4xx (except 429) → permanent, no retry.
     if (res.status >= 400 && res.status < 500 && res.status !== 429) {
-      const errBody = await res.json().catch(() => null);
+      const errBody: unknown = await res.json().catch(() => null);
+
+      // Distinguish the server's structured `unsupported_version` rejection from
+      // a generic contract bug. A version mismatch is recoverable by upgrading
+      // the reporter, so it gets its own kind (the runner logs "upgrade") instead
+      // of being silently dropped as a permanent failure.
+      const versionErr = UnsupportedVersionBody.safeParse(errBody);
+      if (versionErr.success) {
+        return {
+          ok: false,
+          kind: 'unsupported_version',
+          status: res.status,
+          supportedMin: versionErr.data.error.supported_min ?? null,
+          supportedMax: versionErr.data.error.supported_max ?? null,
+          received: versionErr.data.error.received ?? null,
+        };
+      }
+
       return {
         ok: false,
         kind: 'permanent',

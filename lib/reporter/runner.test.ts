@@ -7,8 +7,10 @@ import type { Database as DatabaseType } from 'better-sqlite3';
 import { runReporter } from './runner';
 import { readConfig, type ReporterConfig } from './config';
 import type { IngestEnvelope } from './client';
+import { WIRE_VERSION } from './types';
 import { canonicalJSON } from './canonical-json';
 import { createHash } from 'node:crypto';
+import { log } from '@/lib/logger';
 
 // ---------- Fixtures ----------
 
@@ -236,6 +238,28 @@ describe('reporter runner', () => {
       }
       db.close();
     });
+
+    it('builds the envelope with the WIRE_VERSION constant, not a hardcoded literal (TC-U-02)', async () => {
+      writeConfig(path.join(workDir, 'data'));
+      const { db, seed } = openSeededDb();
+      seed(1);
+
+      const { fn: fetchFn, calls } = makeFetchStub(() =>
+        okResponse({ accepted: 1, skipped: 0, rejected: 0, errors: [] }),
+      );
+
+      await runReporter({
+        db,
+        configPath: path.join(workDir, 'data/reporter-config.json'),
+        queuePath: ':memory:',
+        fetchFn,
+      });
+
+      expect(calls).toHaveLength(1);
+      const envelope = JSON.parse((calls[0].init.body as string)) as IngestEnvelope;
+      expect(envelope.version).toBe(WIRE_VERSION);
+      db.close();
+    });
   });
 
   describe('TC-I-09 (REQ-10, idempotency): re-run pushes 0 unchanged', () => {
@@ -357,6 +381,67 @@ describe('reporter runner', () => {
         expect(parsed).toHaveLength(2);
       } finally {
         stdoutSpy.mockRestore();
+      }
+      db.close();
+    });
+  });
+
+  describe('REQ-7 / TC-U-07 / TC-I-10 (wire-protocol-versioning): unsupported_version → actionable log, no re-enqueue', () => {
+    it('logs an upgrade instruction and drops the batch without enqueueing', async () => {
+      writeConfig(path.join(workDir, 'data'));
+      const { db, seed } = openSeededDb();
+      seed(3);
+
+      const versionErrBody = {
+        error: {
+          message: 'unsupported wire protocol version: server accepts 1..1',
+          code: 'unsupported_version',
+          supported_min: 1,
+          supported_max: 1,
+          received: 2,
+        },
+      };
+      const { fn: fetchFn, calls } = makeFetchStub(
+        () =>
+          new Response(JSON.stringify(versionErrBody), {
+            status: 400,
+            headers: { 'content-type': 'application/json' },
+          }),
+      );
+
+      // Capture log.error by property mutation (hand-written stub, no mocking framework).
+      const errorCalls: Array<{ msg: string; meta: unknown }> = [];
+      const originalError = log.error;
+      log.error = ((msg: string, meta?: unknown) => {
+        errorCalls.push({ msg, meta });
+      }) as typeof log.error;
+
+      try {
+        const result = await runReporter({
+          db,
+          configPath: path.join(workDir, 'data/reporter-config.json'),
+          queuePath: ':memory:',
+          fetchFn,
+        });
+
+        expect(calls).toHaveLength(1);
+        // Batch dropped, counted as failed, NOT queued.
+        expect(result.pushed).toBe(0);
+        expect(result.failed).toBe(3);
+        expect(result.queued).toBe(0);
+
+        // Nothing marked pushed.
+        const pushed = db
+          .prepare('SELECT COUNT(*) AS c FROM reporter_pushed_sessions')
+          .get() as { c: number };
+        expect(pushed.c).toBe(0);
+
+        // A distinct, actionable "upgrade" log — NOT the generic permanent-drop message.
+        const upgradeLog = errorCalls.find((c) => /upgrade the reporter/i.test(c.msg));
+        expect(upgradeLog).toBeDefined();
+        expect(errorCalls.some((c) => /permanent push failure/.test(c.msg))).toBe(false);
+      } finally {
+        log.error = originalError;
       }
       db.close();
     });
